@@ -79,6 +79,8 @@ mikrus-mcp
 
 ## Available Tools
 
+### mikr.us API tools
+
 | Tool | API endpoint | Description |
 |------|-------------|-------------|
 | `get_server_info` | `/info` | Server info: ID, RAM, disk, expiration date, PRO plan status (cache=60s) |
@@ -93,6 +95,18 @@ mikrus-mcp
 | `get_ports` | `/porty` | Assigned TCP/UDP ports (cache=60s) |
 | `get_cloud` | `/cloud` | Cloud services and statistics assigned to the account |
 | `assign_domain` | `/domain` | Assign a domain to a port (use `-` for auto-generated subdomain) |
+
+### System management tools
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read a text file from the server (up to 200 lines) |
+| `write_file` | Write text content to a file (base64-safe transfer) |
+| `manage_service` | Manage systemd services: status, start, stop, restart, enable, disable |
+| `analyze_disk` | Disk usage overview (`df -h` + top-20 largest directories) |
+| `check_port` | Check if a TCP port is listening and what process uses it |
+| `manage_process` | List top processes by memory or kill a process by PID/name |
+| `update_system` | Run system updates (apt update + apt upgrade) |
 
 ## Claude Desktop Configuration
 
@@ -115,7 +129,7 @@ Add the following to your `claude_desktop_config.json`:
 }
 ```
 
-After restarting Claude Desktop, the 12 mikrus tools will be available for use.
+After restarting Claude Desktop, the 19 mikrus tools will be available for use.
 
 ## Development
 
@@ -154,7 +168,7 @@ src/mikrus_mcp/
 ├── __main__.py      # python -m mikrus_mcp entry point
 ├── config.py        # Environment variable loader (dotenv)
 ├── client.py        # Async HTTP client (httpx) for the mikr.us API
-└── server.py        # MCP server with 12 tools, stdio transport
+├── server.py        # MCP server with 19 tools (12 API + 7 system), stdio transport
 
 tests/
 ├── test_client.py   # HTTP client tests (respx mock)
@@ -163,6 +177,9 @@ tests/
 
 ## Notes
 
+- 19 MCP tools total: 12 mikr.us API endpoints + 7 system management tools (file I/O, services, disk, processes, updates).
+- System management tools execute commands via the mikr.us `/exec` endpoint with input validation and safe encoding.
+- All write operations (`write_file`, `manage_service`, `manage_process`, `update_system`) are protected by input validation — no shell injection possible.
 - Errors are logged to `stderr`, in compliance with the MCP specification.
 - The `/exec` endpoint has a 65-second timeout on the client side (API limit is 60s).
 - `/stats`, `/info`, `/serwery`, `/db`, and `/porty` have a 60-second cache on the API side.

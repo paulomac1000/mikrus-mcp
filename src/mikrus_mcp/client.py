@@ -1,6 +1,8 @@
 """HTTP client for mikr.us API."""
 
+import base64
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -9,6 +11,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30.0
 EXEC_TIMEOUT = 65.0
+
+PATH_PATTERN = re.compile(r"^[a-zA-Z0-9_./\-]+$")
+SERVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-@.]+$")
+SERVICE_ACTIONS = frozenset(
+    {"status", "start", "stop", "restart", "enable", "disable", "is-active", "is-enabled"}
+)
+PROCESS_ACTIONS = frozenset({"list", "kill"})
 
 
 class MikrusClient:
@@ -127,3 +136,67 @@ class MikrusClient:
     async def assign_domain(self, port: str, domain: str) -> Any:
         """Assign a domain to a port. Use '-' for domain to let the system auto-assign one."""
         return await self._request("/domain", {"port": port, "domain": domain})
+
+    async def read_file(self, path: str) -> Any:
+        """Read a text file from the server. Limited to 200 lines."""
+        if not PATH_PATTERN.match(path) or ".." in path:
+            raise ValueError(f"Invalid path: {path}")
+        cmd = f"cat '{path}' 2>&1 | head -200"
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def write_file(self, path: str, content: str) -> Any:
+        """Write content to a file on the server. Uses base64 for safe transfer."""
+        if not PATH_PATTERN.match(path) or ".." in path:
+            raise ValueError(f"Invalid path: {path}")
+        encoded = base64.b64encode(content.encode()).decode()
+        cmd = f"echo '{encoded}' | base64 -d > '{path}' && echo 'WRITE_OK' || echo 'WRITE_FAIL'"
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def manage_service(self, name: str, action: str) -> Any:
+        """Manage a systemd service via systemctl."""
+        if not SERVICE_NAME_PATTERN.match(name):
+            raise ValueError(f"Invalid service name: {name}")
+        if action not in SERVICE_ACTIONS:
+            raise ValueError(f"Invalid action: {action}. Allowed: {sorted(SERVICE_ACTIONS)}")
+        cmd = f"systemctl {action} '{name}' 2>&1"
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def analyze_disk(self, path: str = "/") -> Any:
+        """Analyze disk usage. Shows df -h and top-20 directories by size."""
+        if not path.startswith("/"):
+            raise ValueError("Path must be absolute")
+        cmd = (
+            f"df -h '{path}' 2>&1; echo '---TOP20---'; "
+            "du -sh /* 2>/dev/null | sort -rh | head -20"
+        )
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def check_port(self, port: str) -> Any:
+        """Check if a TCP port is listening."""
+        port_num = int(port)
+        if port_num < 1 or port_num > 65535:
+            raise ValueError(f"Invalid port: {port}")
+        cmd = (
+            f"ss -tlnp 2>/dev/null | grep ':({port}) ' && echo 'PORT_IN_USE' "
+            f"|| echo 'PORT_NOT_LISTENING'"
+        )
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def manage_process(self, target: str, action: str) -> Any:
+        """List or kill processes. Target can be PID or process name."""
+        if action not in PROCESS_ACTIONS:
+            raise ValueError(f"Invalid action: {action}. Allowed: list, kill")
+        if action == "list":
+            cmd = "ps aux --sort=-%mem 2>/dev/null | head -20"
+        else:
+            if not target:
+                raise ValueError("target is required for kill action (PID or process name)")
+            if not re.match(r"^[a-zA-Z0-9_\-]+$", target):
+                raise ValueError(f"Invalid process target: {target}")
+            cmd = f"killall -15 '{target}' 2>&1 || kill '{target}' 2>&1"
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+
+    async def update_system(self) -> Any:
+        """Run apt update and apt upgrade on the server."""
+        cmd = "apt update 2>&1 && apt upgrade -y 2>&1"
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)

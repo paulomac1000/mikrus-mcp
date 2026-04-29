@@ -225,3 +225,134 @@ async def test_assign_domain_missing_params(mock_client: MikrusClient) -> None:
 
     assert "Error:" in result[0].text
     assert "port" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_read_file(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "127.0.0.1 localhost", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("read_file", {"path": "/etc/hosts"}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "localhost" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_read_file_missing_path(mock_client: MikrusClient) -> None:
+    await mock_client.open()
+    result = await call_tool("read_file", {}, client=mock_client)
+    await mock_client.close()
+
+    assert "Error:" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_write_file(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "WRITE_OK\n", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "write_file", {"path": "/tmp/x.txt", "content": "data"}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "WRITE_OK" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_manage_service(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "active (running)", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "manage_service", {"name": "nginx", "action": "status"}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "active" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "/dev/sda1 15G 10G 5G 67%", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("analyze_disk", {"path": "/"}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "67%" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_check_port(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "LISTEN *:80", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("check_port", {"port": "80"}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "LISTEN" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_check_port_missing(mock_client: MikrusClient) -> None:
+    await mock_client.open()
+    result = await call_tool("check_port", {}, client=mock_client)
+    await mock_client.close()
+
+    assert "Error:" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_manage_process_list(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "root 1234 node", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "manage_process", {"action": "list"}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "node" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_manage_process_missing_action(mock_client: MikrusClient) -> None:
+    await mock_client.open()
+    result = await call_tool("manage_process", {}, client=mock_client)
+    await mock_client.close()
+
+    assert "Error:" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_update_system(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "0 upgraded, 0 newly installed", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("update_system", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "upgraded" in data["output"]

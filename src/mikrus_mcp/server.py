@@ -185,6 +185,158 @@ TOOLS: list[Tool] = [
             "required": ["port", "domain"],
         },
     ),
+    Tool(
+        name="read_file",
+        description=(
+            "Reads a text file from the VPS server and returns its content (up to 200 lines). "
+            "Use when you need to inspect configuration files, logs, or any text file "
+            "on the server. Example paths: '/etc/nginx/sites-available/default', "
+            "'/var/log/myapp.log', '/home/user/.env'. "
+            "Warning: do NOT use on binary files."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the file on the server (e.g. '/etc/hosts')",
+                }
+            },
+            "required": ["path"],
+        },
+    ),
+    Tool(
+        name="write_file",
+        description=(
+            "Writes text content to a file on the VPS server. "
+            "Overwrites the file if it already exists. "
+            "Use to create or update configuration files, deploy small scripts, "
+            "or manage application settings. "
+            "Content is base64-transferred for safe handling of special characters. "
+            "Example: write an nginx config, update .env variables, create a docker-compose.yml."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the file on the server "
+                        "(e.g. '/etc/nginx/nginx.conf')"
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Text content to write to the file",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    ),
+    Tool(
+        name="manage_service",
+        description=(
+            "Manages a systemd service on the VPS server. "
+            "Supported actions: status (check if running), start, stop, restart, "
+            "enable (auto-start on boot), disable, is-active, is-enabled. "
+            "Common services: nginx, apache2, mysql, postgresql, docker, ssh. "
+            "Use when the user asks 'is nginx running?', 'start mysql', "
+            "'restart docker', or needs to enable a service on boot."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Systemd service name (e.g. 'nginx', 'mysql', 'docker')",
+                },
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "Action: status, start, stop, restart, "
+                        "enable, disable, is-active, is-enabled"
+                    ),
+                },
+            },
+            "required": ["name", "action"],
+        },
+    ),
+    Tool(
+        name="analyze_disk",
+        description=(
+            "Analyzes disk usage on the VPS server. Returns df -h output "
+            "and a top-20 list of the largest directories (sorted by size). "
+            "Use when the user asks about disk space, 'why is my disk full?', "
+            "or wants to find large files/directories consuming storage. "
+            "Mikr.us servers typically have limited disk (e.g. 15GB)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to analyze (default: '/'). Must be absolute.",
+                }
+            },
+        },
+    ),
+    Tool(
+        name="check_port",
+        description=(
+            "Checks whether a specific TCP port is open (listening) on the VPS server "
+            "and shows which process is using it. "
+            "Use when debugging connectivity issues: 'is port 3000 open?', "
+            "'why can't I access my app?', 'what's using port 80?'. "
+            "Port range: 1–65535."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "string",
+                    "description": "TCP port number to check (e.g. '3000', '80', '443')",
+                }
+            },
+            "required": ["port"],
+        },
+    ),
+    Tool(
+        name="manage_process",
+        description=(
+            "Lists or kills processes on the VPS server. "
+            "Action 'list' returns the top-20 processes by memory usage (ps aux). "
+            "Action 'kill' terminates a process by PID or name (uses SIGTERM, graceful shutdown). "
+            "Use when the user asks 'what's using all the RAM?', 'kill the stuck node process', "
+            "or needs to stop a runaway service."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "PID or process name to kill (only required for 'kill' action)",
+                },
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "Action: 'list' (show top processes) "
+                        "or 'kill' (terminate by PID/name)"
+                    ),
+                },
+            },
+            "required": ["action"],
+        },
+    ),
+    Tool(
+        name="update_system",
+        description=(
+            "Runs system updates on the VPS server (apt update && apt upgrade -y). "
+            "Use when the user asks to update the system, install security patches, "
+            "or upgrade packages. Note: this may restart services and takes time. "
+            "API timeout is 65 seconds — large upgrades may exceed this limit."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -235,6 +387,47 @@ async def _call_tool_logic(
             if not isinstance(domain, str):
                 raise ValueError("Parameter 'domain' is required and must be a string")
             result = await client.assign_domain(port, domain)
+        elif name == "read_file":
+            path = arguments.get("path", "")
+            if not path or not isinstance(path, str):
+                raise ValueError("Parameter 'path' is required and must be a non-empty string")
+            result = await client.read_file(path)
+        elif name == "write_file":
+            path = arguments.get("path", "")
+            content = arguments.get("content", "")
+            if not path or not isinstance(path, str):
+                raise ValueError("Parameter 'path' is required and must be a non-empty string")
+            if not isinstance(content, str):
+                raise ValueError("Parameter 'content' is required and must be a string")
+            result = await client.write_file(path, content)
+        elif name == "manage_service":
+            name = arguments.get("name", "")
+            action = arguments.get("action", "")
+            if not name or not isinstance(name, str):
+                raise ValueError("Parameter 'name' is required and must be a non-empty string")
+            if not action or not isinstance(action, str):
+                raise ValueError("Parameter 'action' is required and must be a non-empty string")
+            result = await client.manage_service(name, action)
+        elif name == "analyze_disk":
+            path = arguments.get("path", "/")
+            if not isinstance(path, str):
+                raise ValueError("Parameter 'path' must be a string")
+            result = await client.analyze_disk(path)
+        elif name == "check_port":
+            port = arguments.get("port", "")
+            if not port or not isinstance(port, str):
+                raise ValueError("Parameter 'port' is required and must be a non-empty string")
+            result = await client.check_port(port)
+        elif name == "manage_process":
+            target = arguments.get("target", "")
+            action = arguments.get("action", "")
+            if not action or not isinstance(action, str):
+                raise ValueError("Parameter 'action' is required and must be a non-empty string")
+            if not isinstance(target, str):
+                raise ValueError("Parameter 'target' must be a string")
+            result = await client.manage_process(target, action)
+        elif name == "update_system":
+            result = await client.update_system()
         else:
             raise ValueError(f"Unknown tool: {name}")
     except Exception as exc:

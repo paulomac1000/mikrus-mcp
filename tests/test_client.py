@@ -196,3 +196,178 @@ async def test_assign_domain(client: MikrusClient) -> None:
     body = route.calls[0].request.content.decode()
     assert "port=8080" in body
     assert "domain=-" in body
+
+
+@pytest.mark.asyncio
+async def test_read_file(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "line1\nline2", "exit_code": 0})
+        await client.open()
+        result = await client.read_file("/etc/hosts")
+        await client.close()
+
+    assert result["output"] == "line1\nline2"
+    body = route.calls[0].request.content.decode()
+    assert "cat" in body
+    assert "hosts" in body
+    assert "head" in body
+
+
+@pytest.mark.asyncio
+async def test_read_file_invalid_path(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="Invalid path"):
+        await client.read_file("../etc/passwd")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_write_file(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "WRITE_OK\n", "exit_code": 0})
+        await client.open()
+        result = await client.write_file("/tmp/test.txt", "hello world")
+        await client.close()
+
+    assert "WRITE_OK" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "base64" in body
+    assert "test.txt" in body
+
+
+@pytest.mark.asyncio
+async def test_manage_service(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "active (running)", "exit_code": 0})
+        await client.open()
+        result = await client.manage_service("nginx", "status")
+        await client.close()
+
+    assert "active" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "systemctl+status" in body
+    assert "nginx" in body
+
+
+@pytest.mark.asyncio
+async def test_manage_service_invalid_action(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="Invalid action"):
+        await client.manage_service("nginx", "delete")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_manage_service_invalid_name(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="Invalid service name"):
+        await client.manage_service("rm -rf /", "status")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(
+            json={
+                "output": "Filesystem  Size  Used Avail Use%\n/dev/sda1 15G 10G 5G 67%",
+                "exit_code": 0,
+            }
+        )
+        await client.open()
+        result = await client.analyze_disk("/")
+        await client.close()
+
+    assert "67%" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "df+-h" in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_relative_path(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="absolute"):
+        await client.analyze_disk("home/user")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_check_port(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(
+            json={
+                "output": 'LISTEN 0 128 *:3000 *:* users:(("node",pid=1234))',
+                "exit_code": 0,
+            }
+        )
+        await client.open()
+        result = await client.check_port("3000")
+        await client.close()
+
+    assert "LISTEN" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "ss+-tlnp" in body
+
+
+@pytest.mark.asyncio
+async def test_check_port_invalid(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="Invalid port"):
+        await client.check_port("99999")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_manage_process_list(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "root 1234 0.1 2.0 node", "exit_code": 0})
+        await client.open()
+        result = await client.manage_process("", "list")
+        await client.close()
+
+    assert "node" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "ps+aux" in body
+
+
+@pytest.mark.asyncio
+async def test_manage_process_kill(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "", "exit_code": 0})
+        await client.open()
+        result = await client.manage_process("node", "kill")
+        await client.close()
+
+    assert result["exit_code"] == 0
+    body = route.calls[0].request.content.decode()
+    assert "killall" in body
+
+
+@pytest.mark.asyncio
+async def test_manage_process_invalid_action(client: MikrusClient) -> None:
+    await client.open()
+    with pytest.raises(ValueError, match="Invalid action"):
+        await client.manage_process("node", "destroy")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_update_system(client: MikrusClient) -> None:
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/exec")
+        route.respond(json={"output": "0 upgraded, 0 newly installed", "exit_code": 0})
+        await client.open()
+        result = await client.update_system()
+        await client.close()
+
+    assert "upgraded" in result["output"]
+    body = route.calls[0].request.content.decode()
+    assert "apt+update" in body
+    assert "apt+upgrade" in body
