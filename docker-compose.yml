@@ -1,0 +1,12 @@
+services:
+  mcp-server:
+    build: .
+    stdin_open: true
+    tty: true
+    command: mikrus-mcp
+
+  test:
+    build:
+      context: .
+      target: dev
+    command: pytest tests/ -v
