@@ -31,8 +31,8 @@ MIKRUS_SERVER_NAME=your_server_name_here
 
 **B — Multi-server JSON (mikr.us + SSH):**
 ```bash
-MCP_SERVERS={"srvXX": {"type": "ssh", "host": "srvXX.mikr.us", "port": 22, "user": "root", "password": "secret", "sudo_password": "secret"}}
-MCP_DEFAULT_SERVER=srvXX
+MCP_SERVERS={"ssh1": {"type": "ssh", "host": "srvXX.mikr.us", "port": 22, "user": "root", "password": "secret", "sudo_password": "secret"}}
+MCP_DEFAULT_SERVER=ssh1
 ```
 
 **C — SSH-only (no mikr.us account needed):**
@@ -171,6 +171,7 @@ You can manage multiple servers simultaneously by using the `MCP_SERVERS` JSON:
 | `user` | No (ssh) | SSH username (default: `root`) |
 | `password` | No (ssh) | SSH password (if not using key auth) |
 | `ssh_key` | No (ssh) | Path to SSH private key file |
+| `ssh_cert` | No (ssh) | Path to SSH certificate signed by CA |
 | `sudo_password` | No (ssh) | Password for `sudo -S` (needed for journal tools if user lacks group privileges) |
 | `timeout` | No (ssh) | SSH timeout in seconds (default: 30) |
 | `verify_host_key` | No (ssh) | Verify SSH host key (default: `false`) |
