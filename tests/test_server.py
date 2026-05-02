@@ -45,9 +45,7 @@ async def test_get_server_stats(mock_client: MikrusClient) -> None:
 @pytest.mark.asyncio
 async def test_execute_command(mock_client: MikrusClient) -> None:
     with respx.mock:
-        respx.post("https://api.mikr.us/exec").respond(
-            json={"output": "hello", "exit_code": 0}
-        )
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "hello", "exit_code": 0})
         await mock_client.open()
         result = await call_tool("execute_command", {"cmd": "echo hello"}, client=mock_client)
         await mock_client.close()
@@ -148,9 +146,7 @@ async def test_api_error(mock_client: MikrusClient) -> None:
 @pytest.mark.asyncio
 async def test_list_servers(mock_client: MikrusClient) -> None:
     with respx.mock:
-        respx.post("https://api.mikr.us/serwery").respond(
-            json=[{"server_id": "srv1"}]
-        )
+        respx.post("https://api.mikr.us/serwery").respond(json=[{"server_id": "srv1"}])
         await mock_client.open()
         result = await call_tool("list_servers", {}, client=mock_client)
         await mock_client.close()
@@ -162,9 +158,7 @@ async def test_list_servers(mock_client: MikrusClient) -> None:
 @pytest.mark.asyncio
 async def test_get_db_info(mock_client: MikrusClient) -> None:
     with respx.mock:
-        respx.post("https://api.mikr.us/db").respond(
-            json={"host": "db.mikr.us", "user": "admin"}
-        )
+        respx.post("https://api.mikr.us/db").respond(json={"host": "db.mikr.us", "user": "admin"})
         await mock_client.open()
         result = await call_tool("get_db_info", {}, client=mock_client)
         await mock_client.close()
@@ -176,9 +170,7 @@ async def test_get_db_info(mock_client: MikrusClient) -> None:
 @pytest.mark.asyncio
 async def test_get_ports(mock_client: MikrusClient) -> None:
     with respx.mock:
-        respx.post("https://api.mikr.us/porty").respond(
-            json={"tcp": ["22", "80"], "udp": ["53"]}
-        )
+        respx.post("https://api.mikr.us/porty").respond(json={"tcp": ["22", "80"], "udp": ["53"]})
         await mock_client.open()
         result = await call_tool("get_ports", {}, client=mock_client)
         await mock_client.close()
@@ -190,9 +182,7 @@ async def test_get_ports(mock_client: MikrusClient) -> None:
 @pytest.mark.asyncio
 async def test_get_cloud(mock_client: MikrusClient) -> None:
     with respx.mock:
-        respx.post("https://api.mikr.us/cloud").respond(
-            json={"services": [{"name": "backup"}]}
-        )
+        respx.post("https://api.mikr.us/cloud").respond(json={"services": [{"name": "backup"}]})
         await mock_client.open()
         result = await call_tool("get_cloud", {}, client=mock_client)
         await mock_client.close()
@@ -326,9 +316,7 @@ async def test_manage_process_list(mock_client: MikrusClient) -> None:
             json={"output": "root 1234 node", "exit_code": 0}
         )
         await mock_client.open()
-        result = await call_tool(
-            "manage_process", {"action": "list"}, client=mock_client
-        )
+        result = await call_tool("manage_process", {"action": "list"}, client=mock_client)
         await mock_client.close()
 
     data = json.loads(result[0].text)
@@ -356,3 +344,175 @@ async def test_update_system(mock_client: MikrusClient) -> None:
 
     data = json.loads(result[0].text)
     assert "upgraded" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_list_directory(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "drwxr-xr-x root /tmp", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("list_directory", {"path": "/tmp"}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "root" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_tail_file(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "tail output", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "tail_file", {"path": "/var/log/syslog", "lines": 20}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "tail output" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_search_in_files(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "/etc/hosts:1:127.0.0.1", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "search_in_files", {"path": "/etc", "pattern": "127.0"}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "127.0" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_memory_info(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "Mem: 1G", "exit_code": 0})
+        await mock_client.open()
+        result = await call_tool("get_memory_info", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "Mem" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_network_info(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "eth0: UP", "exit_code": 0})
+        await mock_client.open()
+        result = await call_tool("get_network_info", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "eth0" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_process_tree(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "root 1 init", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("get_process_tree", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "init" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_list_docker_containers(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": '[{"Names":"app"}]', "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("list_docker_containers", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "app" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_docker_logs(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "docker log line", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "get_docker_logs", {"container": "app", "lines": 10}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "docker log line" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_docker_stats(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": '{"CPUPerc":"10%"}', "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("get_docker_stats", {}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "10%" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_journal_logs(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "journal line", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool(
+            "get_journal_logs", {"unit": "ssh.service", "lines": 5}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "journal line" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_find_system_errors(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(
+            json={"output": "error found", "exit_code": 0}
+        )
+        await mock_client.open()
+        result = await call_tool("find_system_errors", {"hours": 2}, client=mock_client)
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "error found" in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_search_journal_logs(mock_client: MikrusClient) -> None:
+    with respx.mock:
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "matched", "exit_code": 0})
+        await mock_client.open()
+        result = await call_tool(
+            "search_journal_logs", {"term": "fail", "lines": 10}, client=mock_client
+        )
+        await mock_client.close()
+
+    data = json.loads(result[0].text)
+    assert "matched" in data["output"]

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +26,48 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Check formatting with Ruff
+        run: ruff format --check src/ tests/
+
       - name: Lint with Ruff
         run: ruff check src/ tests/
 
       - name: Type check with mypy
         run: mypy src/
 
+      - name: Security scan with bandit
+        run: bandit -r src/ -f json -o bandit-report.json || true
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report-${{ matrix.python-version }}
+          path: bandit-report.json
+
       - name: Test with pytest
         run: pytest tests/ -v
+
+  docker-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (prod)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: prod
+          push: false
+          tags: mikrus-mcp:test
+
+      - name: Build Docker image (dev)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          push: false
+          tags: mikrus-mcp:dev
