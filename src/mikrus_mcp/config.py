@@ -1,8 +1,7 @@
 """Configuration loader — single or multi-server support.
 
-Supports legacy mikr.us API mode, SSH-only mode, and mixed multi-server mode.
-Environment variable aliases allow using neutral MCP_* names alongside
-legacy MIKRUS_* names.
+Supports mikr.us API mode, SSH-only mode, and mixed multi-server mode.
+Environment variable aliases allow using MCP_* or MIKRUS_* names interchangeably.
 """
 
 import json

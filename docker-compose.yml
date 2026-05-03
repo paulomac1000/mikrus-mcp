@@ -1,5 +1,5 @@
 services:
-  mikrus-mcp-dev:
+  mikrus-mcp:
     build:
       context: .
       target: prod
@@ -8,7 +8,7 @@ services:
     tty: true
     command: mikrus-mcp
     ports:
-      - "8300:8300"
+      - "8300:8300"  # only needed when MCP_PORT is set (SSE mode)
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
