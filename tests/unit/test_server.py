@@ -27,7 +27,8 @@ async def test_get_server_info(mock_client: MikrusClient) -> None:
     assert len(result) == 1
     assert result[0].type == "text"
     data = json.loads(result[0].text)
-    assert data["server_id"] == "srv"
+    assert data["success"] is True
+    assert data["data"]["server_id"] == "srv"
 
 
 @pytest.mark.asyncio
@@ -39,7 +40,8 @@ async def test_get_server_stats(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["uptime"] == "5 days"
+    assert data["success"] is True
+    assert data["data"]["uptime"] == "5 days"
 
 
 @pytest.mark.asyncio
@@ -51,7 +53,8 @@ async def test_execute_command(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["output"] == "hello"
+    assert data["success"] is True
+    assert data["data"]["output"] == "hello"
 
 
 @pytest.mark.asyncio
@@ -60,8 +63,9 @@ async def test_execute_command_missing_param(mock_client: MikrusClient) -> None:
     result = await call_tool("execute_command", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
-    assert "cmd" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
+    assert "cmd" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -73,7 +77,8 @@ async def test_restart_server(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["raw"] == "OK"
+    assert data["success"] is True
+    assert data["data"]["raw"] == "OK"
 
 
 @pytest.mark.asyncio
@@ -85,7 +90,8 @@ async def test_get_logs(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data[0]["id"] == "1"
+    assert data["success"] is True
+    assert data["data"][0]["id"] == "1"
 
 
 @pytest.mark.asyncio
@@ -97,7 +103,8 @@ async def test_get_log_by_id(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["id"] == "5"
+    assert data["success"] is True
+    assert data["data"]["id"] == "5"
 
 
 @pytest.mark.asyncio
@@ -106,7 +113,8 @@ async def test_get_log_by_id_missing_param(mock_client: MikrusClient) -> None:
     result = await call_tool("get_log_by_id", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
 
 
 @pytest.mark.asyncio
@@ -118,7 +126,8 @@ async def test_boost_server(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["status"] == "ok"
+    assert data["success"] is True
+    assert data["data"]["status"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -127,8 +136,9 @@ async def test_unknown_tool(mock_client: MikrusClient) -> None:
     result = await call_tool("unknown_tool", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
-    assert "Unknown tool" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
+    assert "Unknown tool" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -139,8 +149,9 @@ async def test_api_error(mock_client: MikrusClient) -> None:
         result = await call_tool("get_server_info", {}, client=mock_client)
         await mock_client.close()
 
-    assert "Error:" in result[0].text
-    assert "HTTP 500" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
+    assert "HTTP 500" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -152,7 +163,8 @@ async def test_list_servers(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data[0]["server_id"] == "srv1"
+    assert data["success"] is True
+    assert data["data"][0]["server_id"] == "srv1"
 
 
 @pytest.mark.asyncio
@@ -164,7 +176,8 @@ async def test_get_db_info(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["host"] == "db.mikr.us"
+    assert data["success"] is True
+    assert data["data"]["host"] == "db.mikr.us"
 
 
 @pytest.mark.asyncio
@@ -176,7 +189,8 @@ async def test_get_ports(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "22" in data["tcp"]
+    assert data["success"] is True
+    assert "22" in data["data"]["tcp"]
 
 
 @pytest.mark.asyncio
@@ -188,7 +202,8 @@ async def test_get_cloud(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["services"][0]["name"] == "backup"
+    assert data["success"] is True
+    assert data["data"]["services"][0]["name"] == "backup"
 
 
 @pytest.mark.asyncio
@@ -204,7 +219,8 @@ async def test_assign_domain(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert data["domain"] == "app.mikr.us"
+    assert data["success"] is True
+    assert data["data"]["domain"] == "app.mikr.us"
 
 
 @pytest.mark.asyncio
@@ -213,8 +229,9 @@ async def test_assign_domain_missing_params(mock_client: MikrusClient) -> None:
     result = await call_tool("assign_domain", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
-    assert "port" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
+    assert "port" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -228,7 +245,8 @@ async def test_read_file(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "localhost" in data["output"]
+    assert data["success"] is True
+    assert "localhost" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -237,7 +255,8 @@ async def test_read_file_missing_path(mock_client: MikrusClient) -> None:
     result = await call_tool("read_file", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
 
 
 @pytest.mark.asyncio
@@ -253,7 +272,8 @@ async def test_write_file(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "WRITE_OK" in data["output"]
+    assert data["success"] is True
+    assert "WRITE_OK" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -269,7 +289,8 @@ async def test_manage_service(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "active" in data["output"]
+    assert data["success"] is True
+    assert "active" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -283,7 +304,8 @@ async def test_analyze_disk(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "67%" in data["output"]
+    assert data["success"] is True
+    assert "67%" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -297,7 +319,8 @@ async def test_check_port(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "LISTEN" in data["output"]
+    assert data["success"] is True
+    assert "LISTEN" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -306,7 +329,8 @@ async def test_check_port_missing(mock_client: MikrusClient) -> None:
     result = await call_tool("check_port", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
 
 
 @pytest.mark.asyncio
@@ -320,7 +344,8 @@ async def test_manage_process_list(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "node" in data["output"]
+    assert data["success"] is True
+    assert "node" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -329,7 +354,8 @@ async def test_manage_process_missing_action(mock_client: MikrusClient) -> None:
     result = await call_tool("manage_process", {}, client=mock_client)
     await mock_client.close()
 
-    assert "Error:" in result[0].text
+    data = json.loads(result[0].text)
+    assert data["success"] is False
 
 
 @pytest.mark.asyncio
@@ -343,7 +369,8 @@ async def test_update_system(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "upgraded" in data["output"]
+    assert data["success"] is True
+    assert "upgraded" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -357,7 +384,8 @@ async def test_list_directory(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "root" in data["output"]
+    assert data["success"] is True
+    assert "root" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -373,7 +401,8 @@ async def test_tail_file(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "tail output" in data["output"]
+    assert data["success"] is True
+    assert "tail output" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -389,7 +418,8 @@ async def test_search_in_files(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "127.0" in data["output"]
+    assert data["success"] is True
+    assert "127.0" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -401,7 +431,8 @@ async def test_get_memory_info(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "Mem" in data["output"]
+    assert data["success"] is True
+    assert "Mem" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -413,7 +444,8 @@ async def test_get_network_info(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "eth0" in data["output"]
+    assert data["success"] is True
+    assert "eth0" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -427,7 +459,8 @@ async def test_get_process_tree(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "init" in data["output"]
+    assert data["success"] is True
+    assert "init" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -441,7 +474,8 @@ async def test_list_docker_containers(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "app" in data["output"]
+    assert data["success"] is True
+    assert "app" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -457,7 +491,8 @@ async def test_get_docker_logs(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "docker log line" in data["output"]
+    assert data["success"] is True
+    assert "docker log line" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -471,7 +506,8 @@ async def test_get_docker_stats(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "10%" in data["output"]
+    assert data["success"] is True
+    assert "10%" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -487,7 +523,8 @@ async def test_get_journal_logs(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "journal line" in data["output"]
+    assert data["success"] is True
+    assert "journal line" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -501,7 +538,8 @@ async def test_find_system_errors(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "error found" in data["output"]
+    assert data["success"] is True
+    assert "error found" in data["data"]["output"]
 
 
 @pytest.mark.asyncio
@@ -515,4 +553,5 @@ async def test_search_journal_logs(mock_client: MikrusClient) -> None:
         await mock_client.close()
 
     data = json.loads(result[0].text)
-    assert "matched" in data["output"]
+    assert data["success"] is True
+    assert "matched" in data["data"]["output"]

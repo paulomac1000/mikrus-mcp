@@ -227,13 +227,15 @@ async def test_list_configured_servers_tool() -> None:
         result = await list_configured_servers_tool()
 
     data = json.loads(result)
-    assert len(data["servers"]) == 3
-    names = {s["name"] for s in data["servers"]}
+    assert data["success"] is True
+    inner = data["data"]
+    assert len(inner["servers"]) == 3
+    names = {s["name"] for s in inner["servers"]}
     assert names == {"alpha", "beta", "gamma"}
-    gamma = next(s for s in data["servers"] if s["name"] == "gamma")
+    gamma = next(s for s in inner["servers"] if s["name"] == "gamma")
     assert gamma["status"] == "failed"
     assert "connection refused" in gamma["error"]
-    alpha = next(s for s in data["servers"] if s["name"] == "alpha")
+    alpha = next(s for s in inner["servers"] if s["name"] == "alpha")
     assert alpha["is_default"] is True
-    beta = next(s for s in data["servers"] if s["name"] == "beta")
+    beta = next(s for s in inner["servers"] if s["name"] == "beta")
     assert beta["is_default"] is False
