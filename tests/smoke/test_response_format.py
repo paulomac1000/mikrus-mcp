@@ -68,24 +68,18 @@ async def test_all_tools_return_success_format() -> None:
         respx.post("https://api.mikr.us/domain").respond(
             json={"domain": "test.mikr.us", "port": "3000"}
         )
-        respx.post("https://api.mikr.us/exec").respond(
-            json={"output": "test", "exit_code": 0}
-        )
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "test", "exit_code": 0})
 
         for tool_name in TOOLS_NO_PARAMS:
             result = await call_tool(tool_name, {}, client=client)
             data = json.loads(result[0].text)
             assert "success" in data, f"Tool '{tool_name}' missing 'success' field"
-            assert isinstance(data["success"], bool), (
-                f"Tool '{tool_name}' success is not bool"
-            )
+            assert isinstance(data["success"], bool), f"Tool '{tool_name}' success is not bool"
 
         for tool_name, args in TOOLS_WITH_PARAMS.items():
             result = await call_tool(tool_name, args, client=client)
             data = json.loads(result[0].text)
             assert "success" in data, f"Tool '{tool_name}' missing 'success' field"
-            assert isinstance(data["success"], bool), (
-                f"Tool '{tool_name}' success is not bool"
-            )
+            assert isinstance(data["success"], bool), f"Tool '{tool_name}' success is not bool"
 
     await client.close()

@@ -47,9 +47,7 @@ async def test_execute_command_success() -> None:
     """Verify execute_command returns success with mocked API."""
     client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
     with respx.mock:
-        respx.post("https://api.mikr.us/exec").respond(
-            json={"output": "hello", "exit_code": 0}
-        )
+        respx.post("https://api.mikr.us/exec").respond(json={"output": "hello", "exit_code": 0})
         await client.open()
         result = await call_tool("execute_command", {"cmd": "echo hello"}, client=client)
         await client.close()

@@ -96,15 +96,11 @@ async def test_response_consistency_across_tools() -> None:
     ]
 
     with respx.mock:
-        respx.post(f"{MIKRUS_API_URL}/info").respond(
-            json={"server_id": "srv", "param_ram": "1024"}
-        )
+        respx.post(f"{MIKRUS_API_URL}/info").respond(json={"server_id": "srv", "param_ram": "1024"})
         respx.post(f"{MIKRUS_API_URL}/serwery").respond(json=[])
         respx.post(f"{MIKRUS_API_URL}/stats").respond(json={"uptime": "1d"})
         respx.post(f"{MIKRUS_API_URL}/logs").respond(json=[])
-        respx.post(f"{MIKRUS_API_URL}/exec").respond(
-            json={"output": "test", "exit_code": 0}
-        )
+        respx.post(f"{MIKRUS_API_URL}/exec").respond(json={"output": "test", "exit_code": 0})
 
         await client.open()
 
@@ -112,9 +108,7 @@ async def test_response_consistency_across_tools() -> None:
             result = await call_tool(tool_name, args, client=client)
             data = json.loads(result[0].text)
             assert "success" in data, f"Tool '{tool_name}' missing 'success'"
-            assert isinstance(data["success"], bool), (
-                f"Tool '{tool_name}' success not bool"
-            )
+            assert isinstance(data["success"], bool), f"Tool '{tool_name}' success not bool"
             if data["success"]:
                 assert "data" in data, f"Tool '{tool_name}' missing 'data' when success=True"
             else:

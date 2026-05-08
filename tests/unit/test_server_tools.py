@@ -390,7 +390,9 @@ async def test_get_memory_info_tool_success(mcp_context: MagicMock, mock_mikrus:
 
 
 @pytest.mark.asyncio
-async def test_get_network_info_tool_success(mcp_context: MagicMock, mock_mikrus: MagicMock) -> None:
+async def test_get_network_info_tool_success(
+    mcp_context: MagicMock, mock_mikrus: MagicMock
+) -> None:
     mock_mikrus.get_network_info.return_value = {"output": "eth0: UP", "exit_code": 0}
 
     with patch.object(mcp, "get_context", return_value=mcp_context):
@@ -402,7 +404,9 @@ async def test_get_network_info_tool_success(mcp_context: MagicMock, mock_mikrus
 
 
 @pytest.mark.asyncio
-async def test_get_process_tree_tool_success(mcp_context: MagicMock, mock_mikrus: MagicMock) -> None:
+async def test_get_process_tree_tool_success(
+    mcp_context: MagicMock, mock_mikrus: MagicMock
+) -> None:
     mock_mikrus.get_process_tree.return_value = {"output": "root 1 init", "exit_code": 0}
 
     with patch.object(mcp, "get_context", return_value=mcp_context):
@@ -440,7 +444,9 @@ async def test_get_docker_logs_tool_success(mcp_context: MagicMock, mock_mikrus:
 
 
 @pytest.mark.asyncio
-async def test_get_docker_stats_tool_success(mcp_context: MagicMock, mock_mikrus: MagicMock) -> None:
+async def test_get_docker_stats_tool_success(
+    mcp_context: MagicMock, mock_mikrus: MagicMock
+) -> None:
     mock_mikrus.get_docker_stats.return_value = {"containers": [{"CPUPerc": "10%"}]}
 
     with patch.object(mcp, "get_context", return_value=mcp_context):
@@ -452,7 +458,9 @@ async def test_get_docker_stats_tool_success(mcp_context: MagicMock, mock_mikrus
 
 
 @pytest.mark.asyncio
-async def test_get_journal_logs_tool_success(mcp_context: MagicMock, mock_mikrus: MagicMock) -> None:
+async def test_get_journal_logs_tool_success(
+    mcp_context: MagicMock, mock_mikrus: MagicMock
+) -> None:
     mock_mikrus.get_journal_logs.return_value = {"output": "journal line", "exit_code": 0}
 
     with patch.object(mcp, "get_context", return_value=mcp_context):
@@ -464,7 +472,9 @@ async def test_get_journal_logs_tool_success(mcp_context: MagicMock, mock_mikrus
 
 
 @pytest.mark.asyncio
-async def test_find_system_errors_tool_success(mcp_context: MagicMock, mock_mikrus: MagicMock) -> None:
+async def test_find_system_errors_tool_success(
+    mcp_context: MagicMock, mock_mikrus: MagicMock
+) -> None:
     mock_mikrus.find_system_errors.return_value = {"output": "error found", "exit_code": 0}
 
     with patch.object(mcp, "get_context", return_value=mcp_context):
@@ -538,7 +548,9 @@ async def test_list_configured_servers_tool(mcp_context: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_configured_servers_tool_with_failed(mock_mikrus: MagicMock, mock_ssh: MagicMock) -> None:
+async def test_list_configured_servers_tool_with_failed(
+    mock_mikrus: MagicMock, mock_ssh: MagicMock
+) -> None:
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {
         "clients": {"alpha": mock_mikrus},

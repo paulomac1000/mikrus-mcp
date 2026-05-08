@@ -39,14 +39,13 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
         mock_ctx.request_context.lifespan_context = lifespan
 
         try:
-            with patch.object(
-                mcp, "get_context", return_value=mock_ctx
-            ):
+            with patch.object(mcp, "get_context", return_value=mock_ctx):
                 result = await mcp.call_tool(tool_name, params)
         except Exception as exc:
             logger.error("Tool %s failed: %s", tool_name, exc)
             return JSONResponse(
-                {"success": False, "error": str(exc)}, status_code=500,
+                {"success": False, "error": str(exc)},
+                status_code=500,
             )
 
         if isinstance(result, dict):
