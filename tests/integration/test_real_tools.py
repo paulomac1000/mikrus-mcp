@@ -1,10 +1,12 @@
 """Integration tests — real mikr.us API calls."""
 
+import os
+
 import httpx
 import pytest
 
-from tests.integration.conftest import MIKRUS_API_KEY, MIKRUS_SERVER_NAME
-
+MIKRUS_API_KEY = os.getenv("MIKRUS_API_KEY", "")
+MIKRUS_SERVER_NAME = os.getenv("MIKRUS_SERVER_NAME", "")
 MIKRUS_API_URL = "https://api.mikr.us"
 
 skip_if_no_key = pytest.mark.skipif(
