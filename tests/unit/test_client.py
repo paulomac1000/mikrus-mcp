@@ -161,6 +161,21 @@ async def test_timeout(client: MikrusClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_retry(client: MikrusClient) -> None:
+    """Verify 429 triggers retry with backoff, eventually succeeds."""
+    with respx.mock:
+        route = respx.post("https://api.mikr.us/info")
+        route.respond(status_code=429, json={"error": "Zbyt wiele requestow"})
+        route.respond(status_code=429, json={"error": "Zbyt wiele requestow"})
+        route.respond(json={"server_id": "test-srv", "param_ram": "1024"})
+        await client.open()
+        result = await client.get_server_info()
+        await client.close()
+
+    assert result["server_id"] == "test-srv"
+
+
+@pytest.mark.asyncio
 async def test_list_servers(client: MikrusClient) -> None:
     with respx.mock:
         route = respx.post("https://api.mikr.us/serwery")
@@ -189,12 +204,13 @@ async def test_get_db_info(client: MikrusClient) -> None:
 async def test_get_ports(client: MikrusClient) -> None:
     with respx.mock:
         route = respx.post("https://api.mikr.us/porty")
-        route.respond(json={"tcp": ["22", "80", "443"], "udp": ["53"]})
+        route.respond(json=[20359, 30359, 40176])
         await client.open()
         result = await client.get_ports()
         await client.close()
 
-    assert "22" in result["tcp"]
+    assert isinstance(result, list)
+    assert 20359 in result
 
 
 @pytest.mark.asyncio
@@ -883,7 +899,8 @@ def test_validate_username_too_long() -> None:
 
 
 def test_validate_lines_param_journal() -> None:
-    from mikrus_mcp.validators import MAX_JOURNAL_LINES, validate_lines_param
+    from mikrus_mcp.tools.constants import MAX_JOURNAL_LINES
+    from mikrus_mcp.validators import validate_lines_param
 
     assert validate_lines_param(9999, MAX_JOURNAL_LINES) == 500
 

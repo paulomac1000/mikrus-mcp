@@ -164,3 +164,36 @@ def mcp_context(mock_mikrus: MagicMock, mock_ssh: MagicMock) -> MagicMock:
         "failed": {},
     }
     return ctx
+
+
+@pytest.fixture
+def mock_mcp() -> MagicMock:
+    """Return a mock MCP instance with a working tool() decorator.
+
+    Follows Canonical Template 9 from mcp_standards.md.
+    Accepts both @mcp.tool and @mcp.tool() forms.
+    """
+    mcp = MagicMock()
+    mcp._tools = {}
+
+    def tool_decorator(*args: object, **kwargs: object) -> object:
+        def wrapper(func: object) -> object:
+            tool_name = kwargs.get("name", getattr(func, "__name__", "unknown"))
+            assert isinstance(tool_name, str)
+            mcp._tools[tool_name] = func
+            return func
+
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            name = getattr(args[0], "__name__", "unknown")
+            assert isinstance(name, str)
+            mcp._tools[name] = args[0]
+            return args[0]
+        return wrapper
+
+    mcp.tool = tool_decorator
+
+    def get_tool(name: str) -> object:
+        return mcp._tools.get(name)
+
+    mcp.get_tool = get_tool
+    return mcp

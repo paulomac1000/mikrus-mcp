@@ -5,40 +5,42 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mikrus_mcp.server import (
-    _error_response,
-    _get_client,
-    _success_response,
-    analyze_disk_tool,
-    assign_domain_tool,
-    boost_server_tool,
-    check_port_tool,
-    execute_command_tool,
+from mikrus_mcp.server import _get_client, mcp
+from mikrus_mcp.tools.container_journal import (
     find_system_errors_tool,
-    get_cloud_tool,
-    get_db_info_tool,
     get_docker_logs_tool,
     get_docker_stats_tool,
     get_journal_logs_tool,
+    list_docker_containers_tool,
+    search_journal_logs_tool,
+)
+from mikrus_mcp.tools.discovery import list_configured_servers_tool
+from mikrus_mcp.tools.mikrus_api import (
+    assign_domain_tool,
+    boost_server_tool,
+    get_cloud_tool,
+    get_db_info_tool,
     get_log_by_id_tool,
     get_logs_tool,
-    get_memory_info_tool,
-    get_network_info_tool,
     get_ports_tool,
-    get_process_tree_tool,
     get_server_info_tool,
     get_server_stats_tool,
-    list_configured_servers_tool,
-    list_directory_tool,
-    list_docker_containers_tool,
     list_servers_tool,
+    restart_server_tool,
+)
+from mikrus_mcp.tools.response import _error_response, _success_response
+from mikrus_mcp.tools.system import (
+    analyze_disk_tool,
+    check_port_tool,
+    execute_command_tool,
+    get_memory_info_tool,
+    get_network_info_tool,
+    get_process_tree_tool,
+    list_directory_tool,
     manage_process_tool,
     manage_service_tool,
-    mcp,
     read_file_tool,
-    restart_server_tool,
     search_in_files_tool,
-    search_journal_logs_tool,
     tail_file_tool,
     update_system_tool,
     write_file_tool,
@@ -147,7 +149,7 @@ async def test_mikrus_tool_on_ssh_server_returns_error(mcp_context: MagicMock) -
 
     data = json.loads(result)
     assert data["success"] is False
-    assert "mikrus" in data["error"].lower()
+    assert "mikrus" in str(data["error"]).lower()
 
 
 # === Mikrus-only — client error handling ===
@@ -162,7 +164,7 @@ async def test_mikrus_tool_client_error(mcp_context: MagicMock, mock_mikrus: Mag
 
     data = json.loads(result)
     assert data["success"] is False
-    assert "connection failed" in data["error"]
+    assert "connection failed" in str(data["error"])
 
 
 MIKRUS_ERROR_TOOLS = [
@@ -196,7 +198,7 @@ async def test_mikrus_tools_error(
 
     data = json.loads(result)
     assert data["success"] is False
-    assert "boom" in data["error"]
+    assert "boom" in str(data["error"])
 
 
 SYSTEM_ERROR_TOOLS = [
@@ -239,7 +241,7 @@ async def test_system_tools_error(
 
     data = json.loads(result)
     assert data["success"] is False
-    assert "boom" in data["error"]
+    assert "boom" in str(data["error"])
 
 
 # === SSH-compatible tools — success on mikrus server ===
@@ -526,7 +528,7 @@ async def test_execute_command_tool_error(mcp_context: MagicMock, mock_mikrus: M
 
     data = json.loads(result)
     assert data["success"] is False
-    assert "timeout" in data["error"]
+    assert "timeout" in str(data["error"])
 
 
 # === list_configured_servers tests ===
@@ -576,4 +578,6 @@ async def test_list_configured_servers_tool_error() -> None:
         result = json.loads(await list_configured_servers_tool())
 
     assert result["success"] is False
-    assert "dead" in result["error"]
+    assert result["error"]["code"] == "INTERNAL_ERROR"
+    assert result["error"]["retryable"] is True
+    assert "dead" in result["error"]["message"]

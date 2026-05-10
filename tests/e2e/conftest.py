@@ -3,8 +3,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
 
 def _load_env() -> None:
     env_paths = [Path(".env")]
@@ -23,8 +21,3 @@ def _load_env() -> None:
 _load_env()
 
 MIKRUS_API_KEY = os.getenv("MIKRUS_API_KEY", "")
-
-pytestmark = pytest.mark.skipif(
-    not MIKRUS_API_KEY or MIKRUS_API_KEY == "your_api_key_here",
-    reason="MIKRUS_API_KEY required for e2e tests",
-)

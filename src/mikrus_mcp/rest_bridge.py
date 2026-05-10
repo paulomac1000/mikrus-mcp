@@ -65,13 +65,34 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
         return JSONResponse({"success": True, "data": tools})
 
     async def health_handler(request: Any) -> JSONResponse:  # noqa: ARG001
-        return JSONResponse({"status": "ok"})
+        from mikrus_mcp.tools.constants import TOOL_MANIFESTS, TOOLS_VERSION
+
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "tool_count": len(TOOL_MANIFESTS),
+                "tools_version": TOOLS_VERSION,
+            }
+        )
+
+    async def manifest_handler(request: Any) -> JSONResponse:  # noqa: ARG001
+        from mikrus_mcp.tools.constants import TOOL_MANIFESTS
+
+        tool_name = request.path_params["name"]
+        manifest = TOOL_MANIFESTS.get(tool_name)
+        if manifest is None:
+            return JSONResponse(
+                {"success": False, "error": f"No manifest for tool: {tool_name}"},
+                status_code=404,
+            )
+        return JSONResponse({"success": True, "data": manifest})
 
     app = Starlette(
         routes=[
-            Route("/health", health_handler, methods=["GET"]),
-            Route("/tools", list_tools_handler, methods=["GET"]),
-            Route("/tools/{name}", call_tool, methods=["POST"]),
+            Route("/api/health", health_handler, methods=["GET"]),
+            Route("/api/tools", list_tools_handler, methods=["GET"]),
+            Route("/api/tools/{name}", call_tool, methods=["POST"]),
+            Route("/api/tools/{name}/manifest", manifest_handler, methods=["GET"]),
         ]
     )
     return app

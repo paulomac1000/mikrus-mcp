@@ -222,7 +222,7 @@ async def test_list_configured_servers_tool() -> None:
         "default": "alpha",
     }
     with patch.object(mcp, "get_context", return_value=mock_ctx):
-        from mikrus_mcp.server import list_configured_servers_tool
+        from mikrus_mcp.tools.discovery import list_configured_servers_tool
 
         result = await list_configured_servers_tool()
 

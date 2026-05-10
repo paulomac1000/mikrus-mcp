@@ -64,6 +64,8 @@ select = ["E", "F", "I", "W", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501"]
+"src/mikrus_mcp/server.py" = ["E501"]
+"src/mikrus_mcp/tools/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -74,3 +76,9 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (fast, mocked, no I/O)",
+    "integration: Integration tests (slow, requires real backend)",
+    "smoke: Smoke tests (quick health check, requires local MCP server)",
+    "e2e: End-to-end tests (full pipeline, requires real backend + local MCP server)",
+]

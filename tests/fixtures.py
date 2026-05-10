@@ -27,10 +27,7 @@ MOCK_CLOUD_DATA = {
     "services": [{"name": "storage", "size": "10GB"}],
 }
 
-MOCK_PORTS = {
-    "tcp": ["22", "80", "443"],
-    "udp": ["53"],
-}
+MOCK_PORTS = [20359, 30359, 40176, 40177, 40279, 40281, 40282]
 
 MOCK_DB_INFO = {
     "host": "db.mikr.us",

@@ -1,87 +1,69 @@
-"""Smoke tests — critical tools return success with mocked API."""
+"""Smoke tests — critical tools via REST bridge.
 
-import json
+[RULE: TEST-HIERARCHY-3] Makes direct REST API calls to localhost.
+Skips when MCP server with REST bridge is not running.
+"""
 
+import os
+import socket
+
+import httpx
 import pytest
-import respx
 
-from mikrus_mcp.client import MikrusClient
-from mikrus_mcp.server import _call_tool_logic as call_tool
+REST_PORT = int(os.getenv("MCP_REST_PORT", "8301"))
+REST_BASE = f"http://127.0.0.1:{REST_PORT}"
 
 
-@pytest.mark.asyncio
-async def test_get_server_info_success() -> None:
-    """Verify get_server_info returns success with mocked API."""
-    client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
-    with respx.mock:
-        respx.post("https://api.mikr.us/info").respond(
-            json={"server_id": "test-srv", "param_ram": "1024", "param_disk": "15"}
-        )
-        await client.open()
-        result = await call_tool("get_server_info", {}, client=client)
-        await client.close()
+def _server_running() -> bool:
+    """Dynamic socket check — skips when server is not running."""
+    try:
+        s = socket.create_connection(("127.0.0.1", REST_PORT), timeout=1.0)
+        s.close()
+        return True
+    except (TimeoutError, ConnectionRefusedError, OSError):
+        return False
 
-    data = json.loads(result[0].text)
+
+pytestmark = pytest.mark.skipif(
+    not _server_running(), reason="MCP server not running on port " + str(REST_PORT)
+)
+
+
+@pytest.fixture(scope="module")
+def client() -> httpx.Client:
+    return httpx.Client(base_url=REST_BASE, timeout=10.0)
+
+
+def test_health_endpoint(client: httpx.Client) -> None:
+    """Verify /health returns healthy status with tool count."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "healthy"
+    assert data["tool_count"] == 32
+
+
+def test_tools_list(client: httpx.Client) -> None:
+    """Verify /tools returns tool names."""
+    r = client.get("/tools")
+    assert r.status_code == 200
+    data = r.json()
     assert data["success"] is True
-    assert "data" in data
-    assert "server_id" in data["data"]
+    assert len(data["data"]) > 0
 
 
-@pytest.mark.asyncio
-async def test_list_servers_success() -> None:
-    """Verify list_servers returns success with mocked API."""
-    client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
-    with respx.mock:
-        respx.post("https://api.mikr.us/serwery").respond(json=[{"server_id": "srv1"}])
-        await client.open()
-        result = await call_tool("list_servers", {}, client=client)
-        await client.close()
-
-    data = json.loads(result[0].text)
-    assert data["success"] is True
-    assert isinstance(data["data"], list)
+def test_get_server_info(client: httpx.Client) -> None:
+    """Verify get_server_info returns structured response via REST."""
+    r = client.post("/tools/get_server_info", json={"params": {}})
+    assert r.status_code == 200
+    data = r.json()
+    assert "success" in data
+    assert isinstance(data["success"], bool)
 
 
-@pytest.mark.asyncio
-async def test_execute_command_success() -> None:
-    """Verify execute_command returns success with mocked API."""
-    client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
-    with respx.mock:
-        respx.post("https://api.mikr.us/exec").respond(json={"output": "hello", "exit_code": 0})
-        await client.open()
-        result = await call_tool("execute_command", {"cmd": "echo hello"}, client=client)
-        await client.close()
-
-    data = json.loads(result[0].text)
-    assert data["success"] is True
-    assert "output" in data["data"]
-
-
-@pytest.mark.asyncio
-async def test_get_logs_success() -> None:
-    """Verify get_logs returns success with mocked API."""
-    client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
-    with respx.mock:
-        respx.post("https://api.mikr.us/logs").respond(json=[{"id": "1", "task": "test"}])
-        await client.open()
-        result = await call_tool("get_logs", {}, client=client)
-        await client.close()
-
-    data = json.loads(result[0].text)
-    assert data["success"] is True
-    assert isinstance(data["data"], list)
-
-
-@pytest.mark.asyncio
-async def test_api_error_returns_failure() -> None:
-    """Verify API errors return success=False."""
-    client = MikrusClient("https://api.mikr.us", "test-key", "test-srv")
-    with respx.mock:
-        respx.post("https://api.mikr.us/info").respond(status_code=500, text="Boom")
-        await client.open()
-        result = await call_tool("get_server_info", {}, client=client)
-        await client.close()
-
-    data = json.loads(result[0].text)
-    assert data["success"] is False
-    assert "error" in data
+def test_execute_command(client: httpx.Client) -> None:
+    """Verify execute_command returns structured response via REST."""
+    r = client.post("/tools/execute_command", json={"params": {"cmd": "echo hello"}})
+    assert r.status_code == 200
+    data = r.json()
+    assert "success" in data

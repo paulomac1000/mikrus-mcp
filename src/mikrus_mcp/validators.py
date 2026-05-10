@@ -7,6 +7,20 @@ from typing import Final
 
 logger = logging.getLogger(__name__)
 
+from mikrus_mcp.tools.constants import (  # noqa: E402
+    MAX_GREP_HOURS,
+    MAX_TAIL_LINES,
+    MAX_WRITE_SIZE,
+    SERVICE_ACTIONS,
+)
+
+
+class ValidationError(ValueError):
+    """Raised when input validation fails."""
+
+    pass
+
+
 PATH_PATTERN: Final = re.compile(r"^[^\x00-\x1f\x7f]+$")
 SERVICE_NAME_PATTERN: Final = re.compile(r"^[a-zA-Z0-9_\-@.]+$")
 CONTAINER_NAME_PATTERN: Final = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
@@ -59,23 +73,6 @@ DANGEROUS_PATTERNS: Final = [
     re.compile(r">\s*/dev/sd"),
     re.compile(r"chmod\s+777\s+/"),
 ]
-
-SERVICE_ACTIONS: Final = frozenset(
-    {"status", "start", "stop", "restart", "enable", "disable", "is-active", "is-enabled"}
-)
-PROCESS_ACTIONS: Final = frozenset({"list", "kill"})
-
-MAX_TAIL_LINES: Final = 500
-MAX_JOURNAL_LINES: Final = 500
-MAX_SEARCH_RESULTS: Final = 100
-MAX_GREP_HOURS: Final = 24
-MAX_WRITE_SIZE: Final = 100_000
-
-
-class ValidationError(ValueError):
-    """Raised when input validation fails."""
-
-    pass
 
 
 def validate_path(path: str, *, for_write: bool = False) -> str:

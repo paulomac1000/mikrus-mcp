@@ -1,86 +1,121 @@
-"""Integration tests — real mikr.us API calls."""
+"""Integration tests — real MCP instance with real mikr.us API calls via MCPWrapper."""
 
-import os
+import time
 
-import httpx
 import pytest
 
-MIKRUS_API_KEY = os.getenv("MIKRUS_API_KEY", "")
-MIKRUS_SERVER_NAME = os.getenv("MIKRUS_SERVER_NAME", "")
-MIKRUS_API_URL = "https://api.mikr.us"
+from mikrus_mcp.client import MikrusClient
+from mikrus_mcp.server import mcp
 
-skip_if_no_key = pytest.mark.skipif(
-    not MIKRUS_API_KEY or MIKRUS_API_KEY == "your_api_key_here",
-    reason="Valid MIKRUS_API_KEY required for integration tests",
-)
+from .conftest import MIKRUS_API_KEY, MIKRUS_SERVER_NAME, skip_if_no_key
+from .mcp_wrapper import MCPWrapper
 
 
-def _assert_ok(response: httpx.Response) -> bool:
-    """Return True if the response is 200, False if 429 (rate limited)."""
-    assert response.status_code in (200, 429)
-    return response.status_code == 200
-
-
-@skip_if_no_key
-def test_real_get_server_info() -> None:
-    """Verify real /info endpoint returns server data."""
-    response = httpx.post(
-        f"{MIKRUS_API_URL}/info",
-        data={"key": MIKRUS_API_KEY, "srv": MIKRUS_SERVER_NAME},
-        timeout=15.0,
-    )
-    if _assert_ok(response):
-        data = response.json()
-        assert "server_id" in data
+def _build_and_open(client: MikrusClient) -> MCPWrapper:
+    """Create an MCPWrapper with a pre-opened real mikrus client."""
+    lifespan_data = {
+        "clients": {"default": client},
+        "default": "default",
+        "failed": {},
+    }
+    return MCPWrapper(mcp, lifespan_data)
 
 
 @skip_if_no_key
-def test_real_get_logs_returns_list() -> None:
-    """Verify real /logs endpoint returns a list."""
-    response = httpx.post(
-        f"{MIKRUS_API_URL}/logs",
-        data={"key": MIKRUS_API_KEY, "srv": MIKRUS_SERVER_NAME},
-        timeout=15.0,
+@pytest.mark.asyncio
+async def test_real_get_server_info() -> None:
+    """Verify get_server_info reads real /info endpoint via MCP tool."""
+    client = MikrusClient(
+        base_url="https://api.mikr.us",
+        api_key=MIKRUS_API_KEY,
+        server_name=MIKRUS_SERVER_NAME,
     )
-    if _assert_ok(response):
-        data = response.json()
-        assert isinstance(data, list)
+    await client.open()
+    try:
+        time.sleep(2.0)
+        wrapper = _build_and_open(client)
+        result = await wrapper.call_tool("get_server_info")
+        assert result["success"] is True, f"Expected success, got: {result}"
+        assert "server_id" in result["data"]
+    finally:
+        await client.close()
 
 
 @skip_if_no_key
-def test_real_get_ports_returns_dict() -> None:
-    """Verify real /porty endpoint returns port data."""
-    response = httpx.post(
-        f"{MIKRUS_API_URL}/porty",
-        data={"key": MIKRUS_API_KEY, "srv": MIKRUS_SERVER_NAME},
-        timeout=15.0,
+@pytest.mark.asyncio
+async def test_real_list_servers() -> None:
+    """Verify list_servers reads real /serwery endpoint via MCP tool."""
+    client = MikrusClient(
+        base_url="https://api.mikr.us",
+        api_key=MIKRUS_API_KEY,
+        server_name=MIKRUS_SERVER_NAME,
     )
-    if _assert_ok(response):
-        data = response.json()
-        assert isinstance(data, (dict, list))
+    await client.open()
+    try:
+        time.sleep(2.0)
+        wrapper = _build_and_open(client)
+        result = await wrapper.call_tool("list_servers")
+        assert result["success"] is True, f"Expected success, got: {result}"
+        assert isinstance(result["data"], list)
+    finally:
+        await client.close()
 
 
 @skip_if_no_key
-def test_real_execute_command_echo() -> None:
-    """Verify real /exec endpoint runs commands."""
-    response = httpx.post(
-        f"{MIKRUS_API_URL}/exec",
-        data={"key": MIKRUS_API_KEY, "srv": MIKRUS_SERVER_NAME, "cmd": "echo hello"},
-        timeout=20.0,
+@pytest.mark.asyncio
+async def test_real_get_logs() -> None:
+    """Verify get_logs reads real /logs endpoint via MCP tool."""
+    client = MikrusClient(
+        base_url="https://api.mikr.us",
+        api_key=MIKRUS_API_KEY,
+        server_name=MIKRUS_SERVER_NAME,
     )
-    if _assert_ok(response):
-        data = response.json()
-        assert "output" in data
+    await client.open()
+    try:
+        time.sleep(2.0)
+        wrapper = _build_and_open(client)
+        result = await wrapper.call_tool("get_logs")
+        assert result["success"] is True, f"Expected success, got: {result}"
+        assert isinstance(result["data"], list)
+    finally:
+        await client.close()
 
 
 @skip_if_no_key
-def test_real_get_server_stats() -> None:
-    """Verify real /stats endpoint returns usage data."""
-    response = httpx.post(
-        f"{MIKRUS_API_URL}/stats",
-        data={"key": MIKRUS_API_KEY, "srv": MIKRUS_SERVER_NAME},
-        timeout=15.0,
+@pytest.mark.asyncio
+async def test_real_get_ports() -> None:
+    """Verify get_ports reads real /porty endpoint via MCP tool."""
+    client = MikrusClient(
+        base_url="https://api.mikr.us",
+        api_key=MIKRUS_API_KEY,
+        server_name=MIKRUS_SERVER_NAME,
     )
-    if _assert_ok(response):
-        data = response.json()
-        assert isinstance(data, dict)
+    await client.open()
+    try:
+        time.sleep(2.0)
+        wrapper = _build_and_open(client)
+        result = await wrapper.call_tool("get_ports")
+        assert result["success"] is True, f"Expected success, got: {result}"
+        assert isinstance(result["data"], (dict, list))
+    finally:
+        await client.close()
+
+
+@skip_if_no_key
+@pytest.mark.asyncio
+async def test_real_execute_command() -> None:
+    """Verify execute_command runs a real command via /exec through MCP tool."""
+    client = MikrusClient(
+        base_url="https://api.mikr.us",
+        api_key=MIKRUS_API_KEY,
+        server_name=MIKRUS_SERVER_NAME,
+    )
+    await client.open()
+    try:
+        time.sleep(2.0)
+        wrapper = _build_and_open(client)
+        result = await wrapper.call_tool("execute_command", cmd="echo hello")
+        assert result["success"] is True, f"Expected success, got: {result}"
+        assert "output" in result["data"]
+    finally:
+        await client.close()

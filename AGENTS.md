@@ -156,6 +156,15 @@ tests/
 8. **Parameterized arg unpacking:** Use `*args` not `**kwargs` for positional parameterized test parameters. Define tuples as `(tool_fn, method_name, ("arg1", "arg2"))`.
 9. **Coverage budget:** Unit tests provide 80%+ coverage. Integration adds 5–15%. Smoke and E2E validate format, not coverage metrics.
 10. **Placeholder credentials:** Skip conditions for smoke/integration tests MUST also check `== "your_api_key_here"` to prevent tests running with example configuration.
+11. **Module-level imports bind early:** Changing `constants.VAR` after import does not propagate to already-imported modules. Set env vars BEFORE importing the module. Use `os.environ` for runtime overrides.
+12. **JSON response not parsed:** Always `json.loads()` the tool response before processing. The response is always a JSON string, never a dict.
+13. **Response wrapper inconsistency:** Never call `json.dumps()` directly in a tool handler. Always use `_success_response()` or `_error_response()`.
+14. **Hardcoded defaults in multiple files:** All config defaults must be in `constants.py` (SSOT). Two modules with different defaults for the same variable cause silent inconsistencies.
+15. **Credentials in logs:** Never log `MIKRUS_API_KEY`, passwords, or tokens. If logging dynamic content from tool output, sanitize before writing.
+16. **No timeout on external calls:** Every HTTP, SSH, or subprocess call must have a timeout. Without one, a hung backend connection blocks the tool forever.
+17. **Public SSE without warning:** Binding SSE to `0.0.0.0` requires `MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1`. Without auth, this exposes full server control to the network.
+18. **Framework `call_tool` API mismatch:** `FastMCP.call_tool` is async with `(name, args)`. `Server.call_tool` is sync with `(validate_input=bool)`. Never mix them.
+19. **Coverage gap from wrong suite:** Smoke and E2E tests produce 0% coverage by coverage.py. Chasing coverage from these suites is wasted effort. Coverage comes from unit (80%+) and integration (+5–15%) tests.
 
 ## Environment Variables
 

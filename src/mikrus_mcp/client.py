@@ -5,15 +5,21 @@ import base64
 import json
 import logging
 import re
+import time as _time
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from mikrus_mcp.validators import (
+from mikrus_mcp.tools.constants import (
+    DEFAULT_HTTP_TIMEOUT,
+    EXEC_HTTP_TIMEOUT,
     MAX_JOURNAL_LINES,
     MAX_SEARCH_RESULTS,
     PROCESS_ACTIONS,
+    SSH_DEFAULT_TIMEOUT,
+)
+from mikrus_mcp.validators import (
     ValidationError,
     check_dangerous_command,
     validate_container_name,
@@ -30,12 +36,17 @@ from mikrus_mcp.validators import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 30.0
-EXEC_TIMEOUT = 65.0
-SSH_TIMEOUT = 30
-
 PATH_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]+$")
 CONTAINER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+
+# Rate limiting constants (mikr.us API: ~5 req/min global limit)
+MIN_REQUEST_INTERVAL = 0.25  # seconds between API calls
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5.0  # seconds
+
+# In-memory cache for endpoints with server-side 60s cache
+CACHED_ENDPOINTS = frozenset({"/info", "/stats", "/serwery", "/db", "/porty"})
+CACHE_TTL = 60  # seconds
 
 
 class MikrusClient:
@@ -46,6 +57,9 @@ class MikrusClient:
         self.api_key = api_key
         self.server_name = server_name
         self._client: httpx.AsyncClient | None = None
+        self._last_request_at: float = 0.0
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_lock: asyncio.Lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         return f"MikrusClient(server={self.server_name}, url={self.base_url})"
@@ -54,11 +68,29 @@ class MikrusClient:
         self,
         endpoint: str,
         extra_data: dict[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
     ) -> Any:
-        """Send a POST request to the mikr.us API."""
+        """Send a POST request to the mikr.us API with rate limiting and caching."""
         if self._client is None:
             raise RuntimeError("Client not opened. Use async context manager.")
+
+        # Check in-memory cache for cached endpoints
+        if endpoint in CACHED_ENDPOINTS:
+            async with self._cache_lock:
+                if endpoint in self._cache:
+                    cached_at, cached_data = self._cache[endpoint]
+                    if _time.monotonic() - cached_at < CACHE_TTL:
+                        logger.debug(
+                            "Cache hit for %s (age: %.1fs)", endpoint, _time.monotonic() - cached_at
+                        )
+                        return cached_data
+
+        # Enforce minimum inter-request delay
+        now = _time.monotonic()
+        elapsed = now - self._last_request_at
+        if elapsed < MIN_REQUEST_INTERVAL:
+            await asyncio.sleep(MIN_REQUEST_INTERVAL - elapsed)
+        self._last_request_at = _time.monotonic()
 
         url = f"{self.base_url}{endpoint}"
         data = {
@@ -67,36 +99,66 @@ class MikrusClient:
             **(extra_data or {}),
         }
 
-        try:
-            response = await self._client.post(
-                url,
-                data=data,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            logger.error("Request to %s timed out after %ss", url, timeout)
-            raise RuntimeError(f"Request timeout after {timeout}s") from exc
-        except httpx.HTTPStatusError as exc:
-            text = exc.response.text or exc.response.reason_phrase
-            logger.error("HTTP error %s: %s", exc.response.status_code, text)
-            raise RuntimeError(f"HTTP {exc.response.status_code}: {text}") from exc
-        except httpx.HTTPError as exc:
-            logger.error("HTTP error: %s", exc)
-            raise RuntimeError(f"HTTP error: {exc}") from exc
-
-        content_type = response.headers.get("content-type", "")
-        if "application/json" in content_type:
+        for attempt in range(MAX_RETRIES + 1):
             try:
-                return response.json()
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Invalid JSON despite content-type header: %s",
-                    response.text[:200],
+                response = await self._client.post(
+                    url,
+                    data=data,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=timeout,
                 )
-                return {"raw": response.text, "json_error": True}
-        return {"raw": response.text}
+
+                if response.status_code == 429 and attempt < MAX_RETRIES:
+                    delay = RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        "Rate limited (429) on %s, retrying in %.1fs (attempt %d/%d)",
+                        url,
+                        delay,
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                if response.status_code != 200:
+                    text = response.text or response.reason_phrase
+                    logger.error("HTTP error %s: %s", response.status_code, text)
+                    raise RuntimeError(f"HTTP {response.status_code}: {text}")
+
+            except httpx.TimeoutException as exc:
+                logger.error("Request to %s timed out after %ss", url, timeout)
+                raise RuntimeError(f"Request timeout after {timeout}s") from exc
+            except httpx.HTTPError as exc:
+                logger.error("HTTP error: %s", exc)
+                raise RuntimeError(f"HTTP error: {exc}") from exc
+
+            # Success — parse response
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Invalid JSON despite content-type header: %s",
+                        response.text[:200],
+                    )
+                    result = {"raw": response.text, "json_error": True}
+            else:
+                result = {"raw": response.text}
+
+            # Store in cache for cached endpoints
+            if endpoint in CACHED_ENDPOINTS:
+                async with self._cache_lock:
+                    self._cache[endpoint] = (_time.monotonic(), result)
+
+            return result
+
+        # All retries exhausted — 429 persists
+        raise RuntimeError(
+            f"mikr.us API rate limit exceeded after {MAX_RETRIES} retries. "
+            f"The API allows ~5 requests per 60 seconds. "
+            f"Retry in {RETRY_BASE_DELAY}s or use cached endpoints."
+        )
 
     async def open(self) -> None:
         """Open the underlying HTTP client."""
@@ -144,7 +206,7 @@ class MikrusClient:
     async def execute_command(self, cmd: str) -> Any:
         """Execute a command on the server (60s API limit)."""
         check_dangerous_command(cmd)
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def list_servers(self) -> Any:
         """List all servers associated with the account (cache=60s)."""
@@ -171,7 +233,7 @@ class MikrusClient:
         """Read a text file from the server. Limited to 200 lines."""
         validated = validate_path(path)
         cmd = f"cat '{validated}' 2>&1 | head -200"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def write_file(self, path: str, content: str) -> Any:
         """Write content to a file on the server. Uses base64 for safe transfer."""
@@ -181,14 +243,14 @@ class MikrusClient:
         cmd = (
             f"echo '{encoded}' | base64 -d > '{validated}' && echo 'WRITE_OK' || echo 'WRITE_FAIL'"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def manage_service(self, name: str, action: str) -> Any:
         """Manage a systemd service via systemctl."""
         validate_service_name(name)
         validate_service_action(action)
         cmd = f"systemctl {action} '{name}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def analyze_disk(self, path: str = "/") -> Any:
         """Analyze disk usage. Shows df -h and top-20 directories by size."""
@@ -199,7 +261,7 @@ class MikrusClient:
             f"df -h '{validated}' 2>&1; echo '---TOP20---'; "
             f"du -sh '{validated}'/* 2>/dev/null | sort -rh | head -20"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def check_port(self, port: str) -> Any:
         """Check if a TCP port is listening."""
@@ -208,7 +270,7 @@ class MikrusClient:
             f"ss -tlnp 2>/dev/null | grep ':{port_num} ' && echo 'PORT_IN_USE' "
             f"|| echo 'PORT_NOT_LISTENING'"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def manage_process(self, target: str, action: str) -> Any:
         """List or kill processes. Target can be PID or process name."""
@@ -222,7 +284,7 @@ class MikrusClient:
             if not re.match(r"^[a-zA-Z0-9_\-]+$", target):
                 raise ValueError(f"Invalid process target: {target}")
             cmd = f"killall -15 '{target}' 2>&1 || kill '{target}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def update_system(self) -> Any:
         """Run apt update and apt upgrade on the server."""
@@ -232,20 +294,20 @@ class MikrusClient:
             "apt-get upgrade -y -o Dpkg::Options::='--force-confdef' "
             "-o Dpkg::Options::='--force-confold' 2>&1"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def list_directory(self, path: str) -> Any:
         """List directory contents (ls -la)."""
         validated = validate_path(path)
         cmd = f"ls -la -- '{validated}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def tail_file(self, path: str, lines: int = 50) -> Any:
         """Read last N lines from a text file."""
         validated = validate_path(path)
         lines = validate_lines_param(lines)
         cmd = f"tail -n {lines} -- '{validated}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def search_in_files(self, path: str, pattern: str) -> Any:
         """Search for a pattern in files under a path (grep -r)."""
@@ -255,27 +317,27 @@ class MikrusClient:
             f"grep -r -F -n --max-count={MAX_SEARCH_RESULTS} "
             f"'{pattern}' '{validated}' 2>/dev/null | head -n {MAX_SEARCH_RESULTS}"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_memory_info(self) -> Any:
         """Get memory usage information."""
         cmd = "free -h 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_network_info(self) -> Any:
         """Get network interfaces and listening ports."""
         cmd = "ip addr 2>&1 && echo '---PORTS---' && ss -tlnp 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_process_tree(self) -> Any:
         """Get process tree overview."""
         cmd = "ps auxf 2>&1 | head -100"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def list_docker_containers(self) -> Any:
         """List Docker containers."""
         cmd = "docker ps -a --format '{{json .}}' 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
         return self._parse_docker_jsonl(result)
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
@@ -283,12 +345,12 @@ class MikrusClient:
         validate_container_name(container)
         lines = validate_lines_param(lines)
         cmd = f"docker logs --tail {lines} '{container}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_docker_stats(self) -> Any:
         """Get Docker container resource usage stats."""
         cmd = "docker stats --no-stream --format '{{json .}}' 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
         return self._parse_docker_jsonl(result)
 
     @staticmethod
@@ -324,7 +386,7 @@ class MikrusClient:
         validate_service_name(unit)
         lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
         cmd = f"journalctl -u '{unit}' -n {lines} --no-pager 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
         hint = self._journal_access_hint(result.get("output", ""))
         if hint:
             result["output"] = f"{result['output']}\n\n{hint}"
@@ -337,7 +399,7 @@ class MikrusClient:
         cmd = (
             f"journalctl -p err --since '{hours} hours ago' --no-pager -n {MAX_JOURNAL_LINES} 2>&1"
         )
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
         hint = self._journal_access_hint(result.get("output", ""))
         if hint:
             result["output"] = f"{result['output']}\n\n{hint}"
@@ -349,7 +411,7 @@ class MikrusClient:
         validate_search_pattern(term)
         lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
         cmd = f"journalctl -q --no-pager -n 5000 2>&1 | grep -i '{term}' | tail -n {lines}"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_TIMEOUT)
+        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
         hint = self._journal_access_hint(result.get("output", ""))
         if hint:
             result["output"] = f"{result['output']}\n\n{hint}"
@@ -369,7 +431,7 @@ class SshClient:
         ssh_cert: str | None = None,
         password: str | None = None,
         sudo_password: str | None = None,
-        timeout: int = SSH_TIMEOUT,
+        timeout: int = SSH_DEFAULT_TIMEOUT,
         verify_host_key: bool = False,
         known_hosts_file: str | None = None,
     ) -> None:
@@ -537,7 +599,7 @@ class SshClient:
             f"df -h '{validated}' 2>&1; echo '---TOP20---'; "
             f"du -sh '{validated}'/* 2>/dev/null | sort -rh | head -20"
         )
-        return await self._run(cmd, timeout=EXEC_TIMEOUT)
+        return await self._run(cmd, timeout=EXEC_HTTP_TIMEOUT)
 
     async def check_port(self, port: str) -> Any:
         """Check if a TCP port is listening."""
