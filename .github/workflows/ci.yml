@@ -41,6 +41,10 @@ jobs:
           name: bandit-report
           path: bandit-report.json
 
+      - name: Validate documentation (AFDS)
+        run: |
+          python scripts/docs_validate.py --config afds_config.yaml --strict --baseline .afds-baseline.json ./
+
       - name: Test with pytest
         run: pytest tests/ -v
 

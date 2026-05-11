@@ -1,0 +1,15 @@
+# AFDS configuration for mikrus-mcp project
+# Overrides defaults from /var/apps/ai-skills/skills/afds-doc-writer/afds_config.yaml
+
+exempt_files:
+  - README.md
+  - CHANGELOG.md
+
+default_paths:
+  - ./
+
+root_files:
+  AGENTS.md:
+    type: ref
+    doc_id: ref.agent-guidelines
+    rigor_tier: L2

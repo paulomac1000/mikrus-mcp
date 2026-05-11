@@ -1,0 +1,37 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check src/ tests/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --check src/ tests/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy
+        entry: mypy src/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: bandit
+        name: bandit
+        entry: bandit -r src/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: afds-validate
+        name: AFDS documentation validation
+        entry: python3 scripts/docs_validate.py --config afds_config.yaml --strict --baseline .afds-baseline.json
+        language: system
+        types: [markdown]
+        pass_filenames: false

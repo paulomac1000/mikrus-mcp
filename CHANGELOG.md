@@ -2,6 +2,30 @@
 
 All notable changes to mikrus-mcp.
 
+## [Unreleased]
+
+### Fixed
+
+- FastMCP 1.27 lifespan per-connection issue — `_init_clients()` initializes clients globally before SSE/REST bridge startup, REST bridge no longer returns 503 on tool calls
+- MCPWrapper and REST bridge tuple result handling for FastMCP 1.27+
+- Docker healthcheck replaced NO-OP `sys.exit(0)` with dynamic check against `MCP_REST_PORT/health`
+- REST bridge routes added without `/api` prefix (`/health`, `/tools`, `/tools/{name}`) for smoke test compatibility
+
+### Added
+
+- AFDS documentation integration — YAML frontmatter in AGENTS.md, structured sections, pre-commit hook with `scripts/docs_validate.py`, CI validation step
+- Log sanitizer (`sanitizer.py`) — redacts API keys, passwords, IPs, MACs from log output
+- `isinstance` type checks in all `system.py` and `container_journal.py` internal functions
+- `tests/_env_loader.py` for shared environment loading across test suites
+- 13 unit tests for `rest_bridge.py` (0% → >80% coverage)
+- `.pre-commit-config.yaml` with ruff, mypy, bandit, AFDS validate hooks
+
+### Changed
+
+- `app_lifespan()` is now a thin wrapper — client lifecycle managed globally via `run_stdio()` / `_run_sse_with_rest()`
+- Coverage: 89% overall (was 73%), tools/ subdirectory: 93%
+- Response helpers location documented: `tools/response.py` (not `server.py`)
+
 ## [0.2.0] — 2026-05-08
 
 ### Breaking
@@ -10,7 +34,7 @@ All notable changes to mikrus-mcp.
 
 ### Added
 
-- Response wrapper helpers `_success_response()` and `_error_response()` in `server.py`
+- Response wrapper helpers `_success_response()` and `_error_response()` in `tools/response.py`
 - `Args` and `Returns` docstrings for all 32 tool handlers
 - Risk-level prefixes on all tool descriptions (`[DANGEROUS]`, `[WRITE]`, `[DESTRUCTIVE]`, `[SENSITIVE]`)
 - Optional REST bridge (`rest_bridge.py`) enabled by `MCP_REST_PORT` env var — exposes tools as HTTP endpoints for smoke testing
@@ -40,7 +64,7 @@ All notable changes to mikrus-mcp.
 
 ### Initial release
 
-- 32 MCP tools: 13 mikr.us API + 19 system management
+- 32 MCP tools: 1 discovery + 12 mikr.us API + 19 system management
 - Multi-server support (mikr.us API + SSH backends) via `MCP_SERVERS` JSON config
 - stdio + SSE transport with partial startup graceful degradation
 - Centralized input validation (`validators.py`)
