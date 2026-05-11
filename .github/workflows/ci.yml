@@ -62,6 +62,7 @@ jobs:
           context: .
           target: prod
           push: false
+          load: true
           tags: mikrus-mcp:test
 
       - name: Build Docker image (dev)
@@ -70,6 +71,7 @@ jobs:
           context: .
           target: dev
           push: false
+          load: true
           tags: mikrus-mcp:dev
 
       - name: Docker smoke test
