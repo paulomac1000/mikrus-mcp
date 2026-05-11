@@ -35,12 +35,11 @@ def _setup_logging() -> None:
     )
 
 
-@asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Manage application lifecycle — open one client per configured server.
+async def _init_clients() -> dict[str, Any]:
+    """Create and open clients for all configured servers.
 
-    Implements graceful degradation: if one server fails to connect,
-    the others are still made available.
+    Returns lifespan data dict: {clients, failed, default}.
+    Raises RuntimeError if no server could be connected.
     """
     config = load_config()
     clients: dict[str, MikrusClient | SshClient] = {}
@@ -90,25 +89,27 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     if effective_default not in clients:
         effective_default = next(iter(clients.keys()))
 
-    global _lifespan_context
-    lifespan_data = {
+    return {
         "clients": clients,
         "failed": failed,
         "default": effective_default,
     }
-    _lifespan_context = lifespan_data
-    mcp._lifespan_data = lifespan_data  # type: ignore[attr-defined]
 
-    yield lifespan_data
 
-    mcp._lifespan_data = None  # type: ignore[attr-defined]
-    _lifespan_context = None
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    """Yield global lifespan context.
 
-    for c in clients.values():
-        try:
-            await c.close()
-        except Exception as exc:
-            logger.error("Error closing client: %s", exc)
+    In FastMCP 1.27, lifespan is called per-SSE-connection.
+    Clients are initialized globally before the first connection
+    via _init_clients() called from main().
+    This function is a thin wrapper that yields the pre-initialized data.
+    """
+    global _lifespan_context
+    if _lifespan_context is None:
+        _lifespan_context = await _init_clients()
+        mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
+    yield _lifespan_context
 
 
 mcp = FastMCP("mikrus-mcp", lifespan=app_lifespan)
@@ -134,12 +135,26 @@ def _get_client(server: str | None = None) -> MikrusClient | SshClient:
 
 async def run_stdio() -> None:
     """Run the MCP server over stdio transport."""
-    async with stdio_server() as (read_stream, write_stream):
-        await mcp._mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp._mcp_server.create_initialization_options(),
-        )
+    global _lifespan_context
+
+    _lifespan_context = await _init_clients()
+    mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
+
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await mcp._mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp._mcp_server.create_initialization_options(),
+            )
+    finally:
+        for c in _lifespan_context["clients"].values():
+            try:
+                await c.close()
+            except Exception as exc:
+                logger.error("Error closing client: %s", exc)
+        _lifespan_context = None
+        mcp._lifespan_data = None  # type: ignore[attr-defined]
 
 
 def main() -> None:
@@ -174,6 +189,11 @@ def main() -> None:
         mcp.settings.port = port
 
         async def _run_sse_with_rest() -> None:
+            global _lifespan_context
+
+            _lifespan_context = await _init_clients()
+            mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
+
             if rest_port_str:
                 try:
                     rest_port = int(rest_port_str)
@@ -183,17 +203,28 @@ def main() -> None:
                     logger.info("REST bridge listening on 127.0.0.1:%d", rest_port)
                 except (ValueError, ImportError) as exc:
                     logger.warning("REST bridge not started: %s", exc)
+                    rest_task = None
             else:
                 rest_task = None
 
-            await mcp.run_sse_async()
+            try:
+                await mcp.run_sse_async()
+            finally:
+                if rest_task:
+                    rest_task.cancel()
+                    try:
+                        await rest_task
+                    except asyncio.CancelledError:
+                        pass
 
-            if rest_task:
-                rest_task.cancel()
-                try:
-                    await rest_task
-                except asyncio.CancelledError:
-                    pass
+                for c in _lifespan_context["clients"].values():
+                    try:
+                        await c.close()
+                    except Exception as exc:
+                        logger.error("Error closing client: %s", exc)
+
+                _lifespan_context = None
+                mcp._lifespan_data = None  # type: ignore[attr-defined]
 
         logger.info("Starting MCP server on %s:%s (SSE)", host, port)
         asyncio.run(_run_sse_with_rest())

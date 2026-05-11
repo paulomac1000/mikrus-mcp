@@ -63,6 +63,10 @@ class MCPWrapper:
         with patch.object(self._mcp, "get_context", return_value=mock_ctx):
             result = await self._mcp.call_tool(tool_name, kwargs)
 
+        # FastMCP 1.27+ with output_schema returns tuple (list[ContentBlock], dict)
+        if isinstance(result, tuple):
+            result = result[0]  # Unstructured content: list[ContentBlock]
+
         # FastMCP.call_tool returns a list of Content objects (or similar)
         # Extract text from the result
         if isinstance(result, dict):

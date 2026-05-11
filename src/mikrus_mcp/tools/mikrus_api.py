@@ -19,37 +19,37 @@ logger = logging.getLogger(__name__)
 
 async def _get_server_info(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_server_info()
 
 
 async def _list_servers(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.list_servers()
 
 
 async def _get_server_stats(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_server_stats()
 
 
 async def _restart_server(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.restart_server()
 
 
 async def _get_logs(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_logs()
 
 
 async def _get_log_by_id(client: MikrusClient, log_id: str) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     if not log_id:
         raise ValueError("log_id cannot be empty")
     return await client.get_log_by_id(log_id)
@@ -57,31 +57,31 @@ async def _get_log_by_id(client: MikrusClient, log_id: str) -> Any:
 
 async def _boost_server(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.boost_server()
 
 
 async def _get_db_info(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_db_info()
 
 
 async def _get_ports(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_ports()
 
 
 async def _get_cloud(client: MikrusClient) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     return await client.get_cloud()
 
 
 async def _assign_domain(client: MikrusClient, port: str, domain: str) -> Any:
     if not isinstance(client, MikrusClient):
-        raise TypeError("Expected MikrusClient, got %s", type(client).__name__)
+        raise TypeError(f"Expected MikrusClient, got {type(client).__name__}")
     if not port:
         raise ValueError("port cannot be empty")
     if not domain:

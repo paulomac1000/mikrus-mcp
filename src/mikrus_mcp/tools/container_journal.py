@@ -13,26 +13,38 @@ logger = logging.getLogger(__name__)
 
 
 async def _list_docker_containers(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.list_docker_containers()
 
 
 async def _get_docker_logs(client: MikrusClient | SshClient, container: str, lines: int) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_docker_logs(container, lines)
 
 
 async def _get_docker_stats(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_docker_stats()
 
 
 async def _get_journal_logs(client: MikrusClient | SshClient, unit: str, lines: int) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_journal_logs(unit, lines)
 
 
 async def _find_system_errors(client: MikrusClient | SshClient, hours: int) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.find_system_errors(hours)
 
 
 async def _search_journal_logs(client: MikrusClient | SshClient, term: str, lines: int) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.search_journal_logs(term, lines)
 
 

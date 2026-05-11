@@ -17,58 +17,86 @@ logger = logging.getLogger(__name__)
 
 
 async def _execute_command(client: MikrusClient | SshClient, cmd: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.execute_command(cmd)
 
 
 async def _read_file(client: MikrusClient | SshClient, path: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.read_file(path)
 
 
 async def _write_file(client: MikrusClient | SshClient, path: str, content: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.write_file(path, content)
 
 
 async def _manage_service(client: MikrusClient | SshClient, name: str, action: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.manage_service(name, action)
 
 
 async def _analyze_disk(client: MikrusClient | SshClient, path: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.analyze_disk(path)
 
 
 async def _check_port(client: MikrusClient | SshClient, port: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.check_port(port)
 
 
 async def _manage_process(client: MikrusClient | SshClient, target: str, action: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.manage_process(target, action)
 
 
 async def _update_system(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.update_system()
 
 
 async def _list_directory(client: MikrusClient | SshClient, path: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.list_directory(path)
 
 
 async def _tail_file(client: MikrusClient | SshClient, path: str, lines: int) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.tail_file(path, lines)
 
 
 async def _search_in_files(client: MikrusClient | SshClient, path: str, pattern: str) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.search_in_files(path, pattern)
 
 
 async def _get_memory_info(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_memory_info()
 
 
 async def _get_network_info(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_network_info()
 
 
 async def _get_process_tree(client: MikrusClient | SshClient) -> Any:
+    if not isinstance(client, (MikrusClient, SshClient)):
+        raise TypeError(f"Expected MikrusClient or SshClient, got {type(client).__name__}")
     return await client.get_process_tree()
 
 

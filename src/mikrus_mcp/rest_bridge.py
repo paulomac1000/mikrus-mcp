@@ -48,6 +48,10 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
                 status_code=500,
             )
 
+        # FastMCP 1.27+ with output_schema returns tuple (list[ContentBlock], dict)
+        if isinstance(result, tuple):
+            result = result[0]  # Unstructured content: list[ContentBlock]
+
         if isinstance(result, dict):
             return JSONResponse(result)
         if hasattr(result, "__iter__"):
@@ -89,6 +93,10 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
 
     app = Starlette(
         routes=[
+            Route("/health", health_handler, methods=["GET"]),
+            Route("/tools", list_tools_handler, methods=["GET"]),
+            Route("/tools/{name}", call_tool, methods=["POST"]),
+            Route("/tools/{name}/manifest", manifest_handler, methods=["GET"]),
             Route("/api/health", health_handler, methods=["GET"]),
             Route("/api/tools", list_tools_handler, methods=["GET"]),
             Route("/api/tools/{name}", call_tool, methods=["POST"]),

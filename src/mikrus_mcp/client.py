@@ -232,7 +232,11 @@ class MikrusClient:
     async def read_file(self, path: str) -> Any:
         """Read a text file from the server. Limited to 200 lines."""
         validated = validate_path(path)
-        cmd = f"cat '{validated}' 2>&1 | head -200"
+        cmd = (
+            f"(file -b --mime-encoding '{validated}' 2>&1 | "
+            f"grep -q binary && echo 'ERROR: Cannot read binary file' "
+            f"|| cat '{validated}' 2>&1 | head -200)"
+        )
         return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def write_file(self, path: str, content: str) -> Any:
@@ -572,7 +576,11 @@ class SshClient:
     async def read_file(self, path: str) -> Any:
         """Read a text file."""
         validated = validate_path(path)
-        return await self._run(f"cat '{validated}' 2>&1 | head -200")
+        return await self._run(
+            f"(file -b --mime-encoding '{validated}' 2>&1 | "
+            f"grep -q binary && echo 'ERROR: Cannot read binary file' "
+            f"|| cat '{validated}' 2>&1 | head -200)"
+        )
 
     async def write_file(self, path: str, content: str) -> Any:
         """Write content to a file."""

@@ -1,7 +1,6 @@
 """Integration test conftest — real credentials, tool registration, skip logic."""
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -10,23 +9,9 @@ from mikrus_mcp.tools.container_journal import register_container_journal_tools
 from mikrus_mcp.tools.discovery import register_discovery_tools
 from mikrus_mcp.tools.mikrus_api import register_mikrus_tools
 from mikrus_mcp.tools.system import register_system_tools
+from tests._env_loader import load_test_env
 
-
-def _load_env() -> None:
-    env_paths = [Path(".env")]
-    for env_path in env_paths:
-        if env_path.exists():
-            try:
-                for line in env_path.read_text().splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        key, _, value = line.partition("=")
-                        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-            except Exception:
-                pass
-
-
-_load_env()
+load_test_env()
 
 MIKRUS_API_KEY = os.getenv("MIKRUS_API_KEY", "")
 MIKRUS_SERVER_NAME = os.getenv("MIKRUS_SERVER_NAME", "")
