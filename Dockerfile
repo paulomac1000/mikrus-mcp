@@ -36,7 +36,7 @@ USER appuser
 STOPSIGNAL SIGINT
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+    CMD python -c "import os,urllib.request as r; p=os.environ.get('MCP_REST_PORT'); r.urlopen('http://127.0.0.1:'+p+'/health') if p else None"
 
 CMD ["mikrus-mcp"]
 

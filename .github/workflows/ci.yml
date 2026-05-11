@@ -41,6 +41,10 @@ jobs:
           name: bandit-report
           path: bandit-report.json
 
+      - name: Validate documentation (AFDS)
+        run: |
+          python scripts/docs_validate.py --config afds_config.yaml --strict --baseline .afds-baseline.json ./
+
       - name: Test with pytest
         run: pytest tests/ -v
 
@@ -58,6 +62,7 @@ jobs:
           context: .
           target: prod
           push: false
+          load: true
           tags: mikrus-mcp:test
 
       - name: Build Docker image (dev)
@@ -66,4 +71,19 @@ jobs:
           context: .
           target: dev
           push: false
+          load: true
           tags: mikrus-mcp:dev
+
+      - name: Docker smoke test
+        run: |
+          docker run -d --rm --network host \
+            -e MCP_REST_PORT=8301 \
+            -e MCP_PORT=8300 \
+            -e MIKRUS_API_KEY=test \
+            -e MIKRUS_SERVER_NAME=test \
+            --name test-srv mikrus-mcp:test
+          sleep 5
+          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:8301/api/health || exit 1
+          TOOLS=$(curl -s http://127.0.0.1:8301/api/tools | python3 -c "import sys,json; print(json.load(sys.stdin)['data'].__len__())")
+          [ "$TOOLS" -ge "10" ] || (echo "Expected >=10 tools, got $TOOLS" && exit 1)
+          docker stop test-srv

@@ -7,6 +7,8 @@
 
 MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](https://mikr.us) API **and** remote Linux servers over SSH. Built in Python, runs anywhere — locally, in Docker, or as a Claude Desktop integration.
 
+All tools follow the [MCP Server Standards](/var/apps/docs/mcp_standards.md) for response format, testing, and documentation.
+
 ## Contents
 
 - [Requirements](#requirements)
@@ -15,6 +17,7 @@ MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](h
   - [Run with Docker](#2-run-with-docker)
   - [Run locally](#3-run-locally-python-311)
 - [Available Tools](#available-tools)
+- [Tool Response Format](#tool-response-format)
 - [Multi-server Configuration](#multi-server-configuration)
 - [Security Considerations](#security-considerations)
 - [Claude Desktop Configuration](#claude-desktop-configuration)
@@ -186,15 +189,33 @@ mikrus-mcp
 All system tools accept an optional `server` parameter to target a specific configured
 server (e.g. `server=myssh`). If omitted, the default server is used.
 
-### Example usage
+## Tool Response Format
 
-```text
-User: What's the status of my server?
-Agent: [calls get_server_info] →  server srv123, 2GB RAM, 20GB disk, expires 2026-06-01
+All 32 tools return a consistent JSON structure. Every response includes a `_meta` envelope with a unique `request_id`:
 
-User: Restart nginx on myssh
-Agent: [calls manage_service name=nginx action=restart server=myssh] → nginx restarted
+```json
+{"success": true, "data": {"server_id": "emil359", "param_ram": "1024"}, "_meta": {"request_id": "a1b2c3d4-...", "duration_ms": 42, "cached": false, "retry_safe": false}}
 ```
+
+On failure:
+
+```json
+{"success": false, "error": "Server 'unknown' is not a mikrus server", "_meta": {"request_id": "e5f6g7h8-..."}}
+```
+
+The `success` field is always a boolean. Successful responses contain a `data` key with the tool-specific result. Error responses contain an `error` key with a human-readable message. No tool raises unhandled exceptions — errors are always returned as structured JSON.
+
+Tools are annotated with risk-level prefixes in their descriptions:
+
+| Prefix | Meaning | Examples |
+|--------|---------|----------|
+| `[DANGEROUS]` | Executes arbitrary shell commands | `execute_command` |
+| `[WRITE]` | Modifies server state or files | `write_file`, `manage_service`, `update_system` |
+| `[DESTRUCTIVE]` | Kills processes | `manage_process` (kill action) |
+| `[SENSITIVE]` | Returns credentials or tokens | `get_db_info`, `get_journal_logs` |
+| (none) | Read-only, no side effects | `get_server_info`, `list_servers` |
+
+AI agents use these prefixes to decide whether to request user confirmation before invoking a tool.
 
 ## Multi-server Configuration
 
@@ -252,7 +273,7 @@ This MCP server grants full system access to configured servers. Treat it as a *
 - SSH private keys mounted into Docker must have permissions `600` or `400`.
 
 ### Input Validation
-- All file paths are validated against traversal (`..`) and forbidden paths (`/etc/shadow`, etc.).
+- All file paths are validated against traversal (`..`) and forbidden paths (e.g. `/etc/shadow`).
 - Dangerous commands (`rm -rf /`, `mkfs`, `dd if=`) are blocked before execution.
 - Service names, container names, ports, and domains are validated with strict regex patterns.
 - File writes outside `/home`, `/var/www`, `/opt`, `/tmp`, `/srv`, `/var/log` trigger a warning.
@@ -352,10 +373,33 @@ pip install -e ".[dev]"
 ### Run tests
 
 ```bash
-pytest tests/ -v
+# Unit tests (fast, no credentials needed) — 286 tests, 86% coverage
+pytest tests/unit/ -q --cov=mikrus_mcp --cov-report=term
+
+# Smoke tests — API connectivity and response format
+pytest tests/smoke/ -q
+
+# Integration tests — real mikr.us API
+pytest tests/integration/ -q
+
+# E2E tests — full pipeline workflows
+pytest tests/e2e/ -q
 ```
 
-All HTTP tests use [respx](https://github.com/lundberg/respx) to mock the mikr.us API. SSH tests mock `asyncssh` so no real network calls are made.
+All tests use [respx](https://github.com/lundberg/respx) (HTTP mocking) or `unittest.mock` (SSH mocking). No real network calls are made in unit or e2e tests. Smoke and integration tests require a valid `MIKRUS_API_KEY` and skip gracefully otherwise.
+
+### REST Bridge (optional testing utility)
+
+Set `MCP_REST_PORT` to expose an HTTP bridge that turns tool calls into REST endpoints:
+
+```bash
+MCP_PORT=8300 MCP_REST_PORT=8301 mikrus-mcp
+# GET  http://127.0.0.1:8301/health
+# GET  http://127.0.0.1:8301/tools
+# POST http://127.0.0.1:8301/tools/get_server_info  {"params": {}}
+```
+
+This is a development utility for smoke testing and debugging. It is separate from the MCP SSE transport and runs on its own port. All endpoints have `/api/` prefixed mirrors (`GET /api/health`, `GET /api/tools`, `POST /api/tools/{name}`). Tool manifest endpoints are also available at `GET /tools/{name}/manifest` and `GET /api/tools/{name}/manifest`.
 
 ### Lint & type check
 
@@ -376,19 +420,54 @@ docker compose run --rm test
 
 ```
 src/mikrus_mcp/
-├── __init__.py      # Package version
-├── __main__.py      # python -m mikrus_mcp entry point
-├── config.py        # Environment variable loader (dotenv) — single-server, multi-server, SSH-only
-├── validators.py    # Centralized input validation (path, port, service, container, domain)
-├── client.py        # Async HTTP client (httpx) + SSH client (asyncssh)
-└── server.py        # MCP server with 32 tools, stdio + SSE transport, partial startup
+├── __init__.py          # Package version
+├── __main__.py          # python -m mikrus_mcp entry point
+├── config.py            # Environment variable loader (dotenv) — single-server, multi-server, SSH-only
+├── constants.py         # Backward-compat re-export for tools/constants.py
+├── validators.py        # Centralized input validation (path, port, service, container, domain)
+├── sanitizer.py         # Log sanitization (redacts API keys, IPs, passwords, MACs)
+├── client.py            # Async HTTP client (httpx) + SSH client (asyncssh)
+├── server.py            # MCP server with 32 tools, stdio + SSE transport, partial startup
+├── rest_bridge.py       # Optional REST bridge for smoke/e2e testing (on MCP_REST_PORT)
+└── tools/
+    ├── __init__.py
+    ├── constants.py     # SSOT defaults, tool manifests, validation limits
+    ├── response.py      # _success_response / _error_response helpers
+    ├── mikrus_api.py    # 12 mikr.us API tools + internal functions + registration
+    ├── system.py        # 14 system management tools (exec, file, service, disk, etc.)
+    ├── container_journal.py  # 6 Docker + journalctl tools + registration
+    └── discovery.py     # Server listing tool + registration
 
 tests/
-├── test_client.py       # HTTP client tests (respx mock)
-├── test_server.py       # Tool handler tests (respx mock)
-├── test_config.py       # Configuration loader tests
-├── test_ssh_client.py   # SSH client tests (asyncssh mock)
-└── test_multi_server.py # Multi-server routing & partial startup tests
+├── conftest.py              # Root: environment loading
+├── fixtures.py              # Mock data constants
+├── _env_loader.py           # Shared .env loader for conftest files
+│
+├── unit/                    # Unit tests — zero I/O, fully mocked
+│   ├── conftest.py
+│   ├── test_client.py
+│   ├── test_config.py
+│   ├── test_server_tools.py
+│   ├── test_ssh_client.py
+│   ├── test_multi_server.py
+│   ├── test_rest_bridge.py
+│   ├── test_sanitizer.py
+│   └── test_tool_registration.py
+│
+├── smoke/                   # Smoke tests — direct API calls (skipif no creds)
+│   ├── conftest.py
+│   ├── test_connectivity.py
+│   ├── test_critical_tools.py
+│   └── test_response_format.py
+│
+├── integration/             # Integration tests — real API calls
+│   ├── conftest.py
+│   ├── mcp_wrapper.py
+│   └── test_real_tools.py
+│
+└── e2e/                     # E2E tests — full pipeline workflows
+    ├── conftest.py
+    └── test_server_api.py
 ```
 
 ## Troubleshooting
@@ -404,7 +483,8 @@ tests/
 
 ## Notes
 
-- **32 tools total:** 13 mikr.us API endpoints + 19 system management tools.
+- **32 tools total:** 1 discovery + 12 mikr.us API + 19 system management tools.
+- **All tools return `{"success": True/False, ...}`** JSON format for consistent error handling.
 - **All write operations** are protected by input validation — no shell injection possible.
 - **Errors are logged to `stderr`**, in compliance with the MCP specification.
 - The mikr.us `/exec` endpoint has a 65-second client timeout (API limit is 60s).

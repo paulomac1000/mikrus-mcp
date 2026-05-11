@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mikrus-mcp"
-version = "0.1.0"
+version = "1.0.0"
 description = "MCP server for mikr.us API"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Paweł Maciejewski"}
+    {name = "Pawel Maciejewski"}
 ]
 keywords = ["mcp", "mikrus", "vps", "api"]
 classifiers = [
@@ -27,6 +27,8 @@ dependencies = [
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
     "asyncssh>=2.14.0",
+    "starlette>=0.38.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.urls]
@@ -37,6 +39,8 @@ Repository = "https://github.com/paulomac1000/mikrus-mcp"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=6.0.0",
+    "pyyaml>=6.0",
     "respx>=0.22.0",
     "ruff>=0.6.0",
     "mypy>=1.11.0",
@@ -59,6 +63,11 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+"src/mikrus_mcp/server.py" = ["E501"]
+"src/mikrus_mcp/tools/*.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
@@ -68,3 +77,9 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (fast, mocked, no I/O)",
+    "integration: Integration tests (slow, requires real backend)",
+    "smoke: Smoke tests (quick health check, requires local MCP server)",
+    "e2e: End-to-end tests (full pipeline, requires real backend + local MCP server)",
+]

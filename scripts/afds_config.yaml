@@ -1,0 +1,181 @@
+# AFDS Validator Configuration v1.0.0
+# Customize this file for your project.
+# Omit any section to use the AFDS default.
+
+types:
+  workflow:
+    id_prefix: workflow
+    default_ttl: 90
+    sections:
+      - PURPOSE
+      - SCOPE
+      - TRIGGER
+      - STEPS
+      - VALIDATION
+      - PITFALLS
+      - ROLLBACK
+  ref:
+    id_prefix: ref
+    default_ttl: 180
+    sections:
+      - PURPOSE
+      - SCOPE
+      - DEFINITIONS
+      - RULES
+      - INTERFACES
+      - STATE
+      - EDGE_CASES
+      - EXAMPLES
+      - NON_GOALS
+  system:
+    id_prefix: sys
+    default_ttl: 90
+    sections:
+      - PURPOSE
+      - SCOPE
+      - ARCHITECTURE
+      - ENTITY_REFERENCE
+      - INTERFACES
+      - STATE
+      - EDGE_CASES
+      - FAILURE_MODES
+      - TESTING
+      - TROUBLESHOOTING
+  guide:
+    id_prefix: guide
+    default_ttl: 180
+    sections:
+      - PURPOSE
+      - AUDIENCE
+      - CONTEXT
+      - WALKTHROUGH
+      - PITFALLS
+      - RELATED_DOCS
+  decision:
+    id_prefix: decision
+    default_ttl: 0
+    sections:
+      - CONTEXT
+      - DECISION
+      - ALTERNATIVES_CONSIDERED
+      - CONSEQUENCES
+      - STATUS
+      - CHANGELOG
+  contract:
+    id_prefix: contract
+    default_ttl: 0
+    sections:
+      - PURPOSE
+      - SPECIFICATION
+      - VERSIONING
+      - CHANGELOG
+
+statuses:
+  - active
+  - draft
+  - deprecated
+  - evolving
+  - archived
+
+ai_scope_values:
+  - editable
+  - review_only
+  - restricted
+
+stability_values:
+  - experimental
+  - stable
+  - frozen
+
+rigor_tier_values:
+  - L0
+  - L1
+  - L2
+  - L3
+
+allowed_fields:
+  - description
+  - doc_id
+  - type
+  - status
+  - rigor_tier
+  - ttl_days
+  - ttl_policy
+  - stability
+  - ai_scope
+  - upstream
+  - last_verified
+  - trigger
+  - timeout
+  - scope
+  - supersedes
+  - superseded_by
+  - source_of_truth
+  - domain
+  - tags
+  - owners
+  - verification_status
+  - evidence
+  - verified_against
+  - generated_by
+  - doc_kind
+  - derived_from
+  - glossary_terms
+  - access_tier
+  - allowed_roles
+  - audit_log
+  - language
+  - canonical
+  - version
+
+forbidden_fields:
+  - downstream
+  - verified_by
+  - fitness_score
+  - semantic_hash
+
+project_banned_words: []
+# Example:
+# project_banned_words:
+#   - label: the service
+#     pattern: \bthe service\b
+#     suggestion: Use specific service name (e.g. auth-service)
+
+root_files: {}
+# Example:
+# root_files:
+#   README.md:
+#     required_type: ref
+#     required_fields: [description, doc_id, type, status]
+#     min_line_count: 10
+
+default_paths:
+  - docs/
+  - docs/decisions/
+
+excluded_dirs:
+  - archived
+  - archive
+
+exempt_files:
+  - README.md
+
+normative_sections:
+  - RULES
+  - INTERFACES
+  - VALIDATION
+  - SPECIFICATION
+  - FAILURE_MODES
+
+non_normative_sections:
+  - EXAMPLES
+  - NON_GOALS
+  - PURPOSE
+  - CONTEXT
+  - RATIONALE
+  - TRADEOFFS
+  - WALKTHROUGH
+  - AUDIENCE
+  - PITFALLS
+
+baseline_path: .afds-baseline.json
