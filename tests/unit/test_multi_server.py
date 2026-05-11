@@ -266,7 +266,7 @@ def test_main_stdio_mode(mock_run: MagicMock) -> None:
     from mikrus_mcp.server import main
 
     with patch.dict(os.environ, {}, clear=True):
-        with patch("mikrus_mcp.server.run_stdio") as mock_run_stdio:
+        with patch("mikrus_mcp.server.run_stdio", new_callable=MagicMock) as mock_run_stdio:
             main()
             mock_run_stdio.assert_called_once()
 
@@ -277,7 +277,7 @@ def test_main_stdio_with_rest_port(mock_run: MagicMock) -> None:
     from mikrus_mcp.server import main
 
     with patch.dict(os.environ, {"MCP_REST_PORT": "8301"}, clear=True):
-        with patch("mikrus_mcp.server.run_stdio") as mock_run_stdio:
+        with patch("mikrus_mcp.server.run_stdio", new_callable=MagicMock) as mock_run_stdio:
             with patch("mikrus_mcp.server.logger") as mock_logger:
                 main()
                 mock_run_stdio.assert_called_once()

@@ -2,7 +2,7 @@
 
 All notable changes to mikrus-mcp.
 
-## [Unreleased]
+## [1.0.0] — 2026-05-11
 
 ### Fixed
 
