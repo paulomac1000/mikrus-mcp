@@ -39,13 +39,13 @@ def test_health_and_tool_list(client: httpx.Client) -> None:
     assert r.status_code == 200
     health = r.json()
     assert health["status"] == "healthy"
-    assert health["tool_count"] == 32
+    assert health["tool_count"] == 33
 
     r = client.get("/tools")
     assert r.status_code == 200
     tools = r.json()
     assert tools["success"] is True
-    assert len(tools["data"]) == 32
+    assert len(tools["data"]) == 33
 
 
 def test_list_configured_servers(client: httpx.Client) -> None:

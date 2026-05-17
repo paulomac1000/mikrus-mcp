@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(
 
 TOOLS_NO_PARAMS = [
     "list_configured_servers",
+    "describe_mikrus_capabilities",
 ]
 
 TOOLS_WITH_PARAMS = {

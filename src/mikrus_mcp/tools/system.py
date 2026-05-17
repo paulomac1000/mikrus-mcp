@@ -4,12 +4,13 @@ import logging
 from typing import Any
 
 from mikrus_mcp.client import MikrusClient, SshClient
-from mikrus_mcp.tools.constants import TOOLS_VERSION
+from mikrus_mcp.tools.constants import READ_ONLY_SERVICE_ACTIONS, TOOLS_VERSION
 from mikrus_mcp.tools.response import (
     _error_response_extended,
     _success_response,
     _tool_description,
 )
+from mikrus_mcp.validators import check_write_enabled, validate_command
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,8 @@ async def execute_command_tool(cmd: str, server: str | None = None) -> str:
 
     try:
         logger.debug("Tool invoked: execute_command cmd=%s", cmd)
+        validate_command(cmd)
+        check_write_enabled()
         client = _get_client(server)
         result = await _execute_command(client, cmd)
         logger.debug("Tool succeeded: execute_command")
@@ -177,6 +180,7 @@ async def write_file_tool(path: str, content: str, server: str | None = None) ->
 
     try:
         logger.debug("Tool invoked: write_file path=%s", path)
+        check_write_enabled()
         client = _get_client(server)
         result = await _write_file(client, path, content)
         logger.debug("Tool succeeded: write_file")
@@ -184,7 +188,7 @@ async def write_file_tool(path: str, content: str, server: str | None = None) ->
     except Exception as e:
         logger.debug("Tool failed: write_file — %s", e)
         return _error_response_extended(
-            "SSH_ERROR",
+            "INTERNAL_ERROR",
             str(e),
             False,
             suggestion="Check that the target directory exists and is writable",
@@ -208,6 +212,8 @@ async def manage_service_tool(name: str, action: str, server: str | None = None)
 
     try:
         logger.debug("Tool invoked: manage_service name=%s action=%s", name, action)
+        if action not in READ_ONLY_SERVICE_ACTIONS:
+            check_write_enabled()
         client = _get_client(server)
         result = await _manage_service(client, name, action)
         logger.debug("Tool succeeded: manage_service")
@@ -244,7 +250,7 @@ async def analyze_disk_tool(path: str = "/", server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: analyze_disk — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry with a different path or check disk health",
@@ -273,7 +279,7 @@ async def check_port_tool(port: str, server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: check_port — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Verify the port number is between 1-65535",
@@ -296,6 +302,8 @@ async def manage_process_tool(action: str, target: str = "", server: str | None 
 
     try:
         logger.debug("Tool invoked: manage_process action=%s target=%s", action, target)
+        if action == "kill":
+            check_write_enabled()
         client = _get_client(server)
         result = await _manage_process(client, target, action)
         logger.debug("Tool succeeded: manage_process")
@@ -303,7 +311,7 @@ async def manage_process_tool(action: str, target: str = "", server: str | None 
     except Exception as e:
         logger.debug("Tool failed: manage_process — %s", e)
         return _error_response_extended(
-            "OPERATION_FAILED",
+            "INTERNAL_ERROR",
             str(e),
             False,
             suggestion="Verify the process name or PID is correct",
@@ -324,6 +332,7 @@ async def update_system_tool(server: str | None = None) -> str:
 
     try:
         logger.debug("Tool invoked: update_system")
+        check_write_enabled()
         client = _get_client(server)
         result = await _update_system(client)
         logger.debug("Tool succeeded: update_system")
@@ -331,7 +340,7 @@ async def update_system_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: update_system — %s", e)
         return _error_response_extended(
-            "OPERATION_FAILED",
+            "INTERNAL_ERROR",
             str(e),
             False,
             suggestion="Check server connectivity, disk space, and apt sources",
@@ -360,7 +369,7 @@ async def list_directory_tool(path: str, server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: list_directory — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Provide an absolute path, e.g. /var/log",
@@ -390,7 +399,7 @@ async def tail_file_tool(path: str, lines: int = 50, server: str | None = None) 
     except Exception as e:
         logger.debug("Tool failed: tail_file — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Check that the file exists and is readable",
@@ -420,7 +429,7 @@ async def search_in_files_tool(path: str, pattern: str, server: str | None = Non
     except Exception as e:
         logger.debug("Tool failed: search_in_files — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Try a simpler search pattern or a different path",
@@ -448,7 +457,7 @@ async def get_memory_info_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_memory_info — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds",
@@ -476,7 +485,7 @@ async def get_network_info_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_network_info — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds",
@@ -504,7 +513,7 @@ async def get_process_tree_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_process_tree — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds",

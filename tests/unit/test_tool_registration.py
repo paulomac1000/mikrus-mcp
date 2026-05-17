@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mikrus_mcp.server import mcp as real_mcp
+from mikrus_mcp.tools.capabilities import register_capability_tools
 from mikrus_mcp.tools.container_journal import register_container_journal_tools
 from mikrus_mcp.tools.discovery import register_discovery_tools
 from mikrus_mcp.tools.mikrus_api import register_mikrus_tools
@@ -81,6 +82,13 @@ def test_register_discovery_tools_registers_all(mock_mcp: MagicMock) -> None:
     register_discovery_tools(mock_mcp)
     tool = mock_mcp.get_tool("list_configured_servers")
     assert tool is not None, "list_configured_servers not registered"
+
+
+def test_register_capability_tools_registers(mock_mcp: MagicMock) -> None:
+    """Verify register_capability_tools registers the capabilities tool."""
+    register_capability_tools(mock_mcp)
+    tool = mock_mcp.get_tool("describe_mikrus_capabilities")
+    assert tool is not None, "describe_mikrus_capabilities not registered"
 
 
 # --- Mikrus tool success paths via registration ---
@@ -224,3 +232,43 @@ async def test_mikrus_tool_on_ssh_returns_error(
     data = json.loads(result)
     assert data["success"] is False
     assert "mikrus" in str(data["error"]).lower()
+
+
+# --- Capabilities tool tests ---
+
+
+@pytest.mark.asyncio
+async def test_describe_mikrus_capabilities_via_registration(
+    mock_mcp: MagicMock,
+) -> None:
+    """[RULE: TEST-REG-2] The capabilities tool is zero-I/O and returns the catalog."""
+    register_capability_tools(mock_mcp)
+    tool_fn = mock_mcp.get_tool("describe_mikrus_capabilities")
+    assert tool_fn is not None
+
+    result = await tool_fn()
+    data = json.loads(result)
+    assert data["success"] is True
+    assert "tools" in data["data"]
+    assert data["data"]["tool_count"] > 0
+
+
+@pytest.mark.asyncio
+async def test_describe_mikrus_capabilities_error(
+    mock_mcp: MagicMock,
+) -> None:
+    """[RULE: TEST-REG-3] Verify exception is caught and wrapped."""
+    from mikrus_mcp.tools import capabilities as cap_mod
+
+    register_capability_tools(mock_mcp)
+    tool_fn = mock_mcp.get_tool("describe_mikrus_capabilities")
+    assert tool_fn is not None
+
+    with patch.object(
+        cap_mod, "_do_describe_mikrus_capabilities", side_effect=RuntimeError("boom")
+    ):
+        result = await tool_fn()
+
+    data = json.loads(result)
+    assert data["success"] is False
+    assert "boom" in str(data["error"])

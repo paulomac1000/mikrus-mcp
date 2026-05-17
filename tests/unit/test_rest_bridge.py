@@ -49,7 +49,7 @@ def test_health_endpoint(client: TestClient) -> None:
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "healthy"
-    assert data["tool_count"] == 32
+    assert data["tool_count"] == 33
     assert "tools_version" in data
 
 
