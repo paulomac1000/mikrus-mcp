@@ -1,13 +1,13 @@
 # Mikrus MCP Server
 
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
-[![Docker](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/docker-publish.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Docker](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](https://mikr.us) API **and** remote Linux servers over SSH. Built in Python, runs anywhere — locally, in Docker, or as a Claude Desktop integration.
 
-All tools follow the [MCP Server Standards](/var/apps/docs/mcp_standards.md) for response format, testing, and documentation.
+All tools follow the [MCP Server Standards](https://github.com/paulomac1000/ai-skills/blob/main/skills/mcp-server-architect/mcp-server-standards.md) for response format, testing, and documentation.
 
 ## Contents
 
@@ -29,7 +29,7 @@ All tools follow the [MCP Server Standards](/var/apps/docs/mcp_standards.md) for
 
 ## Requirements
 
-- Python 3.11+ (for local use) or Docker
+- Python 3.14+ (for local use) or Docker
 - A [mikr.us](https://mikr.us) account with an API key **or** any SSH-accessible Linux server
 - Your server identifier (e.g. `your_srv`) or SSH host
 
@@ -118,7 +118,7 @@ The server communicates over `stdio` by default. Set `MCP_PORT` to enable SSE tr
 > ```
 > SSH keys must have permissions `600` or `400` and be readable by the `appuser` user inside the container (UID 1000). If your host user has a different UID, adjust ownership with `chown 1000:1000 ~/.ssh/id_ed25519` or use a less restrictive mode. Certificates can be mounted the same way.
 
-### 3. Run locally (Python 3.11+)
+### 3. Run locally (Python 3.14+)
 
 ```bash
 pip install -e ".[dev]"
