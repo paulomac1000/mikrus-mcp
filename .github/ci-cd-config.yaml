@@ -10,7 +10,7 @@ health_port: 8301
 rest_port: 8301
 use_docker: true
 is_mcp: true
-expected_tools: 32
+expected_tools: 33
 use_codecov: true
 use_semgrep: true
 use_dependabot: true
