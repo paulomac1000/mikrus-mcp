@@ -4,35 +4,40 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Install linting tools
+        run: pip install ruff mypy bandit
 
-      - name: Check formatting with Ruff
-        run: ruff format --check src/ tests/
-
-      - name: Lint with Ruff
+      - name: Ruff check
         run: ruff check src/ tests/
 
-      - name: Type check with mypy
-        run: mypy src/
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
 
-      - name: Security scan with bandit
-        run: bandit -r src/ -f json -o bandit-report.json || true
+      - name: mypy
+        run: mypy src/mikrus_mcp/ --strict
+
+      - name: bandit
+        run: bandit -r src/mikrus_mcp/ -f json -o bandit-report.json -ll
 
       - name: Upload bandit report
         if: always()
@@ -41,49 +46,86 @@ jobs:
           name: bandit-report
           path: bandit-report.json
 
-      - name: Validate documentation (AFDS)
+      - name: Validate documentation (CAFDS)
+        if: hashFiles('afds_config.yaml') != ''
         run: |
-          python scripts/docs_validate.py --config afds_config.yaml --strict --baseline .afds-baseline.json ./
+          curl -sS https://raw.githubusercontent.com/paulomac1000/ai-skills/main/skills/afds-doc-writer/docs_validate.py | python3 - \
+            --config afds_config.yaml --strict --baseline .afds-baseline.json ./
 
-      - name: Test with pytest
-        run: pytest tests/ -v
-
-  docker-build-test:
+  test:
     runs-on: ubuntu-latest
+    needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/unit/ -v --tb=short \
+            --cov=mikrus_mcp \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
-      - name: Build Docker image (prod)
-        uses: docker/build-push-action@v6
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: prod
           push: false
           load: true
           tags: mikrus-mcp:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build Docker image (dev)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: dev
-          push: false
-          load: true
-          tags: mikrus-mcp:dev
+      - name: Smoke test — tool count
+        run: |
+          docker run --rm mikrus-mcp:test python3 -c "
+          from mikrus_mcp.tools.constants import TOOL_MANIFESTS
+          tc = len(TOOL_MANIFESTS)
+          assert tc == 32, f'Expected 32 tools, got {tc}'
+          print('Tool count OK:', tc)
+          "
 
-      - name: Docker smoke test
+      - name: Smoke test — REST API health + tools
         run: |
           docker run -d --rm --network host \
             -e MCP_REST_PORT=8301 \
             -e MCP_PORT=8300 \
             -e MIKRUS_API_KEY=test \
             -e MIKRUS_SERVER_NAME=test \
+            -e MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1 \
             --name test-srv mikrus-mcp:test
           sleep 5
-          curl -fsS --retry 5 --retry-delay 2 http://127.0.0.1:8301/api/health || exit 1
-          TOOLS=$(curl -s http://127.0.0.1:8301/api/tools | python3 -c "import sys,json; print(json.load(sys.stdin)['data'].__len__())")
-          [ "$TOOLS" -ge "10" ] || (echo "Expected >=10 tools, got $TOOLS" && exit 1)
+          curl -fsS --retry 10 --retry-delay 2 \
+            http://127.0.0.1:8301/api/health || exit 1
+          TOOLS=$(curl -s http://127.0.0.1:8301/api/tools \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
+          [ "$TOOLS" = "32" ] \
+            || (echo "FAIL: expected 32 tools, got $TOOLS" && exit 1)
           docker stop test-srv
