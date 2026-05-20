@@ -12,6 +12,7 @@ from mikrus_mcp.tools.constants import (  # noqa: E402
     MAX_TAIL_LINES,
     MAX_WRITE_SIZE,
     SERVICE_ACTIONS,
+    write_operations_enabled,
 )
 
 
@@ -19,6 +20,34 @@ class ValidationError(ValueError):
     """Raised when input validation fails."""
 
     pass
+
+
+class WriteOperationsDisabledError(ValidationError):
+    """Raised when a write/destructive tool is invoked while the write guard is off."""
+
+    pass
+
+
+def check_write_enabled() -> None:
+    """Enforce the server-level write guard before any write/destructive I/O.
+
+    Raises WriteOperationsDisabledError when ENABLE_WRITE_OPERATIONS is not set.
+    This is a server-level authorization gate (mcp-server-standards.md — Write
+    Guard, L2+), distinct from the per-tool ``requires_confirmation`` agent hint.
+    MUST be called before any I/O in every write, destructive, or command tool.
+    """
+    if not write_operations_enabled():
+        raise WriteOperationsDisabledError(
+            "Write operations are disabled on this MCP server. "
+            "Ask the administrator to set ENABLE_WRITE_OPERATIONS=1 to enable "
+            "write, destructive, and command-execution tools."
+        )
+
+
+# Shell metacharacters rejected in file paths. Validated parameters are
+# interpolated into single-quoted shell commands; these characters could break
+# out of the quoting and inject commands, so they are denied by default.
+SHELL_UNSAFE_CHARS: Final = frozenset("'\"`$;|&<>(){}[]*?!~\\\n\r\t")
 
 
 PATH_PATTERN: Final = re.compile(r"^[^\x00-\x1f\x7f]+$")
@@ -188,6 +217,24 @@ def check_dangerous_command(cmd: str) -> None:
     for pattern in DANGEROUS_PATTERNS:
         if pattern.search(cmd):
             raise ValidationError("Dangerous command pattern detected. This command is blocked.")
+
+
+def validate_command(cmd: str) -> str:
+    """Reject commands containing shell metacharacters (defense-in-depth).
+
+    Must be called BEFORE check_dangerous_command() so the denylist runs
+    first (mcp-server-standards.md — Command Execution Allowlist, L2+).
+    The returned command string is the validated input.
+    """
+    if not cmd or not isinstance(cmd, str):
+        raise ValidationError("Command cannot be empty")
+    unsafe = [c for c in cmd if c in SHELL_UNSAFE_CHARS]
+    if unsafe:
+        raise ValidationError(
+            f"Command contains unsafe characters: {unsafe}. "
+            "Use a simple command without shell metacharacters."
+        )
+    return cmd
 
 
 def validate_lines_param(lines: int | str, max_lines: int = MAX_TAIL_LINES) -> int:

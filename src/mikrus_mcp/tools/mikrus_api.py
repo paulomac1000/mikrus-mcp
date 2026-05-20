@@ -11,6 +11,7 @@ from mikrus_mcp.tools.response import (
     _success_response,
     _tool_description,
 )
+from mikrus_mcp.validators import check_write_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ async def list_servers_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: list_servers -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - the mikr.us API may be temporarily unavailable",
@@ -177,7 +178,7 @@ async def get_server_stats_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_server_stats -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - the mikr.us API may be temporarily unavailable",
@@ -198,6 +199,7 @@ async def restart_server_tool(server: str | None = None) -> str:
 
     try:
         logger.debug("Tool invoked: restart_server")
+        check_write_enabled()
         client = _get_client(server)
         if not isinstance(client, MikrusClient):
             return _error_response(f"Server '{server}' is not a mikrus server")
@@ -238,7 +240,7 @@ async def get_logs_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_logs -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - the mikr.us API may be temporarily unavailable",
@@ -269,7 +271,7 @@ async def get_log_by_id_tool(id: str, server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_log_by_id -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Verify the log entry ID is correct",
@@ -290,6 +292,7 @@ async def boost_server_tool(server: str | None = None) -> str:
 
     try:
         logger.debug("Tool invoked: boost_server")
+        check_write_enabled()
         client = _get_client(server)
         if not isinstance(client, MikrusClient):
             return _error_response(f"Server '{server}' is not a mikrus server")
@@ -299,7 +302,7 @@ async def boost_server_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: boost_server -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             False,
             suggestion="Check if boost is already active and retry",
@@ -329,7 +332,7 @@ async def get_db_info_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_db_info -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - credentials are cached for 60s",
@@ -359,7 +362,7 @@ async def get_ports_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_ports -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - the mikr.us API may be temporarily unavailable",
@@ -389,7 +392,7 @@ async def get_cloud_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_cloud -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry in a few seconds - the mikr.us API may be temporarily unavailable",
@@ -412,6 +415,7 @@ async def assign_domain_tool(port: str, domain: str, server: str | None = None) 
 
     try:
         logger.debug("Tool invoked: assign_domain port=%s domain=%s", port, domain)
+        check_write_enabled()
         client = _get_client(server)
         if not isinstance(client, MikrusClient):
             return _error_response(f"Server '{server}' is not a mikrus server")
@@ -421,7 +425,7 @@ async def assign_domain_tool(port: str, domain: str, server: str | None = None) 
     except Exception as e:
         logger.debug("Tool failed: assign_domain -- %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             False,
             suggestion="Verify the domain format and port number",

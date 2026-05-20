@@ -40,7 +40,7 @@ def test_health_endpoint(client: httpx.Client) -> None:
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "healthy"
-    assert data["tool_count"] == 32
+    assert data["tool_count"] == 33
 
 
 def test_tools_list(client: httpx.Client) -> None:

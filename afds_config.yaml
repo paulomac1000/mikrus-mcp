@@ -4,12 +4,15 @@
 exempt_files:
   - README.md
   - CHANGELOG.md
+  - AGENTS.md
+  - todo.md
 
 default_paths:
-  - ./
+  - AGENTS.md
 
-root_files:
-  AGENTS.md:
-    type: ref
-    doc_id: ref.agent-guidelines
-    rigor_tier: L2
+excluded_dirs:
+  - .pytest_cache
+  - __pycache__
+  - .git
+  - .venv
+  - venv
