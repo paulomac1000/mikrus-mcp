@@ -126,7 +126,7 @@ jobs:
           curl -fsS --retry 10 --retry-delay 2 \
             http://127.0.0.1:8301/api/health || exit 1
           TOOLS=$(curl -s http://127.0.0.1:8301/api/tools \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tool_count'])")
           [ "$TOOLS" = "33" ] \
             || (echo "FAIL: expected 33, got $TOOLS" && exit 1)
           docker stop test-srv
