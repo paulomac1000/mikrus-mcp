@@ -5,7 +5,7 @@ Reference: mcp-server-standards.md rule 2b (L3+ capability introspection).
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -53,12 +53,15 @@ class TestDescribeMikrusCapabilitiesTool:
     """Tests for the tool wrapper (success and error paths)."""
 
     @pytest.mark.asyncio
-    async def test_returns_success(self) -> None:
+    async def test_returns_success_and_meta_envelope(self) -> None:
         result = await describe_mikrus_capabilities_tool()
         data = json.loads(result)
         assert data["success"] is True
         assert "tools" in data["data"]
         assert data["data"]["tool_count"] > 0
+        assert "_meta" in data
+        assert "request_id" in data["_meta"]
+        assert data["_meta"]["tool_version"] == TOOLS_VERSION
 
     @pytest.mark.asyncio
     async def test_exception_handler(self) -> None:
@@ -70,33 +73,17 @@ class TestDescribeMikrusCapabilitiesTool:
 
         data = json.loads(result)
         assert data["success"] is False
-        assert "boom" in str(data["error"])
+        assert isinstance(data["error"], dict)
+        assert data["error"]["code"] == "INTERNAL_ERROR"
+        assert data["error"]["message"] == "boom"
+        assert data["error"]["retryable"] is True
+        assert "_meta" in data
+        assert "request_id" in data["_meta"]
 
 
 class TestRegisterCapabilityTools:
-    """[RULE: TEST-REG-2] Registration test — mock MCP."""
+    """[RULE: TEST-REG-2] Registration test — uses mock_mcp fixture."""
 
-    def test_registers_tool(self) -> None:
-        from unittest.mock import MagicMock
-
-        mock_mcp = MagicMock()
-        mock_mcp._tools = {}
-
-        def tool_decorator(*args: object, **kwargs: object) -> object:
-            def wrapper(func: object) -> object:
-                tool_name = kwargs.get("name", getattr(func, "__name__", "unknown"))
-                assert isinstance(tool_name, str)
-                mock_mcp._tools[tool_name] = func
-                return func
-
-            if len(args) == 1 and callable(args[0]) and not kwargs:
-                name = getattr(args[0], "__name__", "unknown")
-                assert isinstance(name, str)
-                mock_mcp._tools[name] = args[0]
-                return args[0]
-            return wrapper
-
-        mock_mcp.tool = tool_decorator
-
+    def test_registers_tool(self, mock_mcp: MagicMock) -> None:
         register_capability_tools(mock_mcp)
         assert "describe_mikrus_capabilities" in mock_mcp._tools

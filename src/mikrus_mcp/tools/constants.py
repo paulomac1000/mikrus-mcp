@@ -247,6 +247,10 @@ TOOL_MANIFESTS: dict[str, dict[str, Any]] = {
     "execute_command": _make_dangerous_manifest("execute_command"),
     "read_file": _make_read_manifest("read_file"),
     "write_file": _make_write_manifest("write_file"),
+    # manage_service is classified as DESTRUCTIVE because stop/restart actions
+    # cause service outages. At runtime the read-only actions (status,
+    # is-active, is-enabled) bypass the write guard — the manifest reflects
+    # the worst-case criticality of the tool per the Risk Consistency Matrix.
     "manage_service": _make_destructive_manifest(
         "manage_service", timeout_ms=10000, latency="fast", cost="cheap"
     ),

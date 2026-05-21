@@ -222,8 +222,9 @@ def check_dangerous_command(cmd: str) -> None:
 def validate_command(cmd: str) -> str:
     """Reject commands containing shell metacharacters (defense-in-depth).
 
-    Must be called BEFORE check_dangerous_command() so the denylist runs
-    first (mcp-server-standards.md — Command Execution Allowlist, L2+).
+    Must be called BEFORE check_dangerous_command() — this acts as the
+    allowlist gate, while check_dangerous_command() handles the denylist
+    (mcp-server-standards.md — Command Execution Allowlist, L2+).
     The returned command string is the validated input.
     """
     if not cmd or not isinstance(cmd, str):

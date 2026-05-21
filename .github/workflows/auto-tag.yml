@@ -1,8 +1,8 @@
-name: Auto-tag on merge to main
+name: Auto-tag on merge to master
 
 on:
   pull_request:
-    branches: [main]
+    branches: [master]
     types: [closed]
 
 concurrency:

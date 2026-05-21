@@ -4,11 +4,14 @@ All tools MUST use these helpers for consistent response formatting.
 """
 
 import json
+import logging
 import uuid
 from typing import Any
 
 from mikrus_mcp.sanitizer import sanitize_log_line, sanitize_response_data
 from mikrus_mcp.tools.constants import TOOL_MANIFESTS
+
+logger = logging.getLogger(__name__)
 
 
 def _tool_description(name: str, base_description: str) -> str:
@@ -17,8 +20,17 @@ def _tool_description(name: str, base_description: str) -> str:
     Risk prefix is dynamically injected from the manifest SSOT.
     READ tools get no prefix, per convention.
     """
-    manifest = TOOL_MANIFESTS.get(name, {})
-    risk = manifest.get("risk", "READ")
+    manifest = TOOL_MANIFESTS.get(name)
+    if manifest is None:
+        logger.warning(
+            "Tool %r has no manifest entry in TOOL_MANIFESTS — "
+            "defaulting to READ risk prefix. Add an entry to "
+            "src/mikrus_mcp/tools/constants.py.",
+            name,
+        )
+        risk = "READ"
+    else:
+        risk = manifest.get("risk", "READ")
     clean = base_description.strip()
     if risk == "READ":
         return clean
@@ -59,7 +71,11 @@ def _error_response_extended(
     suggestion: str | None = None,
     available_names: list[str] | None = None,
 ) -> str:
-    """Format an extended error response with structured fields (L2+)."""
+    """Format an extended error response with structured fields (L2+).
+
+    Includes a top-level _meta envelope for consistency with _success_response
+    and _error_response. The error.request_id mirrors _meta.request_id.
+    """
     request_id = str(uuid.uuid4())
     error: dict[str, Any] = {
         "code": code,
@@ -71,4 +87,12 @@ def _error_response_extended(
         error["suggestion"] = suggestion
     if available_names:
         error["available_names"] = available_names
-    return json.dumps({"success": False, "error": error}, indent=2, ensure_ascii=False)
+    return json.dumps(
+        {
+            "success": False,
+            "error": error,
+            "_meta": {"request_id": request_id},
+        },
+        indent=2,
+        ensure_ascii=False,
+    )

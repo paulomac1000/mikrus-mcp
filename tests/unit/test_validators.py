@@ -33,10 +33,7 @@ class TestWriteGuard:
     def test_check_write_enabled_passes_when_enabled(self) -> None:
         """Write guard allows operations when ENABLE_WRITE_OPERATIONS=1."""
         os.environ["ENABLE_WRITE_OPERATIONS"] = "1"
-        try:
-            check_write_enabled()
-        except WriteOperationsDisabledError:
-            pytest.fail("check_write_enabled() raised when ENABLE_WRITE_OPERATIONS=1")
+        check_write_enabled()  # should not raise
 
 
 class TestValidateCommand:
@@ -69,6 +66,58 @@ class TestValidateCommand:
     def test_rejects_ampersand(self) -> None:
         with pytest.raises(ValidationError, match="unsafe characters"):
             validate_command("sleep 10 &")
+
+    def test_rejects_single_quote(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("echo 'hello'")
+
+    def test_rejects_double_quote(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command('echo "hello"')
+
+    def test_rejects_backslash(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("echo \\")
+
+    def test_rejects_newline(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("echo\nrm -rf /")
+
+    def test_rejects_redirect(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("cat /etc/passwd > /tmp/out")
+
+    def test_rejects_parentheses(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("(echo test)")
+
+    def test_rejects_curly_braces(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("{ echo test; }")
+
+    def test_rejects_brackets(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("[ -f /tmp/test ]")
+
+    def test_rejects_asterisk(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("rm *")
+
+    def test_rejects_question_mark(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("ls /tmp/?")
+
+    def test_rejects_exclamation_mark(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("!ls")
+
+    def test_rejects_tilde(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("ls ~")
+
+    def test_rejects_angle_brackets(self) -> None:
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_command("cat < /etc/passwd")
 
     def test_accepts_simple_command(self) -> None:
         result = validate_command("df -h")

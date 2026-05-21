@@ -10,7 +10,8 @@ from mikrus_mcp.client import MikrusClient, SshClient
 # Unit tests test tool logic; the server-level write guard is tested
 # separately in test_validators.py. Enable write operations globally
 # so tool success/error paths are reachable without per-test env setup.
-os.environ.setdefault("ENABLE_WRITE_OPERATIONS", "1")
+# Force-set (not setdefault) to override any value loaded from .env.
+os.environ["ENABLE_WRITE_OPERATIONS"] = "1"
 
 
 @pytest.fixture
