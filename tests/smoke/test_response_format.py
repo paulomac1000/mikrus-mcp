@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(
 
 TOOLS_NO_PARAMS = [
     "list_configured_servers",
+    "describe_mikrus_capabilities",
 ]
 
 TOOLS_WITH_PARAMS = {
@@ -63,3 +64,16 @@ def test_all_tools_return_success_format(client: httpx.Client) -> None:
         data = r.json()
         assert "success" in data, f"Tool '{tool_name}' missing 'success' field"
         assert isinstance(data["success"], bool), f"Tool '{tool_name}' success is not bool"
+
+
+def test_api_tools_endpoint_structure(client: httpx.Client) -> None:
+    """GET /api/tools returns {success, tool_count, data[]} structure."""
+    r = client.get("/api/tools")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["success"] is True
+    assert "tool_count" in data, "/api/tools missing 'tool_count' key"
+    assert isinstance(data["tool_count"], int), "tool_count must be int"
+    assert "data" in data, "/api/tools missing 'data' key"
+    assert isinstance(data["data"], list), "data must be a list"
+    assert data["tool_count"] == len(data["data"]), "tool_count must match len(data)"

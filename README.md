@@ -1,13 +1,13 @@
 # Mikrus MCP Server
 
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
-[![Docker](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/docker-publish.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Docker](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](https://mikr.us) API **and** remote Linux servers over SSH. Built in Python, runs anywhere — locally, in Docker, or as a Claude Desktop integration.
 
-All tools follow the [MCP Server Standards](/var/apps/docs/mcp_standards.md) for response format, testing, and documentation.
+All tools follow the [MCP Server Standards](https://github.com/paulomac1000/ai-skills/blob/main/skills/mcp-server-architect/mcp-server-standards.md) for response format, testing, and documentation.
 
 ## Contents
 
@@ -29,7 +29,7 @@ All tools follow the [MCP Server Standards](/var/apps/docs/mcp_standards.md) for
 
 ## Requirements
 
-- Python 3.11+ (for local use) or Docker
+- Python 3.14+ (for local use) or Docker
 - A [mikr.us](https://mikr.us) account with an API key **or** any SSH-accessible Linux server
 - Your server identifier (e.g. `your_srv`) or SSH host
 
@@ -118,7 +118,7 @@ The server communicates over `stdio` by default. Set `MCP_PORT` to enable SSE tr
 > ```
 > SSH keys must have permissions `600` or `400` and be readable by the `appuser` user inside the container (UID 1000). If your host user has a different UID, adjust ownership with `chown 1000:1000 ~/.ssh/id_ed25519` or use a less restrictive mode. Certificates can be mounted the same way.
 
-### 3. Run locally (Python 3.11+)
+### 3. Run locally (Python 3.14+)
 
 ```bash
 pip install -e ".[dev]"
@@ -132,6 +132,7 @@ mikrus-mcp
 | Tool | Description |
 |------|-------------|
 | `list_configured_servers` | List all configured servers, their types, and connection status. Use this first to discover available servers. |
+| `describe_mikrus_capabilities` | Returns the full tool catalog with capability manifests, supported transports, and schema version. Zero I/O, instant. |
 
 ### mikr.us API tools (mikrus servers only)
 
@@ -191,7 +192,7 @@ server (e.g. `server=myssh`). If omitted, the default server is used.
 
 ## Tool Response Format
 
-All 32 tools return a consistent JSON structure. Every response includes a `_meta` envelope with a unique `request_id`:
+All 33 tools return a consistent JSON structure. Every response includes a `_meta` envelope with a unique `request_id`:
 
 ```json
 {"success": true, "data": {"server_id": "emil359", "param_ram": "1024"}, "_meta": {"request_id": "a1b2c3d4-...", "duration_ms": 42, "cached": false, "retry_safe": false}}
@@ -210,12 +211,12 @@ Tools are annotated with risk-level prefixes in their descriptions:
 | Prefix | Meaning | Examples |
 |--------|---------|----------|
 | `[DANGEROUS]` | Executes arbitrary shell commands | `execute_command` |
-| `[WRITE]` | Modifies server state or files | `write_file`, `manage_service`, `update_system` |
-| `[DESTRUCTIVE]` | Kills processes | `manage_process` (kill action) |
+| `[WRITE]` | Modifies server state or files | `write_file`, `update_system` |
+| `[DESTRUCTIVE]` | Kills processes, restarts services | `manage_service` (stop/restart), `manage_process` (kill) |
 | `[SENSITIVE]` | Returns credentials or tokens | `get_db_info`, `get_journal_logs` |
-| (none) | Read-only, no side effects | `get_server_info`, `list_servers` |
+| (none) | Read-only, no side effects | `get_server_info`, `list_servers`, `describe_mikrus_capabilities` |
 
-AI agents use these prefixes to decide whether to request user confirmation before invoking a tool.
+AI agents use these prefixes to decide whether to request user confirmation before invoking a tool. Tools are additionally gated behind `ENABLE_WRITE_OPERATIONS` — a server-level authorization flag that must be explicitly enabled for any write, destructive, or command-execution tool to perform I/O.
 
 ## Multi-server Configuration
 
@@ -275,8 +276,14 @@ This MCP server grants full system access to configured servers. Treat it as a *
 ### Input Validation
 - All file paths are validated against traversal (`..`) and forbidden paths (e.g. `/etc/shadow`).
 - Dangerous commands (`rm -rf /`, `mkfs`, `dd if=`) are blocked before execution.
+- Shell metacharacters (`;`, `|`, `$`, `` ` ``) in commands are rejected before any patterns are checked.
 - Service names, container names, ports, and domains are validated with strict regex patterns.
 - File writes outside `/home`, `/var/www`, `/opt`, `/tmp`, `/srv`, `/var/log` trigger a warning.
+
+### Write Guard
+- Write, destructive, and command-execution tools are gated behind `ENABLE_WRITE_OPERATIONS=1` (default: disabled).
+- When disabled, these tools return a structured error before any I/O.
+- Read-only actions (`manage_service status`, `manage_process list`) bypass the write guard.
 
 ### Credentials
 - API keys and passwords are loaded from environment variables or `.env` (gitignored).
@@ -360,7 +367,7 @@ Add the following to your `claude_desktop_config.json`. Use absolute paths — C
 }
 ```
 
-After restarting Claude Desktop, the 32 mikrus tools will be available for use.
+After restarting Claude Desktop, the 33 mikrus tools will be available for use.
 
 ## Development
 
@@ -373,7 +380,7 @@ pip install -e ".[dev]"
 ### Run tests
 
 ```bash
-# Unit tests (fast, no credentials needed) — 286 tests, 86% coverage
+# Unit tests (fast, no credentials needed) — 310 tests
 pytest tests/unit/ -q --cov=mikrus_mcp --cov-report=term
 
 # Smoke tests — API connectivity and response format
@@ -427,12 +434,13 @@ src/mikrus_mcp/
 ├── validators.py        # Centralized input validation (path, port, service, container, domain)
 ├── sanitizer.py         # Log sanitization (redacts API keys, IPs, passwords, MACs)
 ├── client.py            # Async HTTP client (httpx) + SSH client (asyncssh)
-├── server.py            # MCP server with 32 tools, stdio + SSE transport, partial startup
+├── server.py            # MCP server with 33 tools, stdio + SSE transport, partial startup
 ├── rest_bridge.py       # Optional REST bridge for smoke/e2e testing (on MCP_REST_PORT)
 └── tools/
     ├── __init__.py
-    ├── constants.py     # SSOT defaults, tool manifests, validation limits
+    ├── constants.py     # SSOT defaults, tool manifests, validation limits, write guard
     ├── response.py      # _success_response / _error_response helpers
+    ├── capabilities.py  # describe_mikrus_capabilities introspection tool (L3+)
     ├── mikrus_api.py    # 12 mikr.us API tools + internal functions + registration
     ├── system.py        # 14 system management tools (exec, file, service, disk, etc.)
     ├── container_journal.py  # 6 Docker + journalctl tools + registration
@@ -452,7 +460,9 @@ tests/
 │   ├── test_multi_server.py
 │   ├── test_rest_bridge.py
 │   ├── test_sanitizer.py
-│   └── test_tool_registration.py
+│   ├── test_tool_registration.py
+│   ├── test_capabilities.py
+│   └── test_validators.py
 │
 ├── smoke/                   # Smoke tests — direct API calls (skipif no creds)
 │   ├── conftest.py
@@ -483,7 +493,7 @@ tests/
 
 ## Notes
 
-- **32 tools total:** 1 discovery + 12 mikr.us API + 19 system management tools.
+- **33 tools total:** 2 discovery + 12 mikr.us API + 19 system management tools.
 - **All tools return `{"success": True/False, ...}`** JSON format for consistent error handling.
 - **All write operations** are protected by input validation — no shell injection possible.
 - **Errors are logged to `stderr`**, in compliance with the MCP specification.

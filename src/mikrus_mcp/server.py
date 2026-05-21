@@ -13,6 +13,7 @@ from mcp.server.stdio import stdio_server
 
 from mikrus_mcp.client import MikrusClient, SshClient
 from mikrus_mcp.config import load_config
+from mikrus_mcp.tools.capabilities import register_capability_tools
 from mikrus_mcp.tools.container_journal import register_container_journal_tools
 from mikrus_mcp.tools.discovery import register_discovery_tools
 from mikrus_mcp.tools.mikrus_api import register_mikrus_tools
@@ -119,6 +120,7 @@ register_mikrus_tools(mcp)
 register_system_tools(mcp)
 register_container_journal_tools(mcp)
 register_discovery_tools(mcp)
+register_capability_tools(mcp)
 
 
 def _get_client(server: str | None = None) -> MikrusClient | SshClient:
@@ -199,8 +201,8 @@ def main() -> None:
                     rest_port = int(rest_port_str)
                     from mikrus_mcp.rest_bridge import run_rest_bridge
 
-                    rest_task = asyncio.create_task(run_rest_bridge(mcp, rest_port))
-                    logger.info("REST bridge listening on 127.0.0.1:%d", rest_port)
+                    rest_task = asyncio.create_task(run_rest_bridge(mcp, rest_port, host))
+                    logger.info("REST bridge listening on %s:%d", host, rest_port)
                 except (ValueError, ImportError) as exc:
                     logger.warning("REST bridge not started: %s", exc)
                     rest_task = None

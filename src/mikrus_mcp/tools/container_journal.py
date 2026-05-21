@@ -72,7 +72,7 @@ async def list_docker_containers_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: list_docker_containers — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Verify Docker is installed and running on the server",
@@ -102,7 +102,7 @@ async def get_docker_logs_tool(container: str, lines: int = 50, server: str | No
     except Exception as e:
         logger.debug("Tool failed: get_docker_logs — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Verify the container name is correct",
@@ -130,7 +130,7 @@ async def get_docker_stats_tool(server: str | None = None) -> str:
     except Exception as e:
         logger.debug("Tool failed: get_docker_stats — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Verify Docker is installed and running on the server",
@@ -160,7 +160,7 @@ async def get_journal_logs_tool(unit: str, lines: int = 50, server: str | None =
     except Exception as e:
         logger.debug("Tool failed: get_journal_logs — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="The user may need sudo access. Check that sudo_password is configured for SSH servers",
@@ -189,7 +189,7 @@ async def find_system_errors_tool(hours: int = 1, server: str | None = None) -> 
     except Exception as e:
         logger.debug("Tool failed: find_system_errors — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Retry with fewer hours or check server journal configuration",
@@ -219,7 +219,7 @@ async def search_journal_logs_tool(term: str, lines: int = 50, server: str | Non
     except Exception as e:
         logger.debug("Tool failed: search_journal_logs — %s", e)
         return _error_response_extended(
-            "API_ERROR",
+            "HTTP_ERROR",
             str(e),
             True,
             suggestion="Try a different search term",

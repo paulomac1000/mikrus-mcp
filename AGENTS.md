@@ -257,7 +257,7 @@ tests/
 - **Constraints:** API rate limits (5 req/min per server). SSH execution limited to ~60 seconds. Unit tests must have zero I/O.
 - **Known Limitations:** L3+ features (capability descriptors, tool manifests) are optional. SSE transport security is deployment-specific.
 
-## Edge Cases
+## EDGE_CASES
 
 - **Missing dependency:** Tool returns structured error response. Server continues operating.
 - **Backend unreachable:** `_init_clients()` marks it as failed. Partial startup with remaining backends.

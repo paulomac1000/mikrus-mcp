@@ -66,7 +66,7 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
     async def list_tools_handler(request: Any) -> JSONResponse:  # noqa: ARG001
         tools_list = await mcp.list_tools()
         tools = [{"name": t.name} for t in tools_list]
-        return JSONResponse({"success": True, "data": tools})
+        return JSONResponse({"success": True, "tool_count": len(tools), "data": tools})
 
     async def health_handler(request: Any) -> JSONResponse:  # noqa: ARG001
         from mikrus_mcp.tools.constants import TOOL_MANIFESTS, TOOLS_VERSION
@@ -106,11 +106,11 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
     return app
 
 
-async def run_rest_bridge(mcp: Any, port: int) -> None:
+async def run_rest_bridge(mcp: Any, port: int, host: str = "127.0.0.1") -> None:
     """Start the REST bridge on the given port."""
     import uvicorn
 
     app = create_rest_app(mcp)
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    config = uvicorn.Config(app, host=host, port=port, log_level="error")
     server = uvicorn.Server(config)
     await server.serve()

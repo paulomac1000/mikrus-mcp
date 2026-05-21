@@ -2,6 +2,39 @@
 
 All notable changes to mikrus-mcp.
 
+## [1.1.0] — 2026-05-17
+
+### Added
+
+- `describe_mikrus_capabilities` — zero-I/O MCP introspection tool exposing the full tool catalog with capability manifests over MCP/SSE transport (standard rule 2b, L3+)
+- `WriteOperationsDisabledError` and `check_write_enabled()` — server-level write guard (standard Write Guard, L2+)
+- `validate_command()` — shell metacharacter validation (`;`, `|`, `$`, `` ` ``) for `execute_command` (standard Command Execution Allowlist, L2+)
+- `ENABLE_WRITE_OPERATIONS` environment variable (default: disabled) — gates all write/destructive/command tools
+- Manifest factory functions (`_make_read_manifest`, `_make_write_manifest`, `_make_destructive_manifest`, `_make_dangerous_manifest`, `_make_sensitive_manifest`) replacing 28 ad-hoc dicts
+- `READ_ONLY_SERVICE_ACTIONS` frozenset — `manage_service` skips write guard for `status`/`is-active`/`is-enabled` actions
+- `manage_process` skips write guard for `list` action
+- Per-tool `_meta` envelope with `request_id`, `duration_ms`, `tool_version` on all responses
+- 39 new unit tests: capabilities (5), validators (10), registration (2), manifests/_meta (4), tool count (3 updates), misc (15)
+
+### Changed
+
+- `manage_service` reclassified from `[WRITE]` to `[DESTRUCTIVE]` (service stop/restart causes outage — standard rule: "NEVER classify a service restart as WRITE")
+- `manage_process` reclassified to `_make_destructive_manifest` (kill is irreversible)
+- `boost_server`, `assign_domain`, `write_file` manifests now use factory functions with corrected `idempotent`/`retryable`/`reversible` fields
+- `update_system` remains `[WRITE]` (apt operations are reversible), classified via `_make_write_manifest`
+- Error codes unified to standard set: `SSH_ERROR` → `INTERNAL_ERROR`, `API_ERROR` → `HTTP_ERROR`, `OPERATION_FAILED` → `INTERNAL_ERROR`
+- `TOOL_MANIFESTS` built exclusively through factory functions — no ad-hoc path remains
+- `TOOLS_VERSION` bumped to `1.1.0`
+- REST bridge `run_rest_bridge()` now accepts `host` parameter (was hardcoded to `127.0.0.1` — broke Docker port forwarding)
+- Unit test conftest enables `ENABLE_WRITE_OPERATIONS=1` for tool logic testing
+- Tool count: 32 → 33. All references updated in tests, CI, README, smoke, and e2e
+
+### Fixed
+
+- Write guard now enforced: all 8 mutating tools (`execute_command`, `write_file`, `manage_service`, `manage_process`, `update_system`, `restart_server`, `boost_server`, `assign_domain`) call `check_write_enabled()` before I/O
+- `test_rest_bridge.py` and `test_critical_tools.py` hardcoded tool count fixed (32 → 33)
+- Ruff format fix in `test_tool_registration.py`
+
 ## [1.0.0] — 2026-05-11
 
 ### Fixed

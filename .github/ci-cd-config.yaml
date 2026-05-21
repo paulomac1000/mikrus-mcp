@@ -1,0 +1,20 @@
+# CI/CD Configuration Contract — mikrus-mcp
+language: "python"
+src_dir: "src/mikrus_mcp/"
+package: "mikrus_mcp"
+project: "mikrus-mcp"
+python_version: "3.14"
+image_name: "mikrus-mcp:test"
+smoke_name: "test-srv"
+health_port: 8301
+rest_port: 8301
+use_docker: true
+is_mcp: true
+expected_tools: 33
+use_codecov: true
+use_semgrep: true
+use_dependabot: true
+package_ecosystems: ["github-actions", "pip"]
+use_docs_validation: false
+dockerfile_target: "prod"
+services: null

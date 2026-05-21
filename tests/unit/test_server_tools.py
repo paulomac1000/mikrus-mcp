@@ -28,7 +28,7 @@ from mikrus_mcp.tools.mikrus_api import (
     list_servers_tool,
     restart_server_tool,
 )
-from mikrus_mcp.tools.response import _error_response, _success_response
+from mikrus_mcp.tools.response import _error_response, _error_response_extended, _success_response
 from mikrus_mcp.tools.system import (
     analyze_disk_tool,
     check_port_tool,
@@ -55,10 +55,54 @@ def test_success_response() -> None:
     assert result["data"] == {"key": "value"}
 
 
+def test_success_response_meta_envelope() -> None:
+    result = json.loads(_success_response({"key": "value"}, meta={"tool_version": "1.2.3"}))
+    assert result["success"] is True
+    assert "_meta" in result
+    assert "request_id" in result["_meta"]
+    assert result["_meta"]["tool_version"] == "1.2.3"
+    assert result["_meta"]["duration_ms"] == 0
+    assert result["_meta"]["cached"] is False
+    assert result["_meta"]["retry_safe"] is False
+
+
 def test_error_response() -> None:
     result = json.loads(_error_response("something broke"))
     assert result["success"] is False
     assert result["error"] == "something broke"
+
+
+def test_error_response_meta_envelope() -> None:
+    result = json.loads(_error_response("something broke"))
+    assert "_meta" in result
+    assert "request_id" in result["_meta"]
+
+
+def test_error_response_extended() -> None:
+    result = json.loads(
+        _error_response_extended(
+            "NOT_FOUND",
+            "Server 'x' not found",
+            True,
+            suggestion="Check server name",
+            available_names=["alpha", "beta"],
+        )
+    )
+    assert result["success"] is False
+    assert isinstance(result["error"], dict)
+    assert result["error"]["code"] == "NOT_FOUND"
+    assert result["error"]["message"] == "Server 'x' not found"
+    assert result["error"]["retryable"] is True
+    assert result["error"]["suggestion"] == "Check server name"
+    assert result["error"]["available_names"] == ["alpha", "beta"]
+    assert "request_id" in result["error"]
+
+
+def test_error_response_extended_meta_envelope() -> None:
+    result = json.loads(_error_response_extended("INTERNAL_ERROR", "boom", True))
+    assert "_meta" in result
+    assert "request_id" in result["_meta"]
+    assert result["_meta"]["request_id"] == result["error"]["request_id"]
 
 
 def test_get_client_default(mcp_context: MagicMock) -> None:

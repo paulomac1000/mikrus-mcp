@@ -34,18 +34,27 @@ def client() -> httpx.Client:
 
 
 def test_health_and_tool_list(client: httpx.Client) -> None:
-    """Verify health endpoint and tool listing."""
+    """Verify health endpoint and tool listing with consistent structures."""
     r = client.get("/health")
     assert r.status_code == 200
     health = r.json()
     assert health["status"] == "healthy"
-    assert health["tool_count"] == 32
+    assert health["tool_count"] == 33
 
     r = client.get("/tools")
     assert r.status_code == 200
     tools = r.json()
     assert tools["success"] is True
-    assert len(tools["data"]) == 32
+    assert tools["tool_count"] == 33
+    assert tools["tool_count"] == len(tools["data"])
+
+    r = client.get("/api/tools")
+    assert r.status_code == 200
+    api_tools = r.json()
+    assert api_tools["success"] is True
+    assert api_tools["tool_count"] == 33
+    assert api_tools["tool_count"] == len(api_tools["data"])
+    assert isinstance(api_tools["data"], list)
 
 
 def test_list_configured_servers(client: httpx.Client) -> None:
