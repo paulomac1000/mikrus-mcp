@@ -62,21 +62,67 @@ def test_health_endpoint_api_prefix(client: TestClient) -> None:
 
 
 def test_tools_list(client: TestClient, mock_mcp: MagicMock) -> None:
-    """GET /tools returns tool names from mcp.list_tools()."""
+    """GET /tools returns tool names with tool_count and data list."""
     r = client.get("/tools")
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
+    assert data["tool_count"] == 3
+    assert data["tool_count"] == len(data["data"])
     assert len(data["data"]) == 3
     assert data["data"][0]["name"] == "get_server_info"
 
 
-def test_tools_list_api_prefix(client: TestClient) -> None:
-    """GET /api/tools returns the same as /tools."""
+def test_tools_list_api_prefix(client: TestClient, mock_mcp: MagicMock) -> None:
+    """GET /api/tools returns the same structure as /tools."""
     r = client.get("/api/tools")
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
+    assert data["tool_count"] == 3
+    assert data["tool_count"] == len(data["data"])
+    assert isinstance(data["data"], list)
+
+
+def test_tools_list_empty(mock_mcp: MagicMock) -> None:
+    """GET /tools handles zero tools gracefully."""
+    mock_mcp.list_tools.return_value = []
+    app = create_rest_app(mock_mcp)
+    client = TestClient(app)
+
+    r = client.get("/tools")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["success"] is True
+    assert data["tool_count"] == 0
+    assert data["data"] == []
+
+
+def test_all_endpoint_response_keys(client: TestClient) -> None:
+    """All REST endpoints return consistent, documented keys."""
+    health = client.get("/health").json()
+    assert "status" in health
+    assert "tool_count" in health
+    assert "tools_version" in health
+
+    tools = client.get("/tools").json()
+    assert "success" in tools
+    assert "tool_count" in tools
+    assert "data" in tools
+    assert isinstance(tools["data"], list)
+
+    manifest = client.get("/tools/get_server_info/manifest").json()
+    assert "success" in manifest
+    assert "data" in manifest
+
+
+def test_tools_list_api_prefix_consistent(client: TestClient) -> None:
+    """GET /tools and /api/tools return identical structures."""
+    r1 = client.get("/tools").json()
+    r2 = client.get("/api/tools").json()
+    assert r1["tool_count"] == r2["tool_count"]
+    assert len(r1["data"]) == len(r2["data"])
+    assert r1["success"] == r2["success"]
 
 
 def test_call_tool_no_lifespan() -> None:

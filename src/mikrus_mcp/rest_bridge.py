@@ -66,7 +66,7 @@ def create_rest_app(mcp: Any) -> Any:  # Starlette app, lazy import
     async def list_tools_handler(request: Any) -> JSONResponse:  # noqa: ARG001
         tools_list = await mcp.list_tools()
         tools = [{"name": t.name} for t in tools_list]
-        return JSONResponse({"success": True, "data": tools})
+        return JSONResponse({"success": True, "tool_count": len(tools), "data": tools})
 
     async def health_handler(request: Any) -> JSONResponse:  # noqa: ARG001
         from mikrus_mcp.tools.constants import TOOL_MANIFESTS, TOOLS_VERSION
