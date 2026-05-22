@@ -51,7 +51,7 @@ READ_ONLY_SERVICE_ACTIONS: Final = frozenset({"status", "is-active", "is-enabled
 PROCESS_ACTIONS: Final = frozenset({"list", "kill"})
 
 # Tool version — injected into every response _meta envelope
-TOOLS_VERSION: Final = "1.1.0"
+TOOLS_VERSION: Final = "1.1.1"
 
 # Capability metadata schema version (describe_mikrus_capabilities)
 CAPABILITIES_SCHEMA_VERSION: Final = "1.0.0"

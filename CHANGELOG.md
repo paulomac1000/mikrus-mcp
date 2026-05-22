@@ -2,6 +2,13 @@
 
 All notable changes to mikrus-mcp.
 
+## [1.1.1] — 2026-05-22
+
+### Fixed
+
+- Docker `:master` tag stuck at v0.1.0 — CI (`publish.yml`) now pushes both `:latest` and `:master` tags on default branch builds
+- README: all 6 docker run and Claude Desktop config examples updated from `:master` to `:latest` to reference the canonical working tag
+
 ## [1.1.0] — 2026-05-17
 
 ### Added
