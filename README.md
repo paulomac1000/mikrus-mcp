@@ -77,7 +77,7 @@ Pulls the published image from GitHub Container Registry:
 ```bash
 docker run --rm \
   --env-file .env \
-  ghcr.io/paulomac1000/mikrus-mcp:master
+  ghcr.io/paulomac1000/mikrus-mcp:latest
 ```
 
 Or pass credentials directly:
@@ -86,7 +86,7 @@ Or pass credentials directly:
 docker run --rm \
   -e MIKRUS_API_KEY=your_key \
   -e MIKRUS_SERVER_NAME=your_server \
-  ghcr.io/paulomac1000/mikrus-mcp:master
+  ghcr.io/paulomac1000/mikrus-mcp:latest
 ```
 
 #### Local build (use when modifying the code or for development)
@@ -114,7 +114,7 @@ The server communicates over `stdio` by default. Set `MCP_PORT` to enable SSE tr
 > docker run --rm \
 >   --env-file .env \
 >   -v ~/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro \
->   ghcr.io/paulomac1000/mikrus-mcp:master
+>   ghcr.io/paulomac1000/mikrus-mcp:latest
 > ```
 > SSH keys must have permissions `600` or `400` and be readable by the `appuser` user inside the container (UID 1000). If your host user has a different UID, adjust ownership with `chown 1000:1000 ~/.ssh/id_ed25519` or use a less restrictive mode. Certificates can be mounted the same way.
 
@@ -305,7 +305,7 @@ Add the following to your `claude_desktop_config.json`. Use absolute paths — C
         "--rm",
         "--env-file",
         "/absolute/path/to/mikrus-mcp/.env",
-        "ghcr.io/paulomac1000/mikrus-mcp:master"
+        "ghcr.io/paulomac1000/mikrus-mcp:latest"
       ]
     }
   }
@@ -324,7 +324,7 @@ Add the following to your `claude_desktop_config.json`. Use absolute paths — C
         "--rm",
         "-e", "MIKRUS_API_KEY=your_key",
         "-e", "MIKRUS_SERVER_NAME=your_server",
-        "ghcr.io/paulomac1000/mikrus-mcp:master"
+        "ghcr.io/paulomac1000/mikrus-mcp:latest"
       ]
     }
   }
@@ -360,7 +360,7 @@ Add the following to your `claude_desktop_config.json`. Use absolute paths — C
         "-v", "/home/user/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro",
         "-e", "MCP_SERVERS={\"prod\":{\"type\":\"ssh\",\"host\":\"10.0.0.5\",\"user\":\"admin\",\"ssh_key\":\"/home/appuser/.ssh/id_ed25519\"}}",
         "-e", "MCP_DEFAULT_SERVER=prod",
-        "ghcr.io/paulomac1000/mikrus-mcp:master"
+        "ghcr.io/paulomac1000/mikrus-mcp:latest"
       ]
     }
   }
