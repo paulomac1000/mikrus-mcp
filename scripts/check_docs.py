@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -40,7 +41,21 @@ def metadata(path: Path) -> tuple[dict[str, object], str]:
     return parsed, text[match.end() :]
 
 
+def parser() -> argparse.ArgumentParser:
+    value = argparse.ArgumentParser(description=__doc__)
+    value.add_argument(
+        "--print-governed",
+        action="store_true",
+        help="print governed document paths for the pinned upstream validator",
+    )
+    return value
+
+
 def main() -> int:
+    args = parser().parse_args()
+    if args.print_governed:
+        print("\n".join(str(path.relative_to(ROOT)) for path in GOVERNED))
+        return 0
     findings: list[str] = []
     identifiers: set[str] = set()
     for path in GOVERNED:
