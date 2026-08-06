@@ -1,48 +1,29 @@
-name: Semgrep Full Scan (Scheduled)
+name: Scheduled Semgrep assurance
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: semgrep-full
+  group: semgrep-scheduled
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
-  semgrep-full:
-    runs-on: ubuntu-latest
+  semgrep:
     permissions:
       contents: read
       security-events: write
-      actions: read
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-
-      - name: Semgrep Full Scan
-        uses: semgrep/semgrep-action@v1
+          persist-credentials: false
+      - uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d
         env:
           SEMGREP_RULES: p/auto p/secrets p/owasp-top-ten
-        with:
-          config: >-
-            p/auto
-            p/secrets
-            p/owasp-top-ten
-
-      - name: Upload SARIF to GitHub Security
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: semgrep.sarif
-          category: semgrep-full
-
-      - name: Warn if SARIF upload failed
-        if: always() && steps.upload-sarif.outcome == 'failure'
-        run: echo "::warning::SARIF upload failed — check codeql-action reference or permissions"

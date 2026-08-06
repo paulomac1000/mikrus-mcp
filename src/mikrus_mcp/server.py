@@ -1,241 +1,134 @@
-"""MCP server implementation — multi-server with stdio and SSE transport."""
+"""Official MCP Python SDK v2 composition root and transport entry point."""
 
-import asyncio
+from __future__ import annotations
+
+import json
 import logging
-import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from mcp.server import FastMCP
-from mcp.server.stdio import stdio_server
+import uvicorn
+from mcp.server.mcpserver import MCPServer
 
-from mikrus_mcp.client import MikrusClient, SshClient
-from mikrus_mcp.config import load_config
-from mikrus_mcp.tools.capabilities import register_capability_tools
-from mikrus_mcp.tools.container_journal import register_container_journal_tools
-from mikrus_mcp.tools.discovery import register_discovery_tools
-from mikrus_mcp.tools.mikrus_api import register_mikrus_tools
-from mikrus_mcp.tools.system import register_system_tools
+from mikrus_mcp.approvals import ApprovalRegistry
+from mikrus_mcp.config import Settings, load_settings
+from mikrus_mcp.http import (
+    BearerAuthMiddleware,
+    LoopbackOriginMiddleware,
+    RequestBodyLimitMiddleware,
+)
+from mikrus_mcp.kernel import InvocationKernel
+from mikrus_mcp.manifests import active_names, validate_manifests
+from mikrus_mcp.targets import TargetRegistry
+from mikrus_mcp.tool_api import (
+    AppContext,
+    TOOL_FUNCTIONS,
+    assign_domain,
+    boost_server,
+    change_service_state,
+    execute_command,
+    restart_server,
+    terminate_process,
+    update_system,
+    write_file,
+)
 
 logger = logging.getLogger(__name__)
 
-# Module-level lifespan reference — set by app_lifespan, read by REST bridge
-_lifespan_context: dict[str, Any] | None = None
+
+def build_server(
+    settings: Settings | None = None,
+    *,
+    registry: TargetRegistry | None = None,
+    approvals: ApprovalRegistry | None = None,
+) -> MCPServer[AppContext]:
+    settings = (settings or load_settings()).validate()
+    kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
+
+    @asynccontextmanager
+    async def lifespan(_: MCPServer[AppContext]) -> AsyncIterator[AppContext]:
+        try:
+            yield AppContext(settings, kernel)
+        finally:
+            await kernel.close()
+
+    server = MCPServer(
+        "mikrus-mcp",
+        version="2.0.0",
+        instructions=(
+            "Call list_configured_servers before selecting a target. Preserve the exact target "
+            "identifier. Never retry a mutation. Mutations require operator enablement and a "
+            "one-time server-side approval bound to capability, principal, target, and resource."
+        ),
+        lifespan=lifespan,
+    )
+    registered = active_names(settings)
+    for name in sorted(registered):
+        server.tool()(TOOL_FUNCTIONS[name])
+    validate_manifests(set(registered), settings)
+
+    @server.resource("capabilities://catalog", mime_type="application/json")
+    async def capability_catalog() -> str:
+        return json.dumps(kernel.catalog(active_only=False), sort_keys=True)
+
+    @server.resource("health://ready", mime_type="application/json")
+    async def readiness() -> str:
+        return json.dumps(
+            {
+                "ready": True,
+                "transport": settings.transport,
+                "configured_targets": len(settings.targets),
+                "active_capabilities": len(kernel.active_names),
+                "write_enabled": settings.write_enabled,
+            },
+            sort_keys=True,
+        )
+
+    @server.prompt()
+    def safe_administration_workflow() -> str:
+        return (
+            "Discover targets, select one exact identifier, read current state, plan changes, "
+            "obtain trusted approval outside the model, execute once, then verify postconditions."
+        )
+
+    return server
 
 
-def _setup_logging() -> None:
-    """Configure stderr logging with level from LOG_LEVEL env var."""
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stderr,
+def build_http_app(server: MCPServer[AppContext], settings: Settings) -> Any:
+    if settings.transport != "streamable-http":
+        raise ValueError("build_http_app requires streamable-http settings")
+    app = server.streamable_http_app(
+        host=settings.host,
+        json_response=True,
+        stateless_http=True,
+        max_request_body_size=settings.max_request_body_bytes,
+    )
+    if settings.http_bearer_token is None:
+        raise ValueError("Streamable HTTP bearer token is not configured")
+    return BearerAuthMiddleware(
+        LoopbackOriginMiddleware(
+            RequestBodyLimitMiddleware(app, settings.max_request_body_bytes),
+            settings.host,
+            settings.port,
+        ),
+        settings.http_bearer_token,
     )
 
 
-async def _init_clients() -> dict[str, Any]:
-    """Create and open clients for all configured servers.
-
-    Returns lifespan data dict: {clients, failed, default}.
-    Raises RuntimeError if no server could be connected.
-    """
-    config = load_config()
-    clients: dict[str, MikrusClient | SshClient] = {}
-    failed: dict[str, str] = {}
-
-    for srv_name, srv_cfg in config["servers"].items():
-        client: MikrusClient | SshClient
-        try:
-            if srv_cfg["type"] == "mikrus":
-                client = MikrusClient(
-                    base_url=srv_cfg["api_url"],
-                    api_key=srv_cfg["key"],
-                    server_name=srv_cfg["srv"],
-                )
-            else:
-                client = SshClient(
-                    host=srv_cfg["host"],
-                    user=srv_cfg.get("user", "root"),
-                    port=srv_cfg.get("port", 22),
-                    ssh_key=srv_cfg.get("ssh_key"),
-                    ssh_cert=srv_cfg.get("ssh_cert"),
-                    password=srv_cfg.get("password"),
-                    sudo_password=srv_cfg.get("sudo_password"),
-                    timeout=srv_cfg.get("timeout", 30),
-                    verify_host_key=srv_cfg.get("verify_host_key", False),
-                    known_hosts_file=srv_cfg.get("known_hosts_file"),
-                )
-            await client.open()
-            clients[srv_name] = client
-            logger.info("Connected to %s (%s)", srv_name, srv_cfg["type"])
-        except Exception as exc:
-            logger.error("Failed to connect to %s: %s", srv_name, exc)
-            failed[srv_name] = str(exc)
-
-    if not clients:
-        raise RuntimeError(f"No servers available. Failed: {failed}")
-
-    if failed:
-        logger.warning(
-            "Partial startup: %d/%d servers available. Failed: %s",
-            len(clients),
-            len(config["servers"]),
-            list(failed.keys()),
-        )
-
-    effective_default = config["default"]
-    if effective_default not in clients:
-        effective_default = next(iter(clients.keys()))
-
-    return {
-        "clients": clients,
-        "failed": failed,
-        "default": effective_default,
-    }
-
-
-@asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Yield global lifespan context.
-
-    In FastMCP 1.27, lifespan is called per-SSE-connection.
-    Clients are initialized globally before the first connection
-    via _init_clients() called from main().
-    This function is a thin wrapper that yields the pre-initialized data.
-    """
-    global _lifespan_context
-    if _lifespan_context is None:
-        _lifespan_context = await _init_clients()
-        mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
-    yield _lifespan_context
-
-
-mcp = FastMCP("mikrus-mcp", lifespan=app_lifespan)
-
-# Register all tool categories
-register_mikrus_tools(mcp)
-register_system_tools(mcp)
-register_container_journal_tools(mcp)
-register_discovery_tools(mcp)
-register_capability_tools(mcp)
-
-
-def _get_client(server: str | None = None) -> MikrusClient | SshClient:
-    """Resolve which client to use for a tool call."""
-    ctx = mcp.get_context()
-    lifespan: dict[str, Any] = ctx.request_context.lifespan_context
-    clients: dict[str, MikrusClient | SshClient] = lifespan["clients"]
-    default: str = lifespan["default"]
-    name = server or default
-    if name not in clients:
-        raise ValueError(f"Unknown server: {name}. Available: {sorted(clients.keys())}")
-    return clients[name]
-
-
-async def run_stdio() -> None:
-    """Run the MCP server over stdio transport."""
-    global _lifespan_context
-
-    _lifespan_context = await _init_clients()
-    mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
-
-    try:
-        async with stdio_server() as (read_stream, write_stream):
-            await mcp._mcp_server.run(
-                read_stream,
-                write_stream,
-                mcp._mcp_server.create_initialization_options(),
-            )
-    finally:
-        for c in _lifespan_context["clients"].values():
-            try:
-                await c.close()
-            except Exception as exc:
-                logger.error("Error closing client: %s", exc)
-        _lifespan_context = None
-        mcp._lifespan_data = None  # type: ignore[attr-defined]
-
-
 def main() -> None:
-    """Entry point. Uses SSE transport when MCP_PORT is set, stdio otherwise."""
-    _setup_logging()
-
-    port_str = os.getenv("MCP_PORT", "").strip()
-    rest_port_str = os.getenv("MCP_REST_PORT", "").strip()
-
-    if port_str:
-        host = os.getenv("MCP_HOST", "127.0.0.1")
-
-        if host == "0.0.0.0":  # nosec B104
-            logger.critical(
-                "SSE transport listening on 0.0.0.0 WITHOUT AUTHENTICATION. "
-                "This exposes FULL CONTROL over all configured servers to "
-                "ANYONE on the network. Set MCP_HOST=127.0.0.1 or add auth."
-            )
-            if not os.getenv("MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED"):
-                raise RuntimeError(
-                    "Refusing to start on 0.0.0.0 without MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1"
-                )
-
-        try:
-            port = int(port_str)
-            if not 1 <= port <= 65535:
-                raise ValueError(f"Port must be 1-65535, got {port}")
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid MCP_PORT: {port_str}") from exc
-
-        mcp.settings.host = host
-        mcp.settings.port = port
-
-        async def _run_sse_with_rest() -> None:
-            global _lifespan_context
-
-            _lifespan_context = await _init_clients()
-            mcp._lifespan_data = _lifespan_context  # type: ignore[attr-defined]
-
-            if rest_port_str:
-                try:
-                    rest_port = int(rest_port_str)
-                    from mikrus_mcp.rest_bridge import run_rest_bridge
-
-                    rest_task = asyncio.create_task(run_rest_bridge(mcp, rest_port, host))
-                    logger.info("REST bridge listening on %s:%d", host, rest_port)
-                except (ValueError, ImportError) as exc:
-                    logger.warning("REST bridge not started: %s", exc)
-                    rest_task = None
-            else:
-                rest_task = None
-
-            try:
-                await mcp.run_sse_async()
-            finally:
-                if rest_task:
-                    rest_task.cancel()
-                    try:
-                        await rest_task
-                    except asyncio.CancelledError:
-                        pass
-
-                for c in _lifespan_context["clients"].values():
-                    try:
-                        await c.close()
-                    except Exception as exc:
-                        logger.error("Error closing client: %s", exc)
-
-                _lifespan_context = None
-                mcp._lifespan_data = None  # type: ignore[attr-defined]
-
-        logger.info("Starting MCP server on %s:%s (SSE)", host, port)
-        asyncio.run(_run_sse_with_rest())
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+    settings = load_settings()
+    server = build_server(settings)
+    if settings.transport == "stdio":
+        server.run()
     else:
-        if rest_port_str:
-            logger.warning("MCP_REST_PORT ignored — REST bridge only available in SSE mode")
-
-        logger.info("Starting MCP server on stdio")
-        asyncio.run(run_stdio())
+        uvicorn.run(build_http_app(server, settings), host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":

@@ -1,47 +1,50 @@
-"""Log sanitization for MCP tool responses.
+"""Field-aware minimization and redaction at model-visible and logging boundaries."""
 
-Redacts sensitive patterns from response data before returning
-to the AI agent. Applied at the response boundary.
-"""
+from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Final
 
-_SENSITIVE_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
-    (re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE), "Bearer <REDACTED>"),
-    (re.compile(r"Authorization:\s*\S+", re.IGNORECASE), "Authorization: <REDACTED>"),
-    (re.compile(r"(password|passwd|pwd)[=:]\s*\S+", re.IGNORECASE), r"\1=<REDACTED>"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<IP_REDACTED>"),
+_SECRET_KEYS: Final = re.compile(
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|cookie|"
+    r"authorization|sudo_password)$",
+    re.IGNORECASE,
+)
+_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE), "Bearer <REDACTED>"),
+    (re.compile(r"Authorization:\s*[^\s,;]+", re.IGNORECASE), "Authorization: <REDACTED>"),
     (
         re.compile(
-            r"\b[0-9a-fA-F]{8}[-:][0-9a-fA-F]{4}[-:][0-9a-fA-F]{4}[-:][0-9a-fA-F]{4}[-:][0-9a-fA-F]{12}\b"
+            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
+            r"-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
         ),
-        "<MAC_REDACTED>",
+        "<PRIVATE_KEY_REDACTED>",
     ),
-]
+    (
+        re.compile(r"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*\S+"),
+        r"\1=<REDACTED>",
+    ),
+)
 
 
-def sanitize_log_line(line: str) -> str:
-    """Redact sensitive patterns from a text line.
-
-    Replaces API keys, passwords, tokens, and IP addresses
-    with safe placeholders.
-    """
-    result = line
-    for pattern, replacement in _SENSITIVE_PATTERNS:
+def sanitize_text(value: str) -> str:
+    result = value
+    for pattern, replacement in _PATTERNS:
         result = pattern.sub(replacement, result)
     return result
 
 
-def sanitize_response_data(data: object) -> object:
-    """Recursively sanitize a response data structure.
-
-    Walks through dicts and lists, sanitizing all string values.
-    """
-    if isinstance(data, str):
-        return sanitize_log_line(data)
-    if isinstance(data, dict):
-        return {k: sanitize_response_data(v) for k, v in data.items()}
-    if isinstance(data, list):
-        return [sanitize_response_data(item) for item in data]
-    return data
+def sanitize_data(value: object, *, field_name: str | None = None) -> object:
+    if field_name and _SECRET_KEYS.search(field_name):
+        return "<REDACTED>"
+    if isinstance(value, str):
+        return sanitize_text(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): sanitize_data(item, field_name=str(key))
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [sanitize_data(item) for item in value]
+    return value

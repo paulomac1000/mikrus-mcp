@@ -1,0 +1,4 @@
+mcp>=2.0.0,<3
+httpx==0.28.1
+asyncssh==2.24.0
+uvicorn==0.51.0

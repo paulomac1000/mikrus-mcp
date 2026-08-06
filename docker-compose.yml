@@ -2,28 +2,16 @@ services:
   mikrus-mcp:
     build:
       context: .
-      target: prod
     env_file: .env
     stdin_open: true
-    tty: true
-    command: mikrus-mcp
-    ports:
-      - "8300:8300"  # only needed when MCP_PORT is set (SSE mode)
+    tty: false
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-    # Mount SSH keys read-only if needed (uncomment and adjust path)
-    # volumes:
-    #   - ${HOME}/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro
-
-  test:
-    build:
-      context: .
-      target: dev
-    command: pytest tests/ -v
-    profiles:
-      - test
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Streamable HTTP is loopback-only inside the container. Publishing a host
+    # port requires a separately reviewed network and authentication profile.

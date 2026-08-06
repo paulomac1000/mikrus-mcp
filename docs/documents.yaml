@@ -1,0 +1,10 @@
+schema_version: 1
+governed:
+  - README.md
+  - AGENTS.md
+  - SECURITY.md
+  - MIGRATION.md
+  - CHANGELOG.md
+  - docs/architecture.md
+  - docs/compliance-status.md
+  - docs/ai-skills-review.md

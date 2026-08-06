@@ -1,10 +1,14 @@
-"""Root test configuration — environment loading only."""
+from __future__ import annotations
 
-import os
+import sys
+from pathlib import Path
 
-from tests._env_loader import load_test_env
+import pytest
 
-load_test_env()
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
-MIKRUS_API_KEY = os.getenv("MIKRUS_API_KEY", "")
-MIKRUS_API_URL = os.getenv("MIKRUS_API_URL", "https://api.mikr.us")
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"

@@ -1,506 +1,62 @@
 # Mikrus MCP Server
 
-[![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
-[![Docker](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/publish.yml)
-[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+A security-focused Model Context Protocol server for explicitly configured mikr.us API and SSH targets.
+The runtime uses one application-owned invocation kernel for target binding, authorization, approvals,
+timeouts, concurrency, redaction, and structured failures.
 
-MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](https://mikr.us) API **and** remote Linux servers over SSH. Built in Python, runs anywhere — locally, in Docker, or as a Claude Desktop integration.
+## Supported transports
 
-All tools follow the [MCP Server Standards](https://github.com/paulomac1000/ai-skills/blob/main/skills/mcp-server-architect/mcp-server-standards.md) for response format, testing, and documentation.
+- `stdio` is the default local transport.
+- Streamable HTTP is restricted to literal loopback addresses and requires a protected bearer-token file.
+- Legacy HTTP+SSE and the unauthenticated REST bridge are not used by the production entrypoint.
 
-## Contents
+## Security defaults
 
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-  - [Configure environment](#1-configure-environment)
-  - [Run with Docker](#2-run-with-docker)
-  - [Run locally](#3-run-locally-python-311)
-- [Available Tools](#available-tools)
-- [Tool Response Format](#tool-response-format)
-- [Multi-server Configuration](#multi-server-configuration)
-- [Security Considerations](#security-considerations)
-- [Claude Desktop Configuration](#claude-desktop-configuration)
-- [Development](#development)
-- [Architecture](#architecture)
-- [Troubleshooting](#troubleshooting)
-- [Notes](#notes)
-- [License](#license)
+- An unavailable target never falls back to another configured target.
+- SSH host-key verification is enabled by default.
+- Mutations are disabled unless `MCP_WRITE_ENABLED=true` and require a one-time approval bound to the principal, capability, target, and resource.
+- Mutations are not automatically retried after timeout, disconnect, rate limiting, or ambiguous completion.
+- Capability manifests must cover every registered tool or startup fails.
+- Raw command execution is absent from the default catalog. Its compatibility profile is disabled unless the operator explicitly enables it and supplies an executable allowlist.
 
-## Requirements
+Read [SECURITY.md](SECURITY.md) before enabling writes or the command compatibility profile.
 
-- Python 3.14+ (for local use) or Docker
-- A [mikr.us](https://mikr.us) account with an API key **or** any SSH-accessible Linux server
-- Your server identifier (e.g. `your_srv`) or SSH host
-
-## Quick Start
-
-### 1. Configure environment
+## Local development
 
 ```bash
-cp .env.example .env
+python3 -m venv .venv
+.venv/bin/python -m pip install "pip==25.2"
+.venv/bin/python -m pip install ".[dev]"
+.venv/bin/python scripts/core_gate.py
 ```
 
-Edit `.env` with your credentials. Three modes are supported:
+The complete hosted gate additionally runs formatting, linting, type checking, dependency and security audits,
+AFDS validation, official MCP client tests, exact-wheel smoke tests, and the container lane.
 
-**A — Single-server (mikr.us API only):**
-```
-MIKRUS_API_KEY=your_api_key_here
-MIKRUS_SERVER_NAME=your_server_name_here
-```
-
-**B — Multi-server JSON (mikr.us + SSH):**
-```bash
-MCP_SERVERS={"your_srv": {"type": "mikrus", "key": "xxx", "srv": "your_srv"}, "myssh": {"type": "ssh", "host": "srvXX.mikr.us", "port": 22, "user": "root", "password": "secret"}}
-MCP_DEFAULT_SERVER=your_srv
-```
-
-**C — SSH-only (no mikr.us account needed):**
-```bash
-MCP_SERVERS={"prod": {"type": "ssh", "host": "prod.example.com", "user": "admin", "ssh_key": "/home/user/.ssh/id_ed25519"}}
-```
-
-Variable name aliases (`MCP_*` and `MIKRUS_*` are interchangeable):
-- `MCP_SERVERS` ←→ `MIKRUS_SERVERS`
-- `MCP_DEFAULT_SERVER` ←→ `MIKRUS_DEFAULT_SERVER`
-
-**IMPORTANT:** The `.env` file contains your API key / passwords. It is gitignored and must never be committed.
-
-### 2. Run with Docker
-
-Two approaches are available:
-
-#### Pre-built image (recommended — no local build needed)
-
-Pulls the published image from GitHub Container Registry:
+## Minimal mikr.us configuration
 
 ```bash
-docker run --rm \
-  --env-file .env \
-  ghcr.io/paulomac1000/mikrus-mcp:latest
+export MIKRUS_API_KEY='replace-me'
+export MIKRUS_SERVER_NAME='srv-id'
+.venv/bin/python -m mikrus_mcp
 ```
 
-Or pass credentials directly:
+For multiple targets, set `MCP_SERVERS` to a JSON object and preserve the exact target identifier in tool calls.
+
+## Streamable HTTP
 
 ```bash
-docker run --rm \
-  -e MIKRUS_API_KEY=your_key \
-  -e MIKRUS_SERVER_NAME=your_server \
-  ghcr.io/paulomac1000/mikrus-mcp:latest
+umask 077
+python -c 'import secrets; print(secrets.token_urlsafe(48))' > .mcp-http-token
+export MCP_TRANSPORT=streamable-http
+export MCP_HOST=127.0.0.1
+export MCP_PORT=8000
+export MCP_HTTP_BEARER_TOKEN_FILE="$PWD/.mcp-http-token"
+.venv/bin/python -m mikrus_mcp
 ```
 
-#### Local build (use when modifying the code or for development)
-
-Build the image from source and run it:
-
-```bash
-# with docker compose (reads .env automatically)
-docker compose up mikrus-mcp
-
-# with docker compose and SSH key mount
-docker compose run --rm \
-  -v ~/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro \
-  mikrus-mcp
-
-# or with plain docker build
-docker build -t mikrus-mcp .
-docker run --rm --env-file .env mikrus-mcp
-```
-
-The server communicates over `stdio` by default. Set `MCP_PORT` to enable SSE transport (see [Security Considerations](#security-considerations)).
-
-> **Using SSH keys in Docker:** Mount your private key as a read-only volume:
-> ```bash
-> docker run --rm \
->   --env-file .env \
->   -v ~/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro \
->   ghcr.io/paulomac1000/mikrus-mcp:latest
-> ```
-> SSH keys must have permissions `600` or `400` and be readable by the `appuser` user inside the container (UID 1000). If your host user has a different UID, adjust ownership with `chown 1000:1000 ~/.ssh/id_ed25519` or use a less restrictive mode. Certificates can be mounted the same way.
-
-### 3. Run locally (Python 3.14+)
-
-```bash
-pip install -e ".[dev]"
-mikrus-mcp
-```
-
-## Available Tools
-
-### Discovery
-
-| Tool | Description |
-|------|-------------|
-| `list_configured_servers` | List all configured servers, their types, and connection status. Use this first to discover available servers. |
-| `describe_mikrus_capabilities` | Returns the full tool catalog with capability manifests, supported transports, and schema version. Zero I/O, instant. |
-
-### mikr.us API tools (mikrus servers only)
-
-| Tool | API endpoint | Description |
-|------|-------------|-------------|
-| `get_server_info` | `/info` | Server info: ID, RAM, disk, expiration date, PRO plan status (cache=60s) |
-| `list_servers` | `/serwery` | List all servers associated with the account (cache=60s) |
-| `get_server_stats` | `/stats` | Usage stats: RAM, disk, uptime, load avg, processes (cache=60s) |
-| `execute_command` | `/exec` | Execute a shell command on the server (60s API limit) |
-| `restart_server` | `/restart` | Restart the VPS server |
-| `get_logs` | `/logs` | Last 10 task log entries from the panel |
-| `get_log_by_id` | `/logs/ID` | Details of a specific log entry by ID |
-| `boost_server` | `/amfetamina` | Temporary resource boost (+512MB RAM for 30 min, free) |
-| `get_db_info` | `/db` | Database access credentials (MySQL/PostgreSQL, cache=60s) |
-| `get_ports` | `/porty` | Assigned TCP/UDP ports (cache=60s) |
-| `get_cloud` | `/cloud` | Cloud services and statistics assigned to the account |
-| `assign_domain` | `/domain` | Assign a domain to a port (use `-` for auto-generated subdomain) |
-
-### System management tools (mikrus + SSH servers)
-
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read a text file from the server (up to 200 lines) |
-| `write_file` | Write text content to a file (base64-safe transfer) |
-| `manage_service` | Manage systemd services: status, start, stop, restart, enable, disable |
-| `analyze_disk` | Disk usage overview (`df -h` + top-20 largest directories) |
-| `check_port` | Check if a TCP port is listening and what process uses it |
-| `manage_process` | List top processes by memory or kill a process by PID/name |
-| `update_system` | Run system updates (`apt update && apt upgrade -y`) |
-| `list_directory` | List directory contents (`ls -la`) |
-| `tail_file` | Read last N lines from a text file (max 500) |
-| `search_in_files` | Search for a pattern in files under a path (`grep -r`) |
-| `get_memory_info` | Show memory usage (`free -h`) |
-| `get_network_info` | Show network interfaces and listening TCP ports |
-| `get_process_tree` | Show running processes in a tree view (`ps auxf`) |
-
-### Docker tools (mikrus + SSH servers, requires Docker access)
-
-| Tool | Description |
-|------|-------------|
-| `list_docker_containers` | List all Docker containers with status and image |
-| `get_docker_logs` | Fetch recent logs from a Docker container |
-| `get_docker_stats` | Show resource usage stats for Docker containers |
-
-### Journal tools (mikrus + SSH servers, may require `sudo_password`)
-
-| Tool | Description |
-|------|-------------|
-| `get_journal_logs` | Fetch systemd journal logs for a specific service unit |
-| `find_system_errors` | Find error-level journal entries from the last N hours |
-| `search_journal_logs` | Search journal logs for a keyword or phrase |
-
-> **Note about journal tools:** If the remote user is not in the `systemd-journal` or `adm` group, journal commands will fail. To fix this, add `sudo_password` to the SSH server configuration. If `sudo_password` is omitted, the tool will still work but returns a helpful hint for the user when privileges are insufficient.
-
-All system tools accept an optional `server` parameter to target a specific configured
-server (e.g. `server=myssh`). If omitted, the default server is used.
-
-## Tool Response Format
-
-All 33 tools return a consistent JSON structure. Every response includes a `_meta` envelope with a unique `request_id`:
-
-```json
-{"success": true, "data": {"server_id": "emil359", "param_ram": "1024"}, "_meta": {"request_id": "a1b2c3d4-...", "duration_ms": 42, "cached": false, "retry_safe": false}}
-```
-
-On failure:
-
-```json
-{"success": false, "error": "Server 'unknown' is not a mikrus server", "_meta": {"request_id": "e5f6g7h8-..."}}
-```
-
-The `success` field is always a boolean. Successful responses contain a `data` key with the tool-specific result. Error responses contain an `error` key with a human-readable message. No tool raises unhandled exceptions — errors are always returned as structured JSON.
-
-Tools are annotated with risk-level prefixes in their descriptions:
-
-| Prefix | Meaning | Examples |
-|--------|---------|----------|
-| `[DANGEROUS]` | Executes arbitrary shell commands | `execute_command` |
-| `[WRITE]` | Modifies server state or files | `write_file`, `update_system` |
-| `[DESTRUCTIVE]` | Kills processes, restarts services | `manage_service` (stop/restart), `manage_process` (kill) |
-| `[SENSITIVE]` | Returns credentials or tokens | `get_db_info`, `get_journal_logs` |
-| (none) | Read-only, no side effects | `get_server_info`, `list_servers`, `describe_mikrus_capabilities` |
-
-AI agents use these prefixes to decide whether to request user confirmation before invoking a tool. Tools are additionally gated behind `ENABLE_WRITE_OPERATIONS` — a server-level authorization flag that must be explicitly enabled for any write, destructive, or command-execution tool to perform I/O.
-
-## Multi-server Configuration
-
-You can manage multiple servers simultaneously by using the `MCP_SERVERS` JSON.
-You can mix mikrus and SSH servers, or use SSH servers exclusively (no mikr.us account required).
-
-```json
-{
-  "your_srv": {"type": "mikrus", "key": "xxx", "srv": "your_srv"},
-  "myssh":   {"type": "ssh", "host": "192.168.1.10", "port": 22, "user": "root", "password": "secret", "sudo_password": "secret"}
-}
-```
-
-#### SSH server fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Must be `"ssh"` |
-| `host` | Yes | SSH hostname or IP |
-| `port` | No | SSH port (default: 22) |
-| `user` | No | SSH username (default: `root`) |
-| `password` | No | SSH password (if not using key auth) |
-| `ssh_key` | No | Path to SSH private key file |
-| `ssh_cert` | No | Path to SSH certificate signed by CA |
-| `sudo_password` | No | Password for `sudo -S` (needed for journal tools if user lacks group privileges) |
-| `timeout` | No | SSH timeout in seconds (default: 30) |
-| `verify_host_key` | No | Verify SSH host key (default: `false`) |
-| `known_hosts_file` | No | Path to known_hosts file (used when `verify_host_key=true`) |
-
-#### mikr.us API server fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Must be `"mikrus"` |
-| `key` | Yes | API key from the mikr.us panel |
-| `srv` | Yes | Server identifier (e.g. `srv123`) |
-
-#### Usage
-
-All tools accept an optional `server` parameter to target a specific configured server.
-If `MCP_DEFAULT_SERVER` is not set, the **first server** in the JSON object is used as the default.
-
-## Security Considerations
-
-This MCP server grants full system access to configured servers. Treat it as a **privileged remote administration tool**.
-
-### SSE Transport
-- By default, SSE listens on `127.0.0.1` only.
-- Binding to `0.0.0.0` requires `MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1`.
-- **Never expose SSE to the internet without authentication.** Use a reverse proxy (nginx, Traefik) with TLS and basic auth if remote access is needed.
-
-### SSH Security
-- `verify_host_key` defaults to `false` for ease of use. In production, set it to `true` and provide a `known_hosts_file` to prevent MITM attacks.
-- `sudo_password` is fed via `asyncssh.create_process` + stdin, **never** via shell string interpolation, so it won't appear in `ps aux`.
-- SSH private keys mounted into Docker must have permissions `600` or `400`.
-
-### Input Validation
-- All file paths are validated against traversal (`..`) and forbidden paths (e.g. `/etc/shadow`).
-- Dangerous commands (`rm -rf /`, `mkfs`, `dd if=`) are blocked before execution.
-- Shell metacharacters (`;`, `|`, `$`, `` ` ``) in commands are rejected before any patterns are checked.
-- Service names, container names, ports, and domains are validated with strict regex patterns.
-- File writes outside `/home`, `/var/www`, `/opt`, `/tmp`, `/srv`, `/var/log` trigger a warning.
-
-### Write Guard
-- Write, destructive, and command-execution tools are gated behind `ENABLE_WRITE_OPERATIONS=1` (default: disabled).
-- When disabled, these tools return a structured error before any I/O.
-- Read-only actions (`manage_service status`, `manage_process list`) bypass the write guard.
-
-### Credentials
-- API keys and passwords are loaded from environment variables or `.env` (gitignored).
-- Never commit credentials to version control.
-
-## Claude Desktop Configuration
-
-Add the following to your `claude_desktop_config.json`. Use absolute paths — Claude Desktop may run from a different working directory.
-
-**With `.env` file (Docker):**
-
-```json
-{
-  "mcpServers": {
-    "mikrus": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "--env-file",
-        "/absolute/path/to/mikrus-mcp/.env",
-        "ghcr.io/paulomac1000/mikrus-mcp:latest"
-      ]
-    }
-  }
-}
-```
-
-**With inline credentials (Docker, no `.env` file):**
-
-```json
-{
-  "mcpServers": {
-    "mikrus": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-e", "MIKRUS_API_KEY=your_key",
-        "-e", "MIKRUS_SERVER_NAME=your_server",
-        "ghcr.io/paulomac1000/mikrus-mcp:latest"
-      ]
-    }
-  }
-}
-```
-
-**Native Python (no Docker):**
-
-```json
-{
-  "mcpServers": {
-    "mikrus": {
-      "command": "mikrus-mcp",
-      "env": {
-        "MIKRUS_API_KEY": "your_key",
-        "MIKRUS_SERVER_NAME": "your_server"
-      }
-    }
-  }
-}
-```
-
-**Multi-server with SSH key mount:**
-
-```json
-{
-  "mcpServers": {
-    "mikrus": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-v", "/home/user/.ssh/id_ed25519:/home/appuser/.ssh/id_ed25519:ro",
-        "-e", "MCP_SERVERS={\"prod\":{\"type\":\"ssh\",\"host\":\"10.0.0.5\",\"user\":\"admin\",\"ssh_key\":\"/home/appuser/.ssh/id_ed25519\"}}",
-        "-e", "MCP_DEFAULT_SERVER=prod",
-        "ghcr.io/paulomac1000/mikrus-mcp:latest"
-      ]
-    }
-  }
-}
-```
-
-After restarting Claude Desktop, the 33 mikrus tools will be available for use.
-
-## Development
-
-### Setup
-
-```bash
-pip install -e ".[dev]"
-```
-
-### Run tests
-
-```bash
-# Unit tests (fast, no credentials needed) — 310 tests
-pytest tests/unit/ -q --cov=mikrus_mcp --cov-report=term
-
-# Smoke tests — API connectivity and response format
-pytest tests/smoke/ -q
-
-# Integration tests — real mikr.us API
-pytest tests/integration/ -q
-
-# E2E tests — full pipeline workflows
-pytest tests/e2e/ -q
-```
-
-All tests use [respx](https://github.com/lundberg/respx) (HTTP mocking) or `unittest.mock` (SSH mocking). No real network calls are made in unit or e2e tests. Smoke and integration tests require a valid `MIKRUS_API_KEY` and skip gracefully otherwise.
-
-### REST Bridge (optional testing utility)
-
-Set `MCP_REST_PORT` to expose an HTTP bridge that turns tool calls into REST endpoints:
-
-```bash
-MCP_PORT=8300 MCP_REST_PORT=8301 mikrus-mcp
-# GET  http://127.0.0.1:8301/health
-# GET  http://127.0.0.1:8301/tools
-# POST http://127.0.0.1:8301/tools/get_server_info  {"params": {}}
-```
-
-This is a development utility for smoke testing and debugging. It is separate from the MCP SSE transport and runs on its own port. All endpoints have `/api/` prefixed mirrors (`GET /api/health`, `GET /api/tools`, `POST /api/tools/{name}`). Tool manifest endpoints are also available at `GET /tools/{name}/manifest` and `GET /api/tools/{name}/manifest`.
-
-### Lint & type check
-
-```bash
-ruff check src/ tests/
-ruff format --check src/ tests/
-mypy src/
-bandit -r src/
-```
-
-### In Docker
-
-```bash
-docker compose run --rm test
-```
-
-## Architecture
-
-```
-src/mikrus_mcp/
-├── __init__.py          # Package version
-├── __main__.py          # python -m mikrus_mcp entry point
-├── config.py            # Environment variable loader (dotenv) — single-server, multi-server, SSH-only
-├── constants.py         # Backward-compat re-export for tools/constants.py
-├── validators.py        # Centralized input validation (path, port, service, container, domain)
-├── sanitizer.py         # Log sanitization (redacts API keys, IPs, passwords, MACs)
-├── client.py            # Async HTTP client (httpx) + SSH client (asyncssh)
-├── server.py            # MCP server with 33 tools, stdio + SSE transport, partial startup
-├── rest_bridge.py       # Optional REST bridge for smoke/e2e testing (on MCP_REST_PORT)
-└── tools/
-    ├── __init__.py
-    ├── constants.py     # SSOT defaults, tool manifests, validation limits, write guard
-    ├── response.py      # _success_response / _error_response helpers
-    ├── capabilities.py  # describe_mikrus_capabilities introspection tool (L3+)
-    ├── mikrus_api.py    # 12 mikr.us API tools + internal functions + registration
-    ├── system.py        # 14 system management tools (exec, file, service, disk, etc.)
-    ├── container_journal.py  # 6 Docker + journalctl tools + registration
-    └── discovery.py     # Server listing tool + registration
-
-tests/
-├── conftest.py              # Root: environment loading
-├── fixtures.py              # Mock data constants
-├── _env_loader.py           # Shared .env loader for conftest files
-│
-├── unit/                    # Unit tests — zero I/O, fully mocked
-│   ├── conftest.py
-│   ├── test_client.py
-│   ├── test_config.py
-│   ├── test_server_tools.py
-│   ├── test_ssh_client.py
-│   ├── test_multi_server.py
-│   ├── test_rest_bridge.py
-│   ├── test_sanitizer.py
-│   ├── test_tool_registration.py
-│   ├── test_capabilities.py
-│   └── test_validators.py
-│
-├── smoke/                   # Smoke tests — direct API calls (skipif no creds)
-│   ├── conftest.py
-│   ├── test_connectivity.py
-│   ├── test_critical_tools.py
-│   └── test_response_format.py
-│
-├── integration/             # Integration tests — real API calls
-│   ├── conftest.py
-│   ├── mcp_wrapper.py
-│   └── test_real_tools.py
-│
-└── e2e/                     # E2E tests — full pipeline workflows
-    ├── conftest.py
-    └── test_server_api.py
-```
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| `No servers available` | Check that `MIKRUS_API_KEY` + `MIKRUS_SERVER_NAME` or `MCP_SERVERS` JSON is set correctly. |
-| `SSH key not found` | Verify the path in `ssh_key` is absolute and accessible from the container (mount it as a volume). |
-| `Journal access denied` | Add `sudo_password` to the SSH server config, or add the user to the `systemd-journal` / `adm` group. |
-| `Port must be 1-65535` | The `MCP_PORT` env var must be a valid TCP port number. |
-| `Refusing to start on 0.0.0.0` | Set `MCP_HOST=127.0.0.1` or set `MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1` (not recommended). |
-| Partial startup warning | One or more servers failed to connect. Check logs — other servers are still available. |
-
-## Notes
-
-- **33 tools total:** 2 discovery + 12 mikr.us API + 19 system management tools.
-- **All tools return `{"success": True/False, ...}`** JSON format for consistent error handling.
-- **All write operations** are protected by input validation — no shell injection possible.
-- **Errors are logged to `stderr`**, in compliance with the MCP specification.
-- The mikr.us `/exec` endpoint has a 65-second client timeout (API limit is 60s).
-- `/stats`, `/info`, `/serwery`, `/db`, and `/porty` have a 60-second API-side cache.
-- Tool descriptions are optimized for LLM agents — each explains *when* and *why* to use the tool.
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
+Clients connect to `http://127.0.0.1:8000/mcp` with `Authorization: Bearer <token>`.
+Remote proxy deployment is outside the supported security profile.
+
+See [MIGRATION.md](MIGRATION.md), [docs/architecture.md](docs/architecture.md), and
+[docs/compliance-status.md](docs/compliance-status.md) for migration details, evidence, and residual risks.

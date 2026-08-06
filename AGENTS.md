@@ -1,274 +1,127 @@
 ---
-description: Agent guidelines and coding standards for the mikrus-mcp MCP server — universal standards, test hierarchy, response format, common pitfalls
-doc_id: ref.agent-guidelines
-type: ref
+description: Repository-wide operating contract for agents changing the hardened mikrus-mcp server
+doc_id: guide.agent-contribution
+type: guide
 status: active
-ttl_days: 180
-rigor_tier: L2
-stability: stable
-ai_scope: editable
-domain: mcp
-tags: ["agents", "coding-standards", "testing", "mcp", "pitfalls"]
-owners: ["backend-team"]
-upstream:
-  - ref.mcp-server-standards
-source_of_truth: true
-last_verified: "2026-05-10"
+rigor: operational
+owners: [repository-maintainers]
+verification: Run `.venv/bin/python scripts/core_gate.py`, then `.venv/bin/python scripts/ci.py` in the locked development environment and verify provider CI on the exact final revision.
 ---
+# Repository instructions for agents
 
-# Agent Guidelines
+## Scope and precedence
 
-> **Universal standards:** See `/var/apps/docs/mcp_standards.md` for reusable MCP server patterns (test hierarchy, response format, CI pipelines, common pitfalls). This file applies those standards to the mikrus-mcp codebase specifically.
+This file applies to the complete repository. Direct user instructions and platform
+safety requirements have higher authority. Normative architecture and security rules
+live in [Architecture](docs/architecture.md) and [Security model](SECURITY.md).
+Conflicts fail closed; identify the competing sources instead of choosing the easier
+rule.
 
-## Purpose
+The pinned standards revision is recorded in [`ai-skills.lock.yaml`](ai-skills.lock.yaml).
+Read the applicable `STANDARD.md` from that revision before changing MCP, AFDS,
+AGENTS.md, or CI/CD contracts.
 
-This is an MCP (Model Context Protocol) server for managing VPS servers via the [mikr.us](https://mikr.us) API **and** remote Linux servers over SSH. It is written in Python and runs either locally or inside Docker.
+## Operating modes
 
-## Scope
+- **Read-only audit:** inspect code, tests, documentation, configuration, and provider
+  evidence without modifying the repository or external systems.
+- **Implementation:** modify the work branch only; do not publish, tag, deploy, send
+  data, or access a real backend without explicit authorization.
+- **Migration:** update canonical rules, implementation, tests, documentation, and
+  compatibility notes together.
+- **Release:** requires exact-revision CI, exact-artifact smoke, protected environment,
+  immutable digest, and provider-backed review.
+- **Real-system validation:** use dedicated test targets and the TODO tests under
+  `tests/real_system/`; never repurpose production infrastructure.
 
-This document defines coding standards, test requirements, documentation conventions, and operational guidelines for AI coding agents working on the mikrus-mcp codebase. It applies to all source files, test files, documentation, and CI/CD configurations in this repository.
+## Architecture boundaries
 
-## Definitions
+- `config.py` owns the immutable process settings snapshot.
+- `manifests.py` owns capability policy metadata. Missing metadata is a startup error.
+- `kernel.py` is the only public operation path. Transports and tests do not call
+  backend methods around it.
+- `client.py` contains MCP-independent mikr.us and SSH adapters.
+- `server.py` owns official SDK registration and transport composition.
+- `http.py` owns loopback Host, Origin, and request-body controls.
+- `validators.py` performs local validation before protected I/O.
+- `sanitizer.py` performs field-aware model-visible minimization.
+- No unavailable or failed target may be replaced with another target.
+- No model argument, boolean, description prefix, or natural-language confirmation is
+  authorization or approval.
 
-- `MCP tool`: A function exposed by this server that returns a structured JSON response with a `"success"` boolean.
-- `internal function`: A private function (`_function_name`) that implements the actual logic without MCP infrastructure.
-- `lifespan`: The application lifecycle context that initializes and provides access to backend clients.
-- `SSOT (Single Source of Truth)`: A principle requiring each configuration default to be defined in exactly one location.
-- `response wrapper`: Helper functions that format every tool response consistently.
-- `REST bridge`: An optional HTTP wrapper that exposes MCP tools via REST endpoints for smoke/e2e testing.
+Do not reintroduce SDK v1 private attributes, legacy HTTP+SSE, production test mocks,
+import-time client creation, mutable global request context, broad shell execution, or
+lexical path-prefix containment.
 
-## Details
+## Commands
 
-### Architecture
-
-- `src/mikrus_mcp/config.py` — loads configuration from environment variables (`.env`). Supports single-server, multi-server JSON, and SSH-only modes.
-- `src/mikrus_mcp/validators.py` — centralized input validation (path, port, service, container, domain, content size, dangerous commands).
-- `src/mikrus_mcp/client.py` — async HTTP client for the mikr.us API (`httpx`) + SSH client (`asyncssh`) with certificate support.
-- `src/mikrus_mcp/server.py` — MCP server with 32 tools, `stdio` + SSE transport, partial startup graceful degradation.
-- `src/mikrus_mcp/rest_bridge.py` — optional REST bridge for smoke/e2e testing; enabled by `MCP_REST_PORT` env var. Exposes `GET /health`, `GET /tools`, `POST /tools/{name}`.
-- `src/mikrus_mcp/sanitizer.py` — log sanitization; redacts API keys, passwords, IPs, MACs from response output.
-- `src/mikrus_mcp/constants.py` — backward-compatible re-export from `tools/constants.py`.
-- `src/mikrus_mcp/tools/constants.py` — SSOT defaults (timeouts, limits, service actions) and `TOOL_MANIFESTS` (32 tool capability descriptors).
-- `src/mikrus_mcp/tools/response.py` — `_success_response`, `_error_response`, `_error_response_extended`, `_tool_description` helpers.
-- `src/mikrus_mcp/tools/mikrus_api.py` — 12 mikr.us API tools with internal functions and registration.
-
-### Build & Run
+Create an isolated environment:
 
 ```bash
-# Local development
-pip install -e ".[dev]"
-pytest tests/unit/ -q
-ruff check src/ tests/
-mypy src/
-bandit -r src/
-
-# Docker
-docker build -t mikrus-mcp .
-docker run --rm --env-file .env mikrus-mcp
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
 ```
 
-### File Organization
+Focused test:
 
-```
-tests/
-├── conftest.py              # Root: env loading only (~15 lines)
-├── fixtures.py              # All mock data constants
-├── _env_loader.py           # Shared env loading helper
-│
-├── unit/
-│   ├── conftest.py          # Unit fixtures (mock_client, mock_ssh_client, etc.)
-│   ├── test_client.py       # HTTP client tests
-│   ├── test_config.py       # Configuration loader tests
-│   ├── test_server_tools.py  # Tool handler tests
-│   ├── test_ssh_client.py   # SSH client tests
-│   ├── test_multi_server.py # Multi-server routing tests
-│   ├── test_rest_bridge.py  # REST bridge endpoint tests
-│   ├── test_sanitizer.py    # Log sanitization tests
-│   └── test_tool_registration.py  # Tool registration verification
-│
-├── smoke/
-│   ├── conftest.py          # Minimal: env loading + skipif
-│   ├── test_connectivity.py # API reachable, health check
-│   ├── test_critical_tools.py  # Key tools return success
-│   └── test_response_format.py # Success field compliance
-│
-├── integration/
-│   ├── conftest.py          # Real credentials + skipif
-│   ├── mcp_wrapper.py       # FastMCP abstraction wrapper
-│   └── test_real_tools.py   # Tools against real mikr.us API
-│
-└── e2e/
-    ├── conftest.py          # Env loading + skipif
-    └── test_server_api.py   # Workflow + error handling tests
+```bash
+.venv/bin/python -m pytest tests/unit/test_kernel.py -q
 ```
 
-## Rules
+Credential-free core gate:
 
-### Language & Naming
+```bash
+.venv/bin/python scripts/core_gate.py
+```
 
-#### Mandatory English
-- ALL code, comments, docstrings, commit messages, and tool descriptions MUST be in English.
-- No Polish, no mixed-language fragments.
-- No Polish characters in source files.
+Complete local gate:
 
-#### Tool Descriptions
-- First line of `@mcp.tool()` docstring MUST be a complete sentence describing what the tool does.
-- NO emoji in tool description first lines.
-- NO emoji in API response strings (status labels, messages).
-- Every docstring must include `Args` and `Returns` sections.
-- Use plain text status labels: `"OK"` not emoji-prefixed labels.
-- Tool descriptions MUST include a risk prefix as the first text:
-  - `[DANGEROUS]` — executes arbitrary shell commands
-  - `[WRITE]` — modifies server state or files
-  - `[DESTRUCTIVE]` — kills processes or deletes data
-  - `[SENSITIVE]` — returns credentials or tokens
-  - No prefix implies `[READ]` — read-only, no side effects
+```bash
+.venv/bin/python scripts/ci.py
+```
 
-#### Parameter Descriptions
-- Use `e.g.` for examples.
-- Examples must use generic, non-culture-specific paths and names.
+Build and inspect the exact wheel:
 
-### Test Standards
+```bash
+.venv/bin/python -m build --wheel
+.venv/bin/python scripts/artifact_smoke.py \
+  --wheel dist/mikrus_mcp-2.0.0-py3-none-any.whl \
+  --wheelhouse wheelhouse
+```
 
-#### Test Hierarchy
+Real-backend tests are skipped by default. Run them only with dedicated credentials,
+explicit target selection, write policy, and approval records.
 
-| Suite | Location | Runtime | Requires | Run with |
-|-------|----------|---------|----------|----------|
-| **Unit** | `tests/unit/` | <20s | Nothing | `pytest tests/unit/ -q` |
-| **Smoke** | `tests/smoke/` | <5s | mikr.us API + `MIKRUS_API_KEY` | `pytest tests/smoke/ -q` |
-| **Integration** | `tests/integration/` | ~30s | Real API + `MIKRUS_API_KEY` | `pytest tests/integration/ -q` |
-| **E2E** | `tests/e2e/` | ~10s | Real API (mocked) | `pytest tests/e2e/ -q` |
+## Safety and data boundaries
 
-#### Test Rules
+Secrets, approval files, private keys, known-host databases, real logs, database
+credentials, production exports, and test output containing protected data stay
+outside tracked files. Never print them to stdout, logs, failure messages, artifacts,
+or PR comments.
 
-1. **Unit tests:** Zero I/O, all dependencies mocked via `unittest.mock.patch` or `respx`. Run without credentials.
-2. **Smoke tests:** Direct REST API calls (`httpx`), no MCP wrapper needed. Skip if no `MIKRUS_API_KEY`.
-3. **Integration tests:** Real mikr.us API calls via `httpx`. Skip if no `MIKRUS_API_KEY`.
-4. **E2E tests:** Full pipeline with mocked responses. Test workflow sequences and error handling.
-5. **Test isolation:** Each test must be independent. Do not rely on shared state or test order.
-6. **Skip, don't fail:** All non-unit tests use `pytest.mark.skipif(not MIKRUS_API_KEY, ...)`.
+Stdio reserves stdout for MCP protocol traffic. Diagnostics go to stderr. Streamable
+HTTP remains loopback-only until a separately reviewed remote-auth profile exists.
+Writes are disabled by default and require a one-time server-side approval bound to
+the principal, capability, target, and resource.
 
-#### Test Environment
+Do not weaken, delete, skip, or rewrite assertions solely to obtain a green result.
+When a check needs infrastructure unavailable to the current agent, add a narrowly
+scoped skipped test with a concrete `TODO(real-system)` or `TODO(provider)` reason and
+record the missing evidence in [Compliance status](docs/compliance-status.md).
 
-1. Copy `.env.example` to `.env`
-2. Fill in `MIKRUS_API_KEY` and `MIKRUS_SERVER_NAME`
-3. `.env` is gitignored — never committed
+## Documentation routes
 
-### Code Quality
+- Architecture, boundaries, lifecycle, failures: `docs/architecture.md`
+- Threat model and operator controls: `SECURITY.md`
+- Standards rule evidence and residual gaps: `docs/compliance-status.md`
+- Breaking upgrade workflow: `MIGRATION.md`
+- Upstream standards defects and proposals: `docs/ai-skills-review.md`
+- User setup and supported workflows: `README.md`
 
-#### Tool Response Format
-- All tools return JSON strings with `{"success": True/False, ...}` structure.
-- On success: `{"success": True, "data": <result>}`.
-- On failure: `{"success": False, "error": "<message>"}`.
-- Use helper functions `_success_response()` and `_error_response()` in `tools/response.py`.
-- Never raise unhandled exceptions — catch and return error response.
+## Definition of done
 
-#### Input Validation
-- All input validation is centralized in `validators.py`.
-- Validate required parameters early — never pass `None` to string operations.
-- Check for empty strings, wrong types, path traversal, dangerous commands before use.
-
-#### Logging
-- Use `logging` module instead of `print()`.
-- Never log `MIKRUS_API_KEY`, passwords, or API keys.
-- Log to `stderr` in compliance with MCP specification.
-
-#### Security
-- `.env` is gitignored — never commit credentials.
-- Path traversal blocked in `validators.py` — `..` and `~` rejected.
-- Dangerous shell commands (`rm -rf /`, `mkfs`, `dd if=`, fork bombs) blocked.
-- `sudo_password` fed via stdin, never through shell string interpolation.
-
-### Coverage Requirements
-
-| Requirement | Threshold |
-|-------------|-----------|
-| Per-module minimum | 80% |
-| Overall coverage | >85% |
-| New tool unit tests | >80% of new lines |
-| New tool smoke test | At least 1 |
-| Critical tool (server info, stats, logs) | Unit + smoke + integration |
-
-## Pitfalls
-
-1. **Response format:** Every tool must return `{"success": True/False, ...}`. Tests verify this.
-2. **Fixture resolution:** Pytest auto-discovers only `conftest.py` files, NOT `__init__.py`. Put test fixtures in `conftest.py`.
-3. **Duplicate fixtures:** Two test files in the same directory cannot define fixtures with the same name in different files. Use common fixtures in `conftest.py`.
-4. **SSH mock pattern:** SSH tests use `MagicMock + patch.dict("sys.modules", {"asyncssh": mock})` pattern.
-5. **Error swallowing:** Catch all exceptions in tool handlers — a single unhandled exception takes down the MCP server.
-6. **MCP context outside request:** `mcp.get_context()` returns `None` outside an active MCP request. Unit tests MUST mock the context via `patch.object(mcp, "get_context", return_value=mock_ctx)` to call tool handlers directly.
-7. **Lifespan timing:** The REST bridge starts before `app_lifespan`. The lifespan context is stored in `mcp._lifespan_data` during the lifespan. Tools need this context via `_get_client()`.
-8. **Parameterized arg unpacking:** Use `*args` not `**kwargs` for positional parameterized test parameters. Define tuples as `(tool_fn, method_name, ("arg1", "arg2"))`.
-9. **Coverage budget:** Unit tests provide 80%+ coverage. Integration adds 5-15%. Smoke and E2E validate format, not coverage metrics.
-10. **Placeholder credentials:** Skip conditions for smoke/integration tests MUST also check `== "your_api_key_here"` to prevent tests running with example configuration.
-11. **Module-level imports bind early:** Changing `constants.VAR` after import does not propagate to already-imported modules. Set env vars BEFORE importing the module. Use `os.environ` for runtime overrides.
-12. **JSON response not parsed:** Always `json.loads()` the tool response before processing. The response is always a JSON string, never a dict.
-13. **Response wrapper inconsistency:** Never call `json.dumps()` directly in a tool handler. Always use `_success_response()` or `_error_response()`.
-14. **Hardcoded defaults in multiple files:** All config defaults must be in `tools/constants.py` (SSOT). The root `src/mikrus_mcp/constants.py` is a backward-compat re-export only.
-15. **Credentials in logs:** Never log `MIKRUS_API_KEY`, passwords, or tokens. If logging dynamic content from tool output, sanitize before writing.
-16. **No timeout on external calls:** Every HTTP, SSH, or subprocess call must have a timeout. Without one, a hung backend connection blocks the tool forever.
-17. **Public SSE without warning:** Binding SSE to `0.0.0.0` requires `MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1`. Without auth, this exposes full server control to the network.
-18. **Framework `call_tool` API mismatch:** `FastMCP.call_tool` is async with `(name, args)`. `Server.call_tool` is sync with `(validate_input=bool)`. Never mix them.
-19. **Coverage gap from wrong suite:** Smoke and E2E tests produce 0% coverage by coverage.py. Chasing coverage from these suites is wasted effort. Coverage comes from unit (80%+) and integration (+5-15%) tests.
-
-## Interfaces
-
-### Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `MCP_SERVERS` / `MIKRUS_SERVERS` | Yes* | JSON object with one or more server configs |
-| `MCP_DEFAULT_SERVER` / `MIKRUS_DEFAULT_SERVER` | No | Default server name (auto-picks first if omitted) |
-| `MIKRUS_API_KEY` | Yes* | API key from the mikr.us panel (single-server mode) |
-| `MIKRUS_SERVER_NAME` | Yes* | Server identifier (single-server mode) |
-| `MIKRUS_API_URL` | No | Custom API endpoint (default: `https://api.mikr.us`) |
-| `MCP_PORT` | No | Enable SSE transport on this port |
-| `MCP_HOST` | No | SSE bind address (default: `127.0.0.1`) |
-| `MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED` | No | Required to bind SSE to `0.0.0.0` |
-| `MCP_REST_PORT` | No | Enable optional REST bridge for smoke testing on this port |
-| `LOG_LEVEL` | No | Logging level (default: `INFO`) |
-
-*Either `MCP_SERVERS` or `MIKRUS_API_KEY`+`MIKRUS_SERVER_NAME` is required.
-
-### SSH Server Config Fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Must be `"ssh"` |
-| `host` | Yes | SSH hostname or IP |
-| `port` | No | SSH port (default: 22) |
-| `user` | No | SSH username (default: `root`) |
-| `password` | No | SSH password |
-| `ssh_key` | No | Path to SSH private key |
-| `ssh_cert` | No | Path to SSH certificate (signed by CA) |
-| `sudo_password` | No | Password for `sudo -S` (journal tools) |
-| `timeout` | No | SSH connection timeout in seconds (default: 30) |
-| `verify_host_key` | No | Verify SSH host key (default: `false`) |
-| `known_hosts_file` | No | Path to known_hosts file |
-
-### Entry Points
-
-- `mikrus-mcp` CLI command (defined in `pyproject.toml`).
-- `python -m mikrus_mcp` (via `__main__.py`).
-
-## State
-
-- **Assumptions:** The server has access to the mikr.us API and/or configured SSH hosts. Python 3.11+ is available. The MCP SDK (`mcp`) manages SSE/stdio transport.
-- **Constraints:** API rate limits (5 req/min per server). SSH execution limited to ~60 seconds. Unit tests must have zero I/O.
-- **Known Limitations:** L3+ features (capability descriptors, tool manifests) are optional. SSE transport security is deployment-specific.
-
-## EDGE_CASES
-
-- **Missing dependency:** Tool returns structured error response. Server continues operating.
-- **Backend unreachable:** `_init_clients()` marks it as failed. Partial startup with remaining backends.
-- **Invalid server name:** `_get_client()` raises ValueError. Wrapper returns structured error.
-
-## Examples
-
-Example test file organization, CI pipeline invocation, and common pitfall resolutions can be found in the sections above. See also the test fixtures in `tests/fixtures.py` for mock data patterns.
-
-## Non_Goals
-
-- This document is not a full Python programming guide.
-- It does not cover deployment or operations in detail.
-- It does not specify HTTP API design outside the MCP tool contract.
+A change is complete only when code, manifests, schemas, documentation, and tests
+agree; local and hosted commands are distinct; target and approval bindings remain
+fail-closed; exact built artifacts are tested; new residual risk is recorded; and
+provider checks and review refer to the exact final commit. Local self-review is not
+independent production approval.

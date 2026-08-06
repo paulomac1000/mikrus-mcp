@@ -1,27 +1,35 @@
-"""HTTP and SSH clients for mikr.us API and remote servers."""
+"""Bounded HTTP and SSH adapters independent from MCP transport types."""
+
+from __future__ import annotations
 
 import asyncio
 import base64
 import json
 import logging
+import secrets
 import re
-import time as _time
+import shlex
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
+from mikrus_mcp.config import TargetConfig
+from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.tools.constants import (
     DEFAULT_HTTP_TIMEOUT,
     EXEC_HTTP_TIMEOUT,
     MAX_JOURNAL_LINES,
+    MAX_PROCESS_OUTPUT_BYTES,
+    MAX_RESPONSE_BYTES,
     MAX_SEARCH_RESULTS,
-    PROCESS_ACTIONS,
     SSH_DEFAULT_TIMEOUT,
 )
 from mikrus_mcp.validators import (
     ValidationError,
-    check_dangerous_command,
+    validate_command,
     validate_container_name,
     validate_content_size,
     validate_domain,
@@ -29,6 +37,7 @@ from mikrus_mcp.validators import (
     validate_lines_param,
     validate_path,
     validate_port,
+    validate_process_target,
     validate_search_pattern,
     validate_service_action,
     validate_service_name,
@@ -36,725 +45,669 @@ from mikrus_mcp.validators import (
 
 logger = logging.getLogger(__name__)
 
-PATH_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]+$")
-CONTAINER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+_CACHEABLE_ENDPOINTS = frozenset({"/info", "/stats", "/serwery", "/porty"})
+_CACHE_TTL_SECONDS = 60.0
+_MAX_READ_RETRIES = 2
 
-# Rate limiting constants (mikr.us API: ~5 req/min global limit)
-MIN_REQUEST_INTERVAL = 0.25  # seconds between API calls
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 5.0  # seconds
 
-# In-memory cache for endpoints with server-side 60s cache
-CACHED_ENDPOINTS = frozenset({"/info", "/stats", "/serwery", "/db", "/porty"})
-CACHE_TTL = 60  # seconds
+class RateLimiter:
+    """Serialize reservations against a credential-scoped requests-per-minute quota."""
+
+    def __init__(
+        self,
+        requests_per_minute: int = 5,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        if requests_per_minute <= 0:
+            raise ValueError("requests_per_minute must be positive")
+        self._interval = 60.0 / requests_per_minute
+        self._clock = clock
+        self._sleep = sleep
+        self._next_slot = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            now = self._clock()
+            delay = max(0.0, self._next_slot - now)
+            if delay:
+                await self._sleep(delay)
+                now = self._clock()
+            self._next_slot = max(now, self._next_slot) + self._interval
 
 
 class MikrusClient:
-    """Async HTTP client for the mikr.us API."""
+    """Async HTTP adapter bound to one immutable mikr.us server identity."""
 
-    def __init__(self, base_url: str, api_key: str, server_name: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        server_name: str,
+        *,
+        requests_per_minute: int = 5,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not base_url.startswith("https://"):
+            raise ValueError("mikr.us API URL must use HTTPS")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.server_name = server_name
+        self.stable_identity = f"mikrus:{server_name}"
+        self._transport = transport
         self._client: httpx.AsyncClient | None = None
-        self._last_request_at: float = 0.0
+        self._rate_limiter = RateLimiter(requests_per_minute)
         self._cache: dict[str, tuple[float, Any]] = {}
-        self._cache_lock: asyncio.Lock = asyncio.Lock()
+        self._cache_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
-        return f"MikrusClient(server={self.server_name}, url={self.base_url})"
+        return f"MikrusClient(server={self.server_name!r}, url={self.base_url!r})"
+
+    async def open(self) -> None:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                transport=self._transport,
+                follow_redirects=False,
+                timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> MikrusClient:
+        await self.open()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        return max(0.0, min(value, 60.0))
+
+    async def _cached(self, endpoint: str) -> Any | None:
+        if endpoint not in _CACHEABLE_ENDPOINTS:
+            return None
+        async with self._cache_lock:
+            item = self._cache.get(endpoint)
+            if item is None:
+                return None
+            created, value = item
+            if time.monotonic() - created >= _CACHE_TTL_SECONDS:
+                self._cache.pop(endpoint, None)
+                return None
+            return value
+
+    async def _store_cache(self, endpoint: str, value: Any) -> None:
+        if endpoint in _CACHEABLE_ENDPOINTS:
+            async with self._cache_lock:
+                self._cache[endpoint] = (time.monotonic(), value)
 
     async def _request(
         self,
         endpoint: str,
         extra_data: dict[str, str] | None = None,
+        *,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
+        retryable: bool = True,
     ) -> Any:
-        """Send a POST request to the mikr.us API with rate limiting and caching."""
         if self._client is None:
-            raise RuntimeError("Client not opened. Use async context manager.")
+            raise AppError(ErrorCode.UNAVAILABLE, "HTTP client is not open")
+        cached = await self._cached(endpoint)
+        if cached is not None:
+            return cached
 
-        # Check in-memory cache for cached endpoints
-        if endpoint in CACHED_ENDPOINTS:
-            async with self._cache_lock:
-                if endpoint in self._cache:
-                    cached_at, cached_data = self._cache[endpoint]
-                    if _time.monotonic() - cached_at < CACHE_TTL:
-                        logger.debug(
-                            "Cache hit for %s (age: %.1fs)", endpoint, _time.monotonic() - cached_at
-                        )
-                        return cached_data
-
-        # Enforce minimum inter-request delay
-        now = _time.monotonic()
-        elapsed = now - self._last_request_at
-        if elapsed < MIN_REQUEST_INTERVAL:
-            await asyncio.sleep(MIN_REQUEST_INTERVAL - elapsed)
-        self._last_request_at = _time.monotonic()
-
+        attempts = _MAX_READ_RETRIES + 1 if retryable else 1
         url = f"{self.base_url}{endpoint}"
-        data = {
-            "srv": self.server_name,
-            "key": self.api_key,
-            **(extra_data or {}),
-        }
+        payload = {"srv": self.server_name, "key": self.api_key, **(extra_data or {})}
 
-        for attempt in range(MAX_RETRIES + 1):
+        for attempt in range(attempts):
+            await self._rate_limiter.acquire()
             try:
                 response = await self._client.post(
                     url,
-                    data=data,
+                    data=payload,
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=timeout,
                 )
-
-                if response.status_code == 429 and attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2**attempt)
-                    logger.warning(
-                        "Rate limited (429) on %s, retrying in %.1fs (attempt %d/%d)",
-                        url,
-                        delay,
-                        attempt + 1,
-                        MAX_RETRIES,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-                if response.status_code != 200:
-                    text = response.text or response.reason_phrase
-                    logger.error("HTTP error %s: %s", response.status_code, text)
-                    raise RuntimeError(f"HTTP {response.status_code}: {text}")
-
             except httpx.TimeoutException as exc:
-                logger.error("Request to %s timed out after %ss", url, timeout)
-                raise RuntimeError(f"Request timeout after {timeout}s") from exc
+                raise AppError(
+                    ErrorCode.TIMEOUT,
+                    f"mikr.us API request exceeded {timeout:g} seconds",
+                    retryable=retryable,
+                ) from exc
             except httpx.HTTPError as exc:
-                logger.error("HTTP error: %s", exc)
-                raise RuntimeError(f"HTTP error: {exc}") from exc
+                raise AppError(
+                    ErrorCode.UPSTREAM,
+                    "mikr.us API connection failed",
+                    retryable=retryable,
+                ) from exc
 
-            # Success — parse response
-            content_type = response.headers.get("content-type", "")
-            if "application/json" in content_type:
+            raw_length = response.headers.get("Content-Length")
+            if raw_length:
                 try:
-                    result = response.json()
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "Invalid JSON despite content-type header: %s",
-                        response.text[:200],
+                    declared_length = int(raw_length)
+                except ValueError as exc:
+                    raise AppError(ErrorCode.UPSTREAM, "invalid upstream Content-Length") from exc
+                if declared_length > MAX_RESPONSE_BYTES:
+                    raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+            if len(response.content) > MAX_RESPONSE_BYTES:
+                raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+
+            if response.status_code == 429:
+                retry_after = self._retry_after(response)
+                if not retryable or attempt + 1 >= attempts:
+                    raise AppError(
+                        ErrorCode.RATE_LIMITED,
+                        "mikr.us API rate limit reached",
+                        retryable=retryable,
+                        retry_after_seconds=retry_after,
                     )
-                    result = {"raw": response.text, "json_error": True}
+                delay = retry_after if retry_after is not None else float(2**attempt)
+                await asyncio.sleep(min(60.0, delay + secrets.randbelow(251) / 1_000))
+                continue
+
+            if response.status_code != 200:
+                reason = response.reason_phrase or "upstream request failed"
+                raise AppError(
+                    ErrorCode.UPSTREAM,
+                    f"mikr.us API returned HTTP {response.status_code}: {reason}",
+                    retryable=retryable and response.status_code >= 500,
+                )
+
+            if "application/json" in response.headers.get("content-type", ""):
+                try:
+                    value = response.json()
+                except json.JSONDecodeError as exc:
+                    raise AppError(ErrorCode.UPSTREAM, "mikr.us API returned invalid JSON") from exc
             else:
-                result = {"raw": response.text}
-
-            # Store in cache for cached endpoints
-            if endpoint in CACHED_ENDPOINTS:
-                async with self._cache_lock:
-                    self._cache[endpoint] = (_time.monotonic(), result)
-
-            return result
-
-        # All retries exhausted — 429 persists
-        raise RuntimeError(
-            f"mikr.us API rate limit exceeded after {MAX_RETRIES} retries. "
-            f"The API allows ~5 requests per 60 seconds. "
-            f"Retry in {RETRY_BASE_DELAY}s or use cached endpoints."
-        )
-
-    async def open(self) -> None:
-        """Open the underlying HTTP client."""
-        self._client = httpx.AsyncClient()
-        logger.debug("HTTP client opened")
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
-            logger.debug("HTTP client closed")
-
-    async def __aenter__(self) -> "MikrusClient":
-        await self.open()
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        await self.close()
+                value = {"raw": response.text}
+            await self._store_cache(endpoint, value)
+            return value
+        raise AssertionError("request loop exhausted")
 
     async def get_server_info(self) -> Any:
-        """Get server information."""
         return await self._request("/info")
 
+    async def list_servers(self) -> Any:
+        return await self._request("/serwery")
+
     async def get_server_stats(self) -> Any:
-        """Get server statistics."""
         return await self._request("/stats")
 
+    async def restart_server(self) -> Any:
+        return await self._request("/restart", retryable=False, timeout=EXEC_HTTP_TIMEOUT)
+
     async def get_logs(self) -> Any:
-        """Get last 10 logs."""
         return await self._request("/logs")
 
     async def get_log_by_id(self, log_id: str) -> Any:
-        """Get a specific log entry by ID."""
+        if not re.fullmatch(r"[A-zA-z0-9_-]{1,128}", log_id):
+            raise ValidationError("Invalid log ID")
         return await self._request(f"/logs/{log_id}")
 
-    async def restart_server(self) -> Any:
-        """Restart the server."""
-        return await self._request("/restart")
-
     async def boost_server(self) -> Any:
-        """Enable amfetamina (boost) on the server."""
-        return await self._request("/amfetamina")
-
-    async def execute_command(self, cmd: str) -> Any:
-        """Execute a command on the server (60s API limit)."""
-        check_dangerous_command(cmd)
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
-
-    async def list_servers(self) -> Any:
-        """List all servers associated with the account (cache=60s)."""
-        return await self._request("/serwery")
+        return await self._request("/amfetamina", retryable=False)
 
     async def get_db_info(self) -> Any:
-        """Get database access credentials (cache=60s)."""
+        # Credential responses do not enter a shared cache.
         return await self._request("/db")
 
     async def get_ports(self) -> Any:
-        """Get assigned TCP/UDP ports for the server (cache=60s)."""
         return await self._request("/porty")
 
     async def get_cloud(self) -> Any:
-        """Get cloud services assigned to the account with statistics."""
         return await self._request("/cloud")
 
     async def assign_domain(self, port: str, domain: str) -> Any:
-        """Assign a domain to a port. Use '-' for auto-generated subdomain."""
+        validate_port(port)
         validate_domain(domain)
-        return await self._request("/domain", {"port": port, "domain": domain})
+        return await self._request("/domain", {"port": str(port), "domain": domain}, retryable=False)
+
+    async def execute_command(self, command: str) -> Any:
+        command = validate_command(command)
+        return await self._request(
+            "/exec",
+            {"cmd": command},
+            timeout=EXEC_HTTP_TIMEOUT,
+            retryable=False,
+       )
 
     async def read_file(self, path: str) -> Any:
-        """Read a text file from the server. Limited to 200 lines."""
-        validated = validate_path(path)
-        cmd = (
-            f"(file -b --mime-encoding '{validated}' 2>&1 | "
-            f"grep -q binary && echo 'ERROR: Cannot read binary file' "
-            f"|| cat '{validated}' 2>&1 | head -200)"
+        value = validate_path(path)
+        command = (
+            f"file -b --mime-encoding {shlex.quote(value)} | grep -q binary && "
+            "echo 'ERROR: binary file' || "
+            f"head -n 200 -- {shlex.quote(value)}"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request(
+            "/exec",
+            {"cmd": command},
+            timeout=EXEC_HTTP_TIMEOUT,
+        )
 
     async def write_file(self, path: str, content: str) -> Any:
-        """Write content to a file on the server. Uses base64 for safe transfer."""
-        validated = validate_path(path, for_write=True)
+        target = validate_path(path, for_write=True)
         validate_content_size(content)
         encoded = base64.b64encode(content.encode()).decode()
-        cmd = (
-            f"echo '{encoded}' | base64 -d > '{validated}' && echo 'WRITE_OK' || echo 'WRITE_FAIL'"
+        command = (
+            "set -eu; "
+            f"target={shlex.quote(target)}; tmp=\"${{target}}.mcp.$$\"; "
+            "test ! -L \"$target\"; "
+            f"printf %s {shlex.quote(encoded)} | base64 -d > \"$tmp\"; "
+            "chmod 600 \"$tmp\"; mv -f -- \"$tmp\" \"$target\"; echo WRITE_OK"
         )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT, retryable=False)
 
-    async def manage_service(self, name: str, action: str) -> Any:
-        """Manage a systemd service via systemctl."""
-        validate_service_name(name)
-        validate_service_action(action)
-        cmd = f"systemctl {action} '{name}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+    async def get_service_status(self, name: str) -> Any:
+        command = f"systemctl status --no-pager -- {shlex.quote(validate_service_name(name))}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
+
+    async def change_service_state(self, name: str, action: str) -> Any:
+        action = validate_service_action(action)
+        if action in {"status", "is-active", "is-enabled"}:
+            raise ValidationError("read-only service actions use get_service_status")
+        command = f"systemctl {action} -- {shlex.quote(validate_service_name(name))}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT, retryable=False)
 
     async def analyze_disk(self, path: str = "/") -> Any:
-        """Analyze disk usage. Shows df -h and top-20 directories by size."""
-        if not path.startswith("/"):
-            raise ValueError("Path must be absolute")
-        validated = validate_path(path)
-        cmd = (
-            f"df -h '{validated}' 2>&1; echo '---TOP20---'; "
-            f"du -sh '{validated}'/* 2>/dev/null | sort -rh | head -20"
-        )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        value = shlex.quote(validate_path(path))
+        command = f"df -h -{ value} ; echo ---TOP20---; du -sh -- {value}/* 2>/dev/null | sort -hn | head -n 20"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def check_port(self, port: str) -> Any:
-        """Check if a TCP port is listening."""
-        port_num = validate_port(port)
-        cmd = (
-            f"ss -tlnp 2>/dev/null | grep ':{port_num} ' && echo 'PORT_IN_USE' "
-            f"|| echo 'PORT_NOT_LISTENING'"
-        )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        value = validate_port(port)
+        command = f"ss -tlnp 2>/dev/null | grep -F ':{value} ' || echo PORT_NOT_LISTENING"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
 
-    async def manage_process(self, target: str, action: str) -> Any:
-        """List or kill processes. Target can be PID or process name."""
-        if action not in PROCESS_ACTIONS:
-            raise ValidationError(f"Invalid action: {action}. Allowed: {sorted(PROCESS_ACTIONS)}")
-        if action == "list":
-            cmd = "ps aux --sort=-%mem 2>/dev/null | head -20"
+    async def list_processes(self) -> Any:
+        return await self._request("/exec", {"cmd": "ps aux --sort=-%mem | head -n 20"}, timeout=EXEC_HTTP_TIMEOUT)
+
+    async def terminate_process(self, target: str) -> Any:
+        value = shlex.quote(validate_process_target(target))
+        if target.isdigit():
+            command = f"kill -TERM -- {value}"
         else:
-            if not target:
-                raise ValueError("target is required for kill action (PID or process name)")
-            if not re.match(r"^[a-zA-Z0-9_\-]+$", target):
-                raise ValueError(f"Invalid process target: {target}")
-            cmd = f"killall -15 '{target}' 2>&1 || kill '{target}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+            command = f"pkill -TERM -x -- {value}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT, retryable=False)
 
     async def update_system(self) -> Any:
-        """Run apt update and apt upgrade on the server."""
-        cmd = (
-            "export DEBIAN_FRONTEND=noninteractive && "
-            "apt-get update 2>&1 && "
-            "apt-get upgrade -y -o Dpkg::Options::='--force-confdef' "
-            "-o Dpkg::Options::='--force-confold' 2>&1"
-        )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        command = "export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get upgrade -y"
+        return await self._request("/exec", {"cmd": command}, timeout=120, retryable=False)
 
     async def list_directory(self, path: str) -> Any:
-        """List directory contents (ls -la)."""
-        validated = validate_path(path)
-        cmd = f"ls -la -- '{validated}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": f"ls -la -- {shlex.quote(validate_path(path))}"}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def tail_file(self, path: str, lines: int = 50) -> Any:
-        """Read last N lines from a text file."""
-        validated = validate_path(path)
         lines = validate_lines_param(lines)
-        cmd = f"tail -n {lines} -- '{validated}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": f"tail -n {lines} -- {shlex.quote(validate_path(path))}"}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def search_in_files(self, path: str, pattern: str) -> Any:
-        """Search for a pattern in files under a path (grep -r)."""
-        validated = validate_path(path)
-        pattern = validate_search_pattern(pattern)
-        cmd = (
-            f"grep -r -F -n --max-count={MAX_SEARCH_RESULTS} "
-            f"'{pattern}' '{validated}' 2>/dev/null | head -n {MAX_SEARCH_RESULTS}"
-        )
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        command = f"grep -r -F -n --max-count={MAX_SEARCH_RESULTS} -- {shlex.quote(validate_search_pattern(pattern))} {shlex.quote(validate_path(path))} 2>/dev/null | head -n {MAX_SEARCH_RESULTS}"
+        return await self._request("/exec", {"cmd": command}, timeout=30)
 
     async def get_memory_info(self) -> Any:
-        """Get memory usage information."""
-        cmd = "free -h 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": "free -h"}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_network_info(self) -> Any:
-        """Get network interfaces and listening ports."""
-        cmd = "ip addr 2>&1 && echo '---PORTS---' && ss -tlnp 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": "ip addr; echo ---PORTS---; ss -tlnp"}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_process_tree(self) -> Any:
-        """Get process tree overview."""
-        cmd = "ps auxf 2>&1 | head -100"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/exec", {"cmd": "ps auxf | head -n 100"}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def list_docker_containers(self) -> Any:
-        """List Docker containers."""
-        cmd = "docker ps -a --format '{{json .}}' 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        result = await self._request("/exec", {"cmd": "docker ps -a --format '{{json .}}'"}, timeout=EXEC_HTTP_TIMEOUT)
         return self._parse_docker_jsonl(result)
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
-        """Get logs from a Docker container."""
-        validate_container_name(container)
-        lines = validate_lines_param(lines)
-        cmd = f"docker logs --tail {lines} '{container}' 2>&1"
-        return await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        command = f"docker logs --tail {validate_lines_param(lines)} -- {shlex.quote(validate_container_name(container))}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def get_docker_stats(self) -> Any:
-        """Get Docker container resource usage stats."""
-        cmd = "docker stats --no-stream --format '{{json .}}' 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
+        result = await self._request("/exec", {"cmd": "docker stats --no-stream --format '{{json .}}'"}, timeout=EXEC_HTTP_TIMEOUT)
         return self._parse_docker_jsonl(result)
 
-    @staticmethod
-    def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
-        """Parse newline-separated JSON objects into a list."""
-        raw = result.get("output", "")
-        if not raw.strip():
-            return result
-        lines = [ln for ln in raw.strip().split("\n") if ln.strip()]
-        parsed: list[dict[str, Any]] = []
-        for line in lines:
-            try:
-                parsed.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return {"output": raw, "containers": parsed, "exit_code": result.get("exit_code", 0)}
-
-    @staticmethod
-    def _journal_access_hint(output: str) -> str | None:
-        """Return a hint when journal access fails due to missing privileges."""
-        low = output.lower()
-        if "insufficient permissions" in low or "no journal files" in low:
-            return (
-                "Journal access denied — the API user lacks permissions to read "
-                "systemd journal logs. Add the user to the 'systemd-journal' or "
-                "'adm' group, or switch to an SSH server with 'sudo_password' "
-                "configured."
-            )
-        return None
-
     async def get_journal_logs(self, unit: str, lines: int = 50) -> Any:
-        """Get systemd journal logs for a unit."""
-        validate_service_name(unit)
-        lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
-        cmd = f"journalctl -u '{unit}' -n {lines} --no-pager 2>&1"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        command = f"journalctl -u {shlex.quote(validate_service_name(unit))} -n {validate_lines_param(lines, MAX_JOURNAL_LINES)} -q --no-pager"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def find_system_errors(self, hours: int = 1) -> Any:
-        """Find system errors in journal from the last N hours."""
-        hours = validate_hours_param(hours)
-        cmd = (
-            f"journalctl -p err --since '{hours} hours ago' --no-pager -n {MAX_JOURNAL_LINES} 2>&1"
-        )
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        command = f"journalctl -p err --since '{validate_hours_param(hours)} hours ago' -q --no-pager -n {MAX_JOURNAL_LINES}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def search_journal_logs(self, term: str, lines: int = 50) -> Any:
-        """Search journal logs for a term."""
-        validate_search_pattern(term)
-        lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
-        cmd = f"journalctl -q --no-pager -n 5000 2>&1 | grep -i '{term}' | tail -n {lines}"
-        result = await self._request("/exec", {"cmd": cmd}, timeout=EXEC_HTTP_TIMEOUT)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        command = f"journalctl -q --no-pager -n 5000 | grep -i -F -- {shlex.quote(validate_search_pattern(term))} | tail -n {validate_lines_param(lines, MAX_JOURNAL_LINES)}"
+        return await self._request("/exec", {"cmd": command}, timeout=EXEC_HTTP_TIMEOUT)
+
+    @staticmethod
+    def _parse_docker_jsonl(result: Any) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            raise AppError(ErrorCode.UPSTREAM, "invalid Docker result")
+        raw = str(result.get("output", ""))
+        parsed = []
+        for line in raw.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                parsed.append(value)
+        return {"containers": parsed, "exit_code": result.get("exit_code", 0)}
 
 
 class SshClient:
-    """Async SSH client for executing commands on remote Linux servers."""
+    """Async SSH adapter with bounded process output and host-identity verification."""
 
-    def __init__(
-        self,
-        host: str,
-        user: str = "root",
-        port: int = 22,
-        ssh_key: str | None = None,
-        ssh_cert: str | None = None,
-        password: str | None = None,
-        sudo_password: str | None = None,
-        timeout: int = SSH_DEFAULT_TIMEOUT,
-        verify_host_key: bool = False,
-        known_hosts_file: str | None = None,
-    ) -> None:
-        self.host = host
-        self.user = user
-        self.port = port
-        self.ssh_key = ssh_key
-        self.ssh_cert = ssh_cert
-        self.password = password
-        self.sudo_password = sudo_password
-        self.timeout = timeout
-        self.verify_host_key = verify_host_key
-        self.known_hosts_file = known_hosts_file
+    def __init__(self, config: TargetConfig) -> None:
+        assert config.type == "ssh" and config.host
+        self.config = config
+        self.host = config.host
+        self.user = config.user
+        self.port = config.port
+        self.sudo password = config.sudo_password
+        self.timeout = config.timeout or SSH_DEFAULT_TIMEOUT
+        self.stable_identity = f"ssh:{config.name}"
         self._conn: Any = None
 
     def __repr__(self) -> str:
-        return f"SshClient({self.user}@{self.host}:{self.port}, connected={self.is_connected})"
-
-    @property
-    def is_connected(self) -> bool:
-        return (
-            self._conn is not None
-            and not self._conn.is_closed()
-            and getattr(self._conn, "_transport", None) is not None
-        )
-
-    async def _run(self, cmd: str, timeout: float | int | None = None) -> dict[str, Any]:
-        """Execute a command via SSH and return structured result."""
-        import asyncssh
-
-        if self._conn is None:
-            raise RuntimeError("SSH client not opened. Use async context manager.")
-
-        try:
-            result = await self._conn.run(cmd, timeout=timeout or self.timeout)
-            return {
-                "output": result.stdout or "",
-                "stderr": result.stderr or "",
-                "exit_code": result.exit_status,
-            }
-        except asyncssh.Error as exc:
-            logger.error("SSH error on %s: %s", self.host, exc)
-            raise RuntimeError(f"SSH error: {exc}") from exc
-
-    async def _run_with_sudo(self, cmd: str) -> dict[str, Any]:
-        """Execute a command via SSH with sudo -S, feeding password via stdin."""
-        import asyncssh
-
-        if self._conn is None:
-            raise RuntimeError("SSH client not opened. Use async context manager.")
-
-        if not self.sudo_password:
-            return await self._run(cmd)
-
-        try:
-            process = await self._conn.create_process(
-                f"sudo -S {cmd}",
-                stdin=asyncssh.PIPE,
-            )
-            process.stdin.write(f"{self.sudo_password}\n")
-            await process.stdin.drain()
-            process.stdin.write_eof()
-
-            stdout_lines: list[str] = []
-            stderr_lines: list[str] = []
-
-            async def _collect() -> None:
-                async for line in process.stdout:
-                    stdout_lines.append(line)
-                async for line in process.stderr:
-                    stderr_lines.append(line)
-
-            await asyncio.wait_for(_collect(), timeout=self.timeout + 10)
-            await process.wait()
-
-            return {
-                "output": "".join(stdout_lines),
-                "stderr": "".join(stderr_lines),
-                "exit_code": process.exit_status,
-            }
-        except asyncssh.Error as exc:
-            logger.error("SSH error on %s: %s", self.host, exc)
-            raise RuntimeError(f"SSH error: {exc}") from exc
+        return f"SshClient({self.user}@{self.host}:{self.port})"
 
     async def open(self) -> None:
-        """Open SSH connection."""
         import asyncssh
 
+        known_hosts: Any = None
+        if self.config.verify_host_key:
+            if not self.config.known_hosts_file:
+                raise AppError(
+                    ErrorCode.CONFIGURATION,
+                    f"SSH target '{self.config.name}' requires known_hosts_file",
+                )
+            known_hosts = asyncssh.read_known_hosts(self.config.known_hosts_file)
         connect_kwargs: dict[str, Any] = {
             "host": self.host,
             "port": self.port,
             "username": self.user,
             "connect_timeout": self.timeout,
             "login_timeout": self.timeout,
+            "known_hosts": known_hosts,
         }
-        if self.ssh_key and Path(self.ssh_key).exists():
-            if self.ssh_cert and Path(self.ssh_cert).exists():
-                connect_kwargs["client_keys"] = [(self.ssh_key, self.ssh_cert)]
-            else:
-                connect_kwargs["client_keys"] = [self.ssh_key]
-        elif self.password:
-            connect_kwargs["password"] = self.password
-
-        if self.verify_host_key:
-            if self.known_hosts_file:
-                connect_kwargs["known_hosts"] = asyncssh.read_known_hosts(self.known_hosts_file)
-            else:
-                connect_kwargs["known_hosts"] = ()
-        else:
-            connect_kwargs["known_hosts"] = None
-            logger.warning(
-                "SSH host key verification DISABLED for %s — MITM risk!",
-                self.host,
-            )
-
+        if self.config.ssh_key:
+            keys: Any = [self.config.ssh_key]
+            if self.config.ssh_cert:
+                keys = [(self.config.ssh_key, self.config.ssh_cert)]
+            connect_kwargs["client_keys"] = keys
+        elif self.config.password:
+            connect_kwargs["password"] = self.config.password
         self._conn = await asyncssh.connect(**connect_kwargs)
-        logger.debug("SSH connected to %s@%s", self.user, self.host)
 
     async def close(self) -> None:
-        """Close SSH connection."""
         if self._conn is not None:
             self._conn.close()
+            wait_closed = getattr(self._conn, "wait_closed", None)
+            if wait_closed is not None:
+                await wait_closed()
             self._conn = None
-            logger.debug("SSH disconnected from %s", self.host)
 
-    async def __aenter__(self) -> "SshClient":
-        await self.open()
-        return self
+    async def _run(self, command: str, timeout: float | int | None = None) -> dict[str, Any]:
+        import asyncssh
 
-    async def __aexit__(self, *args: object) -> None:
-        await self.close()
+        if self._conn is None:
+            raise AppError(ErrorCode.UNAVAILABLE, "SSH client is not open")
+        try:
+            result = await self._conn.run(
+                command,
+                timeout=timeout or self.timeout,
+                check_stderr=False,
+            )
+        except asyncio.TimeoutError as exc:
+            raise AppError(
+                ErrorCode.TIMEOUT,
+                "SSH command deline exceeded",
+                retryable=False,
+            ) from exc
+        except asyncssh.Error as exc:
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                f"SSH upstream failed for target '{self.config.name}'",
+            ) from exc
 
-    async def execute_command(self, cmd: str) -> Any:
-        """Execute a shell command."""
-        check_dangerous_command(cmd)
-        return await self._run(cmd)
+        output = str(result.stdout or "")
+        stderr = str(result.stderr or "")
+        if len(output.encode()) + len(stderr.encode()) > MAX_PROCESS_OUTPUT_BYTES:
+            raise AppError(
+                ErrorCode.OUTPUT_LIMIT,
+                "SSH process output exceeds the configured limit",
+            )
+        return {
+            "output": output,
+            "stderr": stderr,
+            "exit_code": int(result.exit_status),
+        }
+
+    async def _run_sudo(self, command: str) -> dict[str, Any]:
+        if not self.sudo password:
+            return await self._run(command)
+        return await self._run(
+            f"printf %s\\\n {shlex.quote(self.sudo_password)} | sudo -S --prompt='' -- {command}"
+        )
+
+    async def get_server_info(self) -> Any:
+        return await self._run("uname -a; uptime")
+
+    async def list_servers(self) -> Any:
+        return [{"server_id": self.config.name, "type": "ssh"}]
+
+    async def get_server_stats(self) -> Any:
+        return await self._run("uptime; free -b; df -B")
+
+    async def restart_server(self) -> Any:
+        return await self._run("sudo -reboot")
+
+    async def get_logs(self) -> Any:
+        return await self._run("journalctl -q --no-pager -n 10")
+
+    async def get_log_by_id(self, log_id: str) -> Any:
+        raise AppError(ErrorCode.UNSUPPORTED, "SSH targets do not support get_log_by_id")
+
+    async def boost_server(self) -> Any:
+        raise AppError(ErrorCode.UNSUPPORTED, "SSH targets do not support boost_server")
+
+    async def get_db_info(self) -> Any:
+        raise AppError(ErrorCode.UNSUPPORTED, "SSH targets do not support get_db_info")
+
+    async def get_ports(self) -> Any:
+        return await self._run("ss -tlnp")
+
+    async def get_cloud(self) -> Any:
+        raise AppError(ErrorCode.UNSUPPORTED, "SSH targets do not support get_cloud")
+
+    async def assign_domain(self, port: str, domain: str) -> Any:
+        raise AppError(ErrorCode.UNSUPPORTED, "SSH targets do not support assign_domain")
+
+    async def execute_command(self, command: str) -> Any:
+        return await self._run(validate_command(command), timeout=EXEC_HTTP_TIMEOUT)
 
     async def read_file(self, path: str) -> Any:
-        """Read a text file."""
-        validated = validate_path(path)
+        value = shlex.quote(validate_path(path))
         return await self._run(
-            f"(file -b --mime-encoding '{validated}' 2>&1 | "
-            f"grep -q binary && echo 'ERROR: Cannot read binary file' "
-            f"|| cat '{validated}' 2>&1 | head -200)"
+            f"file -b --mime-encoding {value} | grep -q binary && "
+            f"echo 'ERROR: binary file' || head -n 200 -- {value}"
         )
 
     async def write_file(self, path: str, content: str) -> Any:
-        """Write content to a file."""
-        validated = validate_path(path, for_write=True)
+        target = validate_path(path, for_write=True)
         validate_content_size(content)
         encoded = base64.b64encode(content.encode()).decode()
-        cmd = (
-            f"echo '{encoded}' | base64 -d > '{validated}' && echo 'WRITE_OK' || echo 'WRITE_FAIL'"
+        command = (
+            "set -eu; "
+            f"target={shlex.quote(target)}; tmp=\"${{target}}.mcp.$$\"; "
+            "test ! -L \"$target\"; "
+            f"printf %s {shlex.quote(encoded)} | base64 -d > \"$tmp\"; "
+            "chmod 600 \"$tmp\"; mv -f -- \"$tmp\" \"$target\"; echo WRITE_OK"
         )
-        return await self._run(cmd)
+        return await self._run(command, timeout=EXEC_HTTP_TIMEOUT)
 
-    async def manage_service(self, name: str, action: str) -> Any:
-        """Manage a systemd service."""
-        validate_service_name(name)
-        validate_service_action(action)
-        return await self._run(f"systemctl {action} '{name}' 2>&1")
+    async def get_service_status(self, name: str) -> Any:
+        return await self._run(
+            f"systemctl status --no-pager -- {shlex.quote(validate_service_name(name))}"
+        )
+
+    async def change_service_state(self, name: str, action: str) -> Any:
+        action = validate_service_action(action)
+        if action in {"status", "is-active", "is-enabled"}:
+            raise ValidationError("read-only service actions use get_service_status")
+        return await self._run(
+            f"systemctl {action} -- {shlex.quote(validate_service_name(name))}"
+        )
 
     async def analyze_disk(self, path: str = "/") -> Any:
-        """Analyze disk usage."""
-        if not path.startswith("/"):
-            raise ValueError("Path must be absolute")
-        validated = validate_path(path)
-        cmd = (
-            f"df -h '{validated}' 2>&1; echo '---TOP20---'; "
-            f"du -sh '{validated}'/* 2>/dev/null | sort -rh | head -20"
-        )
-        return await self._run(cmd, timeout=EXEC_HTTP_TIMEOUT)
+        value = shlex.quote(validate_path(path))
+        return await self._run(
+            f"df -h -- {value}; echo '---TOP20---'; du -sh -- {value}/* 2>/dev/null | "
+            "sort -rh | head -n 20",
+            timeout=30,
+         )
 
     async def check_port(self, port: str) -> Any:
-        """Check if a TCP port is listening."""
-        port_num = validate_port(port)
-        cmd = (
-            f"ss -tlnp 2>/dev/null | grep ':{port_num} ' "
+        value = validate_port(port)
+        return await self._run(
+            f"ss -tlnp 2>/dev/null | grep ':{value} ' "
             "&& echo 'PORT_IN_USE' || echo 'PORT_NOT_LISTENING'"
         )
-        return await self._run(cmd)
 
-    async def manage_process(self, target: str, action: str) -> Any:
-        """List or kill processes."""
-        if action not in PROCESS_ACTIONS:
-            raise ValueError(f"Invalid action: {action}")
-        if action == "list":
-            cmd = "ps aux --sort=-%mem 2>/dev/null | head -20"
-        else:
-            if not target:
-                raise ValueError("target is required for kill action")
-            if not re.match(r"^[a-zA-Z0-9_\-]+$", target):
-                raise ValueError(f"Invalid process target: {target}")
-            cmd = f"killall -15 '{target}' 2>&1 || kill '{target}' 2>&1"
-        return await self._run(cmd)
+    async def list_processes(self) -> Any:
+        return await self._run("ps aux --sort=-%mem | head -n 20")
+
+    async def terminate_process(self, target: str) -> Any:
+        value = shlex.quote(validate_process_target(target))
+        if target.isdigit():
+            return await self._run(f"kill -TERM -- {value}")
+        return await self._run(f"pkill -TERM -x -- {value}")
 
     async def update_system(self) -> Any:
-        """Run system updates."""
-        cmd = (
-            "export DEBIAN_FRONTEND=noninteractive && "
-            "apt-get update 2>&1 && "
-            "apt-get upgrade -y -o Dpkg::Options::='--force-confdef' "
-            "-o Dpkg::Options::='--force-confold' 2>&1"
+        command = (
+            "export DBBIAN_FRONTEND=noninteractive; apt-get update; "
+            "apt-get upgrade -y -o Dpkg::Options::=--force-confdef "
+            "-o Dpkg::Options::=--force-confold"
         )
-        return await self._run(cmd)
+        return await self._run(command, timeout=120)
 
     async def list_directory(self, path: str) -> Any:
-        """List directory contents (ls -la)."""
-        validated = validate_path(path)
-        return await self._run(f"ls -la -- '{validated}' 2>&1")
+        value = validate_path(path)
+        return await self._run(f"ls -la -- {shlex.quote(value)}")
 
     async def tail_file(self, path: str, lines: int = 50) -> Any:
-        """Read last N lines from a text file."""
-        validated = validate_path(path)
+        value = shlex.quote(validate_path(path))
         lines = validate_lines_param(lines)
-        return await self._run(f"tail -n {lines} -- '{validated}' 2>&1")
+        return await self._run(f"tail -n {lines} -- {value}")
 
     async def search_in_files(self, path: str, pattern: str) -> Any:
-        """Search for a pattern in files under a path (grep -r)."""
-        validated = validate_path(path)
-        pattern = validate_search_pattern(pattern)
-        cmd = (
-            f"grep -r -F -n --max-count={MAX_SEARCH_RESULTS} "
-            f"'{pattern}' '{validated}' 2>/dev/null | head -n {MAX_SEARCH_RESULTS}"
-        )
-        return await self._run(cmd)
+        value = shlex.quote(validate_path(path))
+        pattern = shlex.quote(validate_search_pattern(pattern))
+        return await self._run(
+            f"grep -r -F -n --max-count={MAX_SEARCH_RESULTS} -- "
+            f"{pattern} {value} 2>/dev/null | head -n {MAX_SEARCH_RESULTS}",
+            timeout=30,
+         )
 
     async def get_memory_info(self) -> Any:
-        """Get memory usage information."""
-        return await self._run("free -h 2>&1")
+        return await self._run("free -h")
 
     async def get_network_info(self) -> Any:
-        """Get network interfaces and listening ports."""
-        return await self._run("ip addr 2>&1 && echo '---PORTS---' && ss -tlnp 2>&1")
+        return await self._run("ip addr; echo '---PORTS---'; ss -tlnp")
 
     async def get_process_tree(self) -> Any:
-        """Get process tree overview."""
-        return await self._run("ps auxf 2>&1 | head -100")
+        return await self._run("ps auxf | head -n 100")
 
     async def list_docker_containers(self) -> Any:
-        """List Docker containers."""
-        result = await self._run("docker ps -a --format '{{json .}}' 2>&1")
-        return self._parse_docker_jsonl(result)
+        return MikrusClient._parse_docker_jsonl(
+            await self._run("docker ps -a --format '{{json .}}'")
+        )
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
-        """Get logs from a Docker container."""
-        validate_container_name(container)
+        value = shlex.quote(validate_container_name(container))
         lines = validate_lines_param(lines)
-        return await self._run(f"docker logs --tail {lines} '{container}' 2>&1")
+        return await self._run(f"docker logs --tail {lines} -- {value}")
 
     async def get_docker_stats(self) -> Any:
-        """Get Docker container resource usage stats."""
-        result = await self._run("docker stats --no-stream --format '{{json .}}' 2>&1")
-        return self._parse_docker_jsonl(result)
-
-    @staticmethod
-    def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
-        """Parse newline-separated JSON objects into a list."""
-        raw = result.get("output", "")
-        if not raw.strip():
-            return result
-        lines = [ln for ln in raw.strip().split("\n") if ln.strip()]
-        parsed: list[dict[str, Any]] = []
-        for line in lines:
-            try:
-                parsed.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return {
-            "output": raw,
-            "containers": parsed,
-            "exit_code": result.get("exit_code", 0),
-            "stderr": result.get("stderr", ""),
-        }
-
-    def _journal_access_hint(self, output: str) -> str | None:
-        """Return a hint when journal access fails due to missing privileges."""
-        low = output.lower()
-        if "insufficient permissions" in low or "no journal files" in low:
-            if not self.sudo_password:
-                return (
-                    "Journal access denied — the user lacks permissions to read "
-                    "systemd journal logs. To fix this, add 'sudo_password' to the "
-                    "SSH server configuration in MIKRUS_SERVERS (e.g. "
-                    '"sudo_password": "yourpassword").'
-                )
-        return None
+        return MikrusClient._parse_docker_jsonl(
+            await self._run("docker stats --no-stream --format '{{json .}}'")
+        )
 
     async def get_journal_logs(self, unit: str, lines: int = 50) -> Any:
-        """Get systemd journal logs for a unit."""
-        validate_service_name(unit)
+        value = shlex.quote(validate_service_name(unit))
         lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
-        cmd = f"journalctl -u '{unit}' -n {lines} -q --no-pager"
-        result = await self._run_with_sudo(cmd)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        return await self._run_sudo(f"journalctl -u {value} -n {lines} -q --no-pager")
 
     async def find_system_errors(self, hours: int = 1) -> Any:
-        """Find system errors in journal from the last N hours."""
         hours = validate_hours_param(hours)
-        cmd = f"journalctl -p err --since '{hours} hours ago' -q --no-pager -n {MAX_JOURNAL_LINES}"
-        result = await self._run_with_sudo(cmd)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        return await self._run_sudo(
+            f"journalctl -p err --since '{hours} hours ago' "
+            f"-q --no-pager -n {MAX_JOURNAL_LINES}"
+        )
 
     async def search_journal_logs(self, term: str, lines: int = 50) -> Any:
-        """Search journal logs for a term."""
-        validate_search_pattern(term)
+        value = shlex.quote(validate_search_pattern(term))
         lines = validate_lines_param(lines, MAX_JOURNAL_LINES)
-        cmd = f"journalctl -q --no-pager -n 5000 | grep -i '{term}' | tail -n {lines}"
-        result = await self._run_with_sudo(cmd)
-        hint = self._journal_access_hint(result.get("output", ""))
-        if hint:
-            result["output"] = f"{result['output']}\n\n{hint}"
-            result["requires_elevation"] = True
-        return result
+        return await self._run_sudo(
+            f"journalctl -q --no-pager -n 5000 | grep -i -F -- {value} | tail -n {lines}"
+        )
+
+
+@class Protocol:
+    stable_identity: str
+
+    async def open(self) -> None: ...
+    async def close(self) -> None: ...
+    async def get_server_info(self) -> Any: ...
+    async def list_servers(self) -> Any: ...
+    async def get_server_stats(self) -> Any: ...
+    async def restart_server(self) -> Any: ...
+    async def get_logs(self) -> Any: ...
+    async def get_log_by_id(self, log_id: str) -> Any: ...
+    async def boost_server(self) -> Any: ...
+    async def get_db_info(self) -> Any: ...
+    async def get_ports(self) -> Any: ...
+    async def get_cloud(self) -> Any: ...
+    async def assign_domain(self, port: str, domain: str) -> Any: ...
+    async def execute_command(self, command: str) -> Any: ...
+    async def read_file(self, path: str) -> Any: ...
+    async def write_file(self, path: str, content: str) -> Any: ...
+    async def get_service_status(self, name: str) -> Any: ...
+    async def change_service_state(self, name: str, action: str) -> Any: ...
+    async def analyze_disk(self, path: str = "/") -> Any: ...
+    async def check_port(self, port: str) -> Any: ...
+    async def list_processes(self) -> Any: ...
+    async def terminate_process(self, target: str) -> Any: ...
+    async def update_system(self) -> Any: ...
+    async def list_directory(self, path: str) -> Any: ...
+    async def tail_file(self, path: str, lines: int = 50) -> Any: ...
+    async def search_in_files(self, path: str, pattern: str) -> Any: ...
+    async def get_memory_info(self) -> Any: ...
+    async def get_network_info(self) -> Any: ...
+    async def get_process_tree(self) -> Any: ...
+    async def list_docker_containers(self) -> Any: ...
+    async def get_docker_logs(self, container: str, lines: int = 50) -> Any: ...
+    async def get_docker_stats(self) -> Any: ...
+    async def get_journal_logs(self, unit: str, lines: int = 50) -> Any: ...
+    async def find_system_errors(self, hours: int = 1) -> Any: ...
+    async def search_journal_logs(self, term: str, lines: int = 50) -> Any: ...
+
+
+def build_client(config: TargetConfig) -> Client:
+    if config.type == "mikrus":
+        assert config.api_url and config.api_key and config.server_id
+        return MikrusClient(config.api_url, config.api_key, config.server_id)
+    return SshClient(config)

@@ -1,48 +1,18 @@
-# syntax=docker/dockerfile:1
-
-# ---------- Build stage ----------
-FROM python:3.12-slim AS builder
+FROM python:3.12.12-slim
 
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MCP_TRANSPORT=stdio
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+RUN groupadd --system --gid 10001 appuser \
+    && useradd --system --uid 10001 --gid appuser --home-dir /app --shell /usr/sbin/nologin appuser
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc \
-    && rm -rf /var/lib/apt/lists/*
+COPY wheelhouse/ /wheelhouse/
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse mikrus-mcp==2.0.0 \
+    && python -m pip check \
+    && rm -rf /wheelhouse
 
-COPY pyproject.toml README.md ./
-COPY src/ ./src/
-
-RUN pip install --no-cache-dir .
-
-# ---------- Production stage ----------
-FROM python:3.12-slim AS prod
-
-WORKDIR /app
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
-
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin/mikrus-mcp /usr/local/bin/mikrus-mcp
-
-USER appuser
-
+USER 10001:10001
 STOPSIGNAL SIGINT
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import os,urllib.request as r; p=os.environ.get('MCP_REST_PORT'); r.urlopen('http://127.0.0.1:'+p+'/health') if p else None"
-
-CMD ["mikrus-mcp"]
-
-# ---------- Development/testing stage ----------
-FROM builder AS dev
-
-COPY tests/ ./tests/
-
-RUN pip install --no-cache-dir -e ".[dev]"
+ENTRYPOINT ["mikrus-mcp"]

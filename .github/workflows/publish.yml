@@ -1,89 +1,119 @@
-name: Create and publish a Docker image
+name: Publish container
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [master]
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Existing release tag vX.Y.Z to validate and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
-  group: publish-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  group: publish-${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-and-push-image:
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+  publish:
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     permissions:
-      contents: write
+      contents: read
       packages: write
-      attestations: write
       id-token: write
-
+      attestations: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v4
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve and validate release identity
+        id: revision
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.ref_name }}
+          REQUESTED_REF: ${{ inputs.release_ref }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          release_tag="$EVENT_TAG"
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            release_tag="${REQUESTED_REF#refs/tags/}"
+          fi
+          test "$release_tag" = "v$version"
+          git show-ref --verify --quiet "refs/tags/$release_tag"
+          test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          registry: ${{ env.REGISTRY }}
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Build and smoke exact wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==25.2" "build==1.3.0"
+          python -m build --wheel
+          mkdir -p wheelhouse
+          python -m pip wheel --wheel-dir wheelhouse \
+            "mcp==2.0.0" "httpx==0.28.1" "asyncssh==2.24.0" "uvicorn==0.51.0"
+          cp dist/mikrus_mcp-*.whl wheelhouse/
+          python scripts/artifact_smoke.py \
+            --wheel "$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
+            --wheelhouse wheelhouse
+          test "$(git rev-parse HEAD)" = "${{ steps.revision.outputs.sha }}"
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=master,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
+      - name: Build release image once
+        shell: bash
+        env:
+          VERSION: ${{ steps.revision.outputs.version }}
+          SHORT_SHA: ${{ steps.revision.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 \
+            -t "ghcr.io/${GITHUB_REPOSITORY}:$VERSION" \
+            -t "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA" .
+      - name: Smoke exact local release image
+        shell: bash
+        env:
+          SHORT_SHA: ${{ steps.revision.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python \
+            "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA" -c \
+            "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+      - name: Push smoke-tested image tags
         id: push
-        uses: docker/build-push-action@v7
+        shell: bash
+        env:
+          VERSION: ${{ steps.revision.outputs.version }}
+          SHORT_SHA: ${{ steps.revision.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          docker push "ghcr.io/${GITHUB_REPOSITORY}:$VERSION"
+          docker push "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA" | cut -d@ -f2)"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
         with:
-          context: .
-          file: ./Dockerfile
-          target: prod
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Generate artifact attestation
-        uses: actions/attest@v4
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-          make_latest: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

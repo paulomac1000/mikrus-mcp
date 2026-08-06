@@ -1,35 +1,30 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mikrus-mcp"
-version = "1.1.1"
-description = "MCP server for mikr.us API"
+version = "2.0.0"
+description = "Hardened MCP server for mikr.us API and SSH-managed Linux servers"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
-authors = [
-    {name = "Pawel Maciejewski"}
-]
-keywords = ["mcp", "mikrus", "vps", "api"]
+authors = [{name = "Pawel Maciejewski"}]
+keywords = ["mcp", "mikrus", "vps", "ssh", "automation"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "mcp>=1.6.0",
-    "httpx>=0.27.0",
-    "python-dotenv>=1.0.0",
-    "asyncssh>=2.14.0",
-    "starlette>=0.38.0",
-    "uvicorn>=0.30.0",
+    "mcp>=2.0.0,<3",
+    "httpx==0.28.1",
+    "asyncssh==2.24.0",
+    "uvicorn==0.51.0",
 ]
 
 [project.urls]
@@ -38,14 +33,14 @@ Repository = "https://github.com/paulomac1000/mikrus-mcp"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=6.0.0",
-    "pyyaml>=6.0",
-    "respx>=0.22.0",
-    "ruff>=0.6.0",
-    "mypy>=1.11.0",
-    "bandit>=1.7.0",
+    "pytest>=9.0.0,<10",
+    "pytest-cov>=7.0.0,<8",
+    "ruff>=0.12.0,<1",
+    "mypy>=1.17.0,<2",
+    "bandit>=1.8.0,<2",
+    "pip-audit>=2.9.0,<3",
+    "build>=1.3.0,<2",
+    "pyyaml>=6.0,<7",
 ]
 
 [project.scripts]
@@ -59,18 +54,17 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP"]
+select = ["E", "F", "I", "W", "UP", "B", "ASYNC", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E501"]
-"src/mikrus_mcp/server.py" = ["E501"]
-"src/mikrus_mcp/tools/*.py" = ["E501"]
+"tests/**" = ["S101", "S104", "S105", "S106"]
+"scripts/**" = ["S603", "S607"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -79,8 +73,8 @@ warn_unused_configs = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "unit: Unit tests (fast, mocked, no I/O)",
-    "integration: Integration tests (slow, requires real backend)",
-    "smoke: Smoke tests (quick health check, requires local MCP server)",
-    "e2e: End-to-end tests (full pipeline, requires real backend + local MCP server)",
+  "unit: deterministic unit tests with no external I/O",
+  "smoke: application-level tests with mocked backends",
+  "real_backend: requires a real mikr.us or SSH target",
+  "artifact: tests the exact built wheel or container",
 ]
