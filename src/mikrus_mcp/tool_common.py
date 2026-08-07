@@ -29,7 +29,10 @@ class AppContext:
 
 def _caller(ctx: Context[AppContext]) -> CallerContext:
     settings = ctx.request_context.lifespan_context.settings
-    return CallerContext(settings.principal, settings.allowed_scopes)
+    return CallerContext(
+        principal=settings.principal,
+        scopes=settings.allowed_scopes,
+    )
 
 
 def _require_success(result: dict[str, Any]) -> ToolResult:

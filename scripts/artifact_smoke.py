@@ -44,9 +44,13 @@ def main() -> int:
 import asyncio
 from mcp.client import Client
 from mikrus_mcp.config import Settings, TargetConfig
+from mikrus_mcp.kernel import CallerContext
 from mikrus_mcp.server import build_server
 
 async def smoke():
+    caller = CallerContext(principal="smoke", scopes=frozenset())
+    if caller.principal != "smoke":
+        raise RuntimeError("CallerContext direct construction is broken")
     target = TargetConfig(
         "mock", "mikrus", api_url="https://api.mikr.us", api_key="unused", server_id="mock"
     )
