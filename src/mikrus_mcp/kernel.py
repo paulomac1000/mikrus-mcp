@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from mikrus_mcp.approvals import ApprovalRegistry
+from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings
 from mikrus_mcp.errors import AppError, ErrorCode
@@ -111,7 +111,19 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     )
             self._authorize_selector(caller, manifest, target)
             self._authorize_mutation(manifest)
-            self._approval_available(caller, manifest, target, normalized)
+            arguments_digest = normalized_arguments_digest(normalized)
+            resource = self._resource(manifest, normalized)
+            if manifest.requires_approval and not self.approvals.has_matching(
+                manifest.name,
+                caller.principal,
+                target,
+                resource,
+                arguments_digest,
+            ):
+                raise AppError(
+                    ErrorCode.AUTHORIZATION,
+                    "a valid one-time server-side approval record is required",
+                )
 
             lock = self._lock_for(manifest, target, normalized)
             timeout_seconds = min(
@@ -122,7 +134,17 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 prepared_client: Client | None = None
                 if manifest.target_required and manifest.requires_approval:
                     prepared_client = await self.registry.get(target)
-                self._consume_approval(caller, manifest, target, normalized)
+                if manifest.requires_approval and not self.approvals.consume_matching(
+                    manifest.name,
+                    caller.principal,
+                    target,
+                    resource,
+                    arguments_digest,
+                ):
+                    raise AppError(
+                        ErrorCode.AUTHORIZATION,
+                        "the server-side approval expired or was consumed before execution",
+                    )
                 return await self._execute_with_policy_retry(
                     manifest,
                     name,
@@ -142,9 +164,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 sanitized, ensure_ascii=False, default=str
             ).encode("utf-8")
             if len(encoded) > self.settings.max_result_bytes:
-                raise AppError(
-                    ErrorCode.UPSTREAM, "result exceeds configured size limit"
-                )
+                raise AppError(ErrorCode.UPSTREAM, "result exceeds configured size limit")
             return {
                 "success": True,
                 "data": sanitized,
@@ -167,20 +187,14 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             )
         except TimeoutError:
             return self._failure(
-                ErrorCode.TIMEOUT,
-                "operation deadline exceeded",
-                request_id,
-                started,
+                ErrorCode.TIMEOUT, "operation deadline exceeded", request_id, started
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Invocation failed with an internal error")
             return self._failure(
-                ErrorCode.INTERNAL,
-                "internal operation failure",
-                request_id,
-                started,
+                ErrorCode.INTERNAL, "internal operation failure", request_id, started
             )
         finally:
             _request_id.reset(token)

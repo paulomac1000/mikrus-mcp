@@ -2,17 +2,53 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import stat
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 _MAX_APPROVAL_FILE_BYTES: Final = 1_048_576
+_ARGUMENT_DIGEST_LENGTH: Final = 64
+_TEST_ARGUMENTS_WILDCARD: Final = "<test-any-arguments>"
+
+
+def normalized_arguments_digest(arguments: Mapping[str, Any]) -> str:
+    """Return a deterministic digest for validated tool arguments.
+
+    The target selector is excluded because approvals bind the stable target identity
+    separately. Callers must provide the post-validation/normalization arguments.
+    """
+    operation_arguments = {
+        key: value for key, value in arguments.items() if key != "server"
+    }
+    try:
+        encoded = json.dumps(
+            operation_arguments,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("approval arguments must be canonical JSON values") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_arguments_digest(value: str) -> str:
+    if (
+        len(value) != _ARGUMENT_DIGEST_LENGTH
+        or value.casefold() != value
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError("approval arguments digest must be a lowercase SHA-256 hex digest")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +57,7 @@ class ApprovalRecord:
     principal: str
     target: str
     resource: str
+    arguments_digest: str
     expires_at: float
 
 
@@ -67,20 +104,11 @@ class ApprovalRegistry:
             raise ValueError("approval file must be a regular non-symlink file")
         resolved = path.resolve(strict=True)
         records, identity = cls._read_file(resolved, max_records=1_024)
-        return cls(
-            records,
-            source_path=resolved,
-            source_identity=identity,
-        )
+        return cls(records, source_path=resolved, source_identity=identity)
 
     @staticmethod
     def _identity(metadata: os.stat_result) -> _FileIdentity:
-        return _FileIdentity(
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mtime_ns,
-            metadata.st_size,
-        )
+        return _FileIdentity(metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size)
 
     @staticmethod
     def _validate_metadata(metadata: os.stat_result) -> None:
@@ -94,12 +122,7 @@ class ApprovalRegistry:
             raise ValueError("approval file exceeds one MiB")
 
     @classmethod
-    def _parse_records(
-        cls,
-        encoded: bytes,
-        *,
-        max_records: int,
-    ) -> dict[str, ApprovalRecord]:
+    def _parse_records(cls, encoded: bytes, *, max_records: int) -> dict[str, ApprovalRecord]:
         try:
             raw = json.loads(encoded.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -119,28 +142,19 @@ class ApprovalRegistry:
                     principal=str(value["principal"]),
                     target=str(value["target"]),
                     resource=str(value["resource"]),
+                    arguments_digest=_validate_arguments_digest(str(value["arguments_digest"])),
                     expires_at=float(value["expires_at"]),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("approval record is invalid") from exc
-            if not all(
-                (
-                    record.capability,
-                    record.principal,
-                    record.target,
-                    record.resource,
-                )
-            ):
+            if not all((record.capability, record.principal, record.target, record.resource)):
                 raise ValueError("approval record fields must be non-empty")
             records[token] = record
         return records
 
     @classmethod
     def _read_file(
-        cls,
-        path: Path,
-        *,
-        max_records: int,
+        cls, path: Path, *, max_records: int
     ) -> tuple[dict[str, ApprovalRecord], _FileIdentity]:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -151,10 +165,7 @@ class ApprovalRegistry:
             metadata = os.fstat(descriptor)
             cls._validate_metadata(metadata)
             path_metadata = path.stat(follow_symlinks=False)
-            if (metadata.st_dev, metadata.st_ino) != (
-                path_metadata.st_dev,
-                path_metadata.st_ino,
-            ):
+            if (metadata.st_dev, metadata.st_ino) != (path_metadata.st_dev, path_metadata.st_ino):
                 raise ValueError("approval file changed while it was opened")
             chunks: list[bytes] = []
             remaining = _MAX_APPROVAL_FILE_BYTES + 1
@@ -190,10 +201,7 @@ class ApprovalRegistry:
         current = self._path_identity_locked()
         if current == self._source_identity:
             return False
-        records, identity = self._read_file(
-            self._source_path,
-            max_records=self._max_records,
-        )
+        records, identity = self._read_file(self._source_path, max_records=self._max_records)
         self._records = records
         self._source_identity = identity
         return True
@@ -212,6 +220,7 @@ class ApprovalRegistry:
                     "principal": record.principal,
                     "target": record.target,
                     "resource": record.resource,
+                    "arguments_digest": record.arguments_digest,
                     "expires_at": record.expires_at,
                 }
                 for token, record in sorted(records.items())
@@ -263,12 +272,14 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str,
         *,
         ttl_seconds: float = 60.0,
     ) -> str:
         """Issue a record from a trusted local operator or embedding host."""
         if not 0 < ttl_seconds <= 300:
             raise ValueError("approval ttl must be between 0 and 300 seconds")
+        arguments_digest = _validate_arguments_digest(arguments_digest)
         token = secrets.token_urlsafe(32)
         with self._lock:
             self._reload_locked()
@@ -277,11 +288,7 @@ class ApprovalRegistry:
             if len(records) >= self._max_records:
                 raise RuntimeError("approval registry capacity reached")
             records[token] = ApprovalRecord(
-                capability,
-                principal,
-                target,
-                resource,
-                now + ttl_seconds,
+                capability, principal, target, resource, arguments_digest, now + ttl_seconds
             )
             self._persist_records_locked(records)
         return token
@@ -292,28 +299,32 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str | None = None,
         *,
         ttl_seconds: float = 60.0,
     ) -> str:
-        """Compatibility wrapper for deterministic tests."""
-        return self.issue(
-            capability,
-            principal,
-            target,
-            resource,
-            ttl_seconds=ttl_seconds,
-        )
+        """Issue an in-memory-only wildcard when legacy tests omit a digest."""
+        if arguments_digest is not None:
+            return self.issue(
+                capability, principal, target, resource, arguments_digest, ttl_seconds=ttl_seconds
+            )
+        if self._source_path is not None:
+            raise ValueError("persistent test approvals require an arguments digest")
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            now = time.time()
+            records = self._without_expired(self._records, now)
+            records[token] = ApprovalRecord(
+                capability, principal, target, resource, _TEST_ARGUMENTS_WILDCARD, now + ttl_seconds
+            )
+            self._records = records
+        return token
 
     @staticmethod
     def _without_expired(
-        records: dict[str, ApprovalRecord],
-        now: float,
+        records: dict[str, ApprovalRecord], now: float
     ) -> dict[str, ApprovalRecord]:
-        return {
-            token: record
-            for token, record in records.items()
-            if record.expires_at >= now
-        }
+        return {token: record for token, record in records.items() if record.expires_at >= now}
 
     @staticmethod
     def _matches(
@@ -322,6 +333,7 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str,
         now: float,
     ) -> bool:
         return (
@@ -329,6 +341,10 @@ class ApprovalRegistry:
             and record.principal == principal
             and record.target == target
             and record.resource == resource
+            and (
+                record.arguments_digest == _TEST_ARGUMENTS_WILDCARD
+                or secrets.compare_digest(record.arguments_digest, arguments_digest)
+            )
             and record.expires_at >= now
         )
 
@@ -338,13 +354,20 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str | None = None,
     ) -> bool:
         """Check for a bound approval without consuming it."""
+        if arguments_digest is None:
+            arguments_digest = _TEST_ARGUMENTS_WILDCARD
+        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
+            arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()
             return any(
-                self._matches(record, capability, principal, target, resource, now)
+                self._matches(
+                    record, capability, principal, target, resource, arguments_digest, now
+                )
                 for record in self._records.values()
             )
 
@@ -354,8 +377,13 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str | None = None,
     ) -> bool:
         """Atomically consume one matching approval immediately before execution."""
+        if arguments_digest is None:
+            arguments_digest = _TEST_ARGUMENTS_WILDCARD
+        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
+            arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()
@@ -363,7 +391,9 @@ class ApprovalRegistry:
             candidates = [
                 (token, record)
                 for token, record in active.items()
-                if self._matches(record, capability, principal, target, resource, now)
+                if self._matches(
+                    record, capability, principal, target, resource, arguments_digest, now
+                )
             ]
             if not candidates:
                 return False
@@ -379,22 +409,22 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
+        arguments_digest: str | None = None,
     ) -> bool:
         """Consume one explicit token for trusted non-MCP integrations and tests."""
         if not isinstance(token, str) or not token:
             return False
+        if arguments_digest is None:
+            arguments_digest = _TEST_ARGUMENTS_WILDCARD
+        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
+            arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()
             active = self._without_expired(self._records, now)
             record = active.get(token)
             if record is None or not self._matches(
-                record,
-                capability,
-                principal,
-                target,
-                resource,
-                now,
+                record, capability, principal, target, resource, arguments_digest, now
             ):
                 return False
             active.pop(token)

@@ -13,7 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from mikrus_mcp.approvals import ApprovalRegistry  # noqa: E402
+from mikrus_mcp.approvals import (  # noqa: E402
+    ApprovalRegistry,
+    normalized_arguments_digest,
+)
 
 
 def _initialize(path: Path) -> None:
@@ -24,8 +27,7 @@ def _initialize(path: Path) -> None:
     except FileExistsError:
         return
     try:
-        encoded = b'{"tokens": {}}\n'
-        os.write(descriptor, encoded)
+        os.write(descriptor, b'{"tokens": {}}\n')
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -38,12 +40,27 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--principal", required=True)
     value.add_argument("--target", required=True)
     value.add_argument("--resource", required=True)
+    value.add_argument(
+        "--arguments-json",
+        required=True,
+        help="Canonical post-validation operation arguments as a JSON object; omit server",
+    )
     value.add_argument("--ttl-seconds", type=float, default=60.0)
     return value
 
 
 def main() -> int:
     args = parser().parse_args()
+    try:
+        operation_arguments = json.loads(args.arguments_json)
+    except json.JSONDecodeError as exc:
+        raise SystemExit("--arguments-json must be valid JSON") from exc
+    if not isinstance(operation_arguments, dict):
+        raise SystemExit("--arguments-json must encode a JSON object")
+    if "server" in operation_arguments:
+        raise SystemExit("--arguments-json must omit server; target is bound separately")
+    arguments_digest = normalized_arguments_digest(operation_arguments)
+
     path = args.file.absolute()
     _initialize(path)
     metadata = path.stat(follow_symlinks=False)
@@ -55,6 +72,7 @@ def main() -> int:
         args.principal,
         args.target,
         args.resource,
+        arguments_digest,
         ttl_seconds=args.ttl_seconds,
     )
     print(
@@ -64,6 +82,7 @@ def main() -> int:
                 "principal": args.principal,
                 "target": args.target,
                 "resource": args.resource,
+                "arguments_digest": arguments_digest,
                 "ttl_seconds": args.ttl_seconds,
             },
             sort_keys=True,
