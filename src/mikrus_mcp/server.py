@@ -22,18 +22,8 @@ from mikrus_mcp.http import (
 from mikrus_mcp.kernel import InvocationKernel
 from mikrus_mcp.manifests import active_names, validate_manifests
 from mikrus_mcp.targets import TargetRegistry
-from mikrus_mcp.tool_api import (
-    AppContext,
-    TOOL_FUNCTIONS,
-    assign_domain,
-    boost_server,
-    change_service_state,
-    execute_command,
-    restart_server,
-    terminate_process,
-    update_system,
-    write_file,
-)
+from mikrus_mcp.tool_api import TOOL_FUNCTIONS
+from mikrus_mcp.tool_common import AppContext
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +56,7 @@ def build_server(
     )
     registered = active_names(settings)
     for name in sorted(registered):
-        server.tool()(TOOL_FUNCTIONS[name])
+        server.tool(structured_output=True)(TOOL_FUNCTIONS[name])
     validate_manifests(set(registered), settings)
 
     @server.resource("capabilities://catalog", mime_type="application/json")
