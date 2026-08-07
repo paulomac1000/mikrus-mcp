@@ -17,7 +17,6 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 SECRET_REF = re.compile(r"\$\{\{(?:(?!\}\}).)*\bsecrets\b", re.IGNORECASE | re.DOTALL)
 EXPRESSION = re.compile(r"\$\{\{")
 MUTABLE_RUNNERS = {"ubuntu-latest", "windows-latest", "macos-latest"}
-WRITE_ACCESS = {"write"}
 
 
 class UniqueLoader(yaml.SafeLoader):
@@ -119,6 +118,8 @@ def _allowed_job_permissions(path: Path, job_name: str, events: set[str]) -> dic
         if path.name == "semgrep.yml" and job_name == "semgrep":
             return {"contents": {"read", "none"}, "security-events": {"write", "none"}}
         return {"contents": {"read", "none"}}
+    if path.name == "publish.yml" and job_name == "validate-release":
+        return {"contents": {"read", "none"}, "actions": {"read", "none"}}
     if path.name == "publish.yml" and job_name == "publish":
         return {
             "contents": {"read", "none"},
@@ -197,12 +198,18 @@ def audit(path: Path) -> list[str]:
                 findings.append(
                     f"{path.name}: job {job_name!r} grants unexpected {scope}: {access}"
                 )
-        if (
-            path.name == "publish.yml"
-            and job_name == "publish"
-            and raw_job.get("environment") != "release"
-        ):
-            findings.append(f"{path.name}: publish job must use the protected release environment")
+        if path.name == "publish.yml" and job_name == "publish":
+            if raw_job.get("environment") != "release":
+                findings.append(f"{path.name}: publish job must use the protected release environment")
+            steps = raw_job.get("steps")
+            if isinstance(steps, list):
+                for index, step in enumerate(steps, start=1):
+                    if isinstance(step, dict) and str(step.get("uses", "")).startswith(
+                        "actions/checkout@"
+                    ):
+                        findings.append(
+                            f"{path.name}: publish step {index} must not checkout candidate source"
+                        )
 
         steps = raw_job.get("steps")
         if not isinstance(steps, list):

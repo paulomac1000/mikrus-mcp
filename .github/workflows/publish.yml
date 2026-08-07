@@ -19,16 +19,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    environment: release
+  validate-release:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
       contents: read
       actions: read
-      packages: write
-      id-token: write
-      attestations: write
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
+      version: ${{ steps.revision.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -50,11 +49,10 @@ jobs:
           fi
           git show-ref --verify --quiet "refs/tags/$release_tag"
           sha="$(git rev-parse "refs/tags/$release_tag^{commit}")"
-          git checkout --detach "$sha"
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           test "$release_tag" = "v$version"
+          test "${#sha}" -eq 40
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${sha:0:12}" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Locate successful CI release bundle
         id: evidence
@@ -71,7 +69,6 @@ jobs:
           artifact_id="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
             --jq ".artifacts | map(select(.name == \"release-bundle-$RELEASE_SHA\" and (.expired | not))) | first | .id")"
           test -n "$artifact_id" && test "$artifact_id" != "null"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
       - name: Download exact CI artifact
         shell: bash
@@ -83,7 +80,7 @@ jobs:
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > release-bundle.zip
           mkdir bundle
           unzip -q release-bundle.zip -d bundle
-      - name: Verify and smoke exact wheel bundle
+      - name: Verify and smoke exact CI bundle
         shell: bash
         env:
           RELEASE_SHA: ${{ steps.revision.outputs.sha }}
@@ -95,6 +92,57 @@ jobs:
           python ../scripts/artifact_smoke.py \
             --wheel "$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
             --wheelhouse wheelhouse
+      - name: Close promotion bundle
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
+          VERSION: ${{ steps.revision.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir promotion
+          cp bundle/release/image.tar promotion/image.tar
+          cp bundle/release/image-id.txt promotion/image-id.txt
+          cp bundle/release/commit-sha.txt promotion/commit-sha.txt
+          printf 'RELEASE_SHA=%s\nVERSION=%s\n' "$RELEASE_SHA" "$VERSION" > promotion/release.env
+          sha256sum promotion/image.tar > promotion/image-sha256.txt
+      - name: Upload closed promotion bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: promotion-${{ steps.revision.outputs.sha }}
+          path: promotion/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: validate-release
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: none
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download closed promotion bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: promotion-${{ needs.validate-release.outputs.sha }}
+          path: promotion
+      - name: Verify closed promotion identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ needs.validate-release.outputs.sha }}
+          EXPECTED_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          source promotion/release.env
+          test "$RELEASE_SHA" = "$EXPECTED_SHA"
+          test "$VERSION" = "$EXPECTED_VERSION"
+          test "${#RELEASE_SHA}" -eq 40
+          test "$(cat promotion/commit-sha.txt)" = "$RELEASE_SHA"
+          sha256sum --check promotion/image-sha256.txt
       - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
           registry: ghcr.io
@@ -102,32 +150,28 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load, smoke, and tag exact CI image
         shell: bash
-        env:
-          VERSION: ${{ steps.revision.outputs.version }}
-          SHORT_SHA: ${{ steps.revision.outputs.short_sha }}
         run: |
           set -euo pipefail
-          loaded="$(docker load --input bundle/release/image.tar)"
+          source promotion/release.env
+          loaded="$(docker load --input promotion/image.tar)"
           source_image="${loaded#Loaded image: }"
           test "$source_image" != "$loaded"
           test "$(docker image inspect --format='{{.Id}}' "$source_image")" = \
-            "$(cat bundle/release/image-id.txt)"
+            "$(cat promotion/image-id.txt)"
           docker run --rm --entrypoint python "$source_image" -c \
-            "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+            "import os; from mikrus_mcp import __version__; assert __version__ == '$VERSION'; assert os.getuid() == 10001"
           docker tag "$source_image" "ghcr.io/${GITHUB_REPOSITORY}:$VERSION"
-          docker tag "$source_image" "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA"
-      - name: Push previously smoke-tested image
+          docker tag "$source_image" "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA"
+      - name: Push previously validated image
         id: push
         shell: bash
-        env:
-          VERSION: ${{ steps.revision.outputs.version }}
-          SHORT_SHA: ${{ steps.revision.outputs.short_sha }}
         run: |
           set -euo pipefail
+          source promotion/release.env
           docker push "ghcr.io/${GITHUB_REPOSITORY}:$VERSION"
-          docker push "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA"
+          docker push "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA"
           digest="$(docker inspect --format='{{index .RepoDigests 0}}' \
-            "ghcr.io/${GITHUB_REPOSITORY}:sha-$SHORT_SHA" | cut -d@ -f2)"
+            "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA" | cut -d@ -f2)"
           test -n "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
