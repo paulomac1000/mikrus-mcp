@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
 pytest.importorskip("mcp", reason="official MCP SDK is required for registration contracts")
 from mcp import Client  # noqa: E402
 
 from mikrus_mcp.config import Settings, TargetConfig
-from mikrus_mcp.manifests import active_names
+from mikrus_mcp.manifests import MANIFESTS, active_names
 from mikrus_mcp.server import build_http_app, build_server
 
 
@@ -34,20 +32,27 @@ async def test_registration_matches_active_manifests() -> None:
     assert "execute_command" not in names
 
 
-def test_mutating_tool_schemas_do_not_expose_approval_tokens() -> None:
-    from mikrus_mcp import server as module
+@pytest.mark.asyncio
+async def test_public_tool_schemas_do_not_expose_internal_authorization_inputs() -> None:
+    current = settings()
+    async with Client(build_server(current), raise_exceptions=True) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
-    for name in (
-        "restart_server",
-        "boost_server",
-        "assign_domain",
-        "write_file",
-        "change_service_state",
-        "terminate_process",
-        "update_system",
-    ):
-        signature = inspect.signature(getattr(module, name))
-        assert "approval_token" not in signature.parameters
+    forbidden = {
+        "approval_token",
+        "approval_id",
+        "principal",
+        "scopes",
+        "stable_identity",
+        "api_key",
+        "password",
+        "sudo_password",
+    }
+    for name, manifest in MANIFESTS.items():
+        if name not in tools or manifest.side_effects == "read":
+            continue
+        properties = tools[name].input_schema.get("properties", {})
+        assert forbidden.isdisjoint(properties), (name, sorted(forbidden & set(properties)))
 
 
 def test_http_builder_requires_streamable_http_settings() -> None:
