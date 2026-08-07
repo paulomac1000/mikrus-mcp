@@ -35,10 +35,14 @@ The credential-free suite verifies:
 - cancellation propagation and deterministic target cleanup.
 
 The current local candidate collects 65 tests. The observed result is
-`59 passed, 9 skipped` for `python -m pytest -q`; branch coverage is 65.31% at the
+`59 passed, 9 skipped` for `python -m pytest -q`; branch coverage is 66.07% at the
 repository's 65% gate. Skipped tests are explicit SDK, provider, dependency-lock, or
 real-system evidence placeholders rather than hidden success. These numbers must be
 recomputed from a clean checkout of the final published commit before merge.
+
+Provider evidence is accepted only when its checked-out commit SHA equals the current
+pull-request head. Results from an earlier local directory, generated staging tree, or
+superseded commit are not evidence for the published branch.
 
 ## Rule summary
 
