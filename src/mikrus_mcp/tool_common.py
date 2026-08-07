@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
 
+from pydantic import JsonValue
+
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -16,8 +18,7 @@ class ToolResult(TypedDict):
     """Protocol-visible successful tool result with a concrete output schema."""
 
     success: Literal[True]
-    data: object
-    _meta: dict[str, object]
+    data: JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +34,10 @@ def _caller(ctx: Context[AppContext]) -> CallerContext:
 
 def _require_success(result: dict[str, Any]) -> ToolResult:
     if result.get("success") is True:
-        return cast(ToolResult, result)
+        return {
+            "success": True,
+            "data": cast(JsonValue, result.get("data")),
+        }
     error = result.get("error") or {}
     code = str(error.get("code", "ERROR"))
     message = str(error.get("message", "operation failed"))

@@ -54,11 +54,23 @@ async def smoke():
     async with Client(server, raise_exceptions=True) as client:
         listed = await client.list_tools()
         names = {tool.name for tool in listed.tools}
-        assert "describe_mikrus_capabilities" in names
-        assert "execute_command" not in names
+        if "describe_mikrus_capabilities" not in names:
+            raise RuntimeError("capability catalog tool is missing from exact wheel")
+        if "execute_command" in names:
+            raise RuntimeError("disabled command profile leaked into exact wheel")
         result = await client.call_tool("describe_mikrus_capabilities", {})
-        assert result.is_error is not True
-        assert result.structured_content is not None
+        if result.is_error is True:
+            raise RuntimeError(
+                f"official client reported a tool error: content={result.content!r}"
+            )
+        if result.structured_content is None:
+            raise RuntimeError(
+                f"official client did not receive structured content: result={result!r}"
+            )
+        if result.structured_content.get("success") is not True:
+            raise RuntimeError(
+                f"structured result has an invalid success marker: {result.structured_content!r}"
+            )
 
 asyncio.run(smoke())
 '''
