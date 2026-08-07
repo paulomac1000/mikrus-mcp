@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PIP_VERSION: "25.2"
+  PIP_VERSION: "26.1.2"
 
 jobs:
   quality:
