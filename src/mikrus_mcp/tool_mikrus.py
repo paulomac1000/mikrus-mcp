@@ -36,11 +36,10 @@ async def get_server_stats(ctx: Context[AppContext], server: str | None = None) 
 
 async def restart_server(
     ctx: Context[AppContext],
-    approval_token: str,
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Restart one exact mikr.us target using a one-time server-side approval."""
-    return await _invoke(ctx, "restart_server", {"server": server}, approval_token)
+    """Restart one exact mikr.us target after a matching server-side approval is loaded."""
+    return await _invoke(ctx, "restart_server", {"server": server})
 
 
 async def get_logs(ctx: Context[AppContext], server: str | None = None) -> dict[str, Any]:
@@ -59,11 +58,10 @@ async def get_log_by_id(
 
 async def boost_server(
     ctx: Context[AppContext],
-    approval_token: str,
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Enable temporary resource boost using a one-time server-side approval."""
-    return await _invoke(ctx, "boost_server", {"server": server}, approval_token)
+    """Enable temporary resource boost after a matching server-side approval is loaded."""
+    return await _invoke(ctx, "boost_server", {"server": server})
 
 
 async def get_db_info(ctx: Context[AppContext], server: str | None = None) -> dict[str, Any]:
@@ -84,14 +82,12 @@ async def get_cloud(ctx: Context[AppContext], server: str | None = None) -> dict
 async def assign_domain(
     port: str,
     domain: str,
-    approval_token: str,
     ctx: Context[AppContext],
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Assign a domain to a port using a one-time server-side approval."""
+    """Assign a domain to a port after a matching server-side approval is loaded."""
     return await _invoke(
         ctx,
         "assign_domain",
         {"server": server, "port": port, "domain": domain},
-        approval_token,
     )

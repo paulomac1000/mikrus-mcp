@@ -11,13 +11,12 @@ from mikrus_mcp.tool_common import AppContext, _invoke
 
 async def execute_command(
     cmd: str,
-    approval_token: str,
     ctx: Context[AppContext],
     server: str | None = None,
 ) -> dict[str, Any]:
     """Execute one allowlisted command in the disabled-by-default command profile."""
     return await _invoke(
-        ctx, "execute_command", {"server": server, "cmd": cmd}, approval_token
+        ctx, "execute_command", {"server": server, "cmd": cmd}
     )
 
 
@@ -33,16 +32,14 @@ async def read_file(
 async def write_file(
     path: str,
     content: str,
-    approval_token: str,
     ctx: Context[AppContext],
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically replace a file under a safe root using one-time approval."""
+    """Replace a file under a safe root after a matching approval is loaded."""
     return await _invoke(
         ctx,
         "write_file",
         {"server": server, "path": path, "content": content},
-        approval_token,
     )
 
 
@@ -58,16 +55,14 @@ async def get_service_status(
 async def change_service_state(
     name: str,
     action: str,
-    approval_token: str,
     ctx: Context[AppContext],
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Change systemd service state using one-time server-side approval."""
+    """Change systemd state after a matching server-side approval is loaded."""
     return await _invoke(
         ctx,
         "change_service_state",
         {"server": server, "name": name, "action": action},
-        approval_token,
     )
 
 
@@ -96,26 +91,23 @@ async def list_processes(ctx: Context[AppContext], server: str | None = None) ->
 
 async def terminate_process(
     target: str,
-    approval_token: str,
     ctx: Context[AppContext],
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Terminate one exact process identifier using one-time approval."""
+    """Terminate one process after a matching server-side approval is loaded."""
     return await _invoke(
         ctx,
         "terminate_process",
         {"server": server, "target": target},
-        approval_token,
     )
 
 
 async def update_system(
     ctx: Context[AppContext],
-    approval_token: str,
     server: str | None = None,
 ) -> dict[str, Any]:
-    """Run the bounded package update workflow using one-time approval."""
-    return await _invoke(ctx, "update_system", {"server": server}, approval_token)
+    """Run package updates after a matching server-side approval is loaded."""
+    return await _invoke(ctx, "update_system", {"server": server})
 
 
 async def list_directory(

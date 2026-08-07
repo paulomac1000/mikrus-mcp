@@ -1,132 +1,84 @@
-"""Unit tests for input validators — write guard, command validation.
-
-[RULE: TEST-HIERARCHY-2] Zero I/O — all tests use env var manipulation only.
-"""
-
-import os
-
 import pytest
 
 from mikrus_mcp.validators import (
     ValidationError,
-    WriteOperationsDisabledError,
-    check_write_enabled,
     validate_command,
+    validate_content_size,
+    validate_domain,
+    validate_hours_param,
+    validate_lines_param,
+    validate_path,
+    validate_port,
+    validate_process_target,
+    validate_search_pattern,
+    validate_service_action,
+    validate_service_name,
 )
 
 
-class TestWriteGuard:
-    """Tests for the server-level write operations gate (L2+)."""
-
-    def test_check_write_enabled_raises_when_disabled(self) -> None:
-        """Write guard blocks operations when ENABLE_WRITE_OPERATIONS is not set."""
-        os.environ.pop("ENABLE_WRITE_OPERATIONS", None)
-        with pytest.raises(WriteOperationsDisabledError):
-            check_write_enabled()
-
-    def test_check_write_enabled_raises_when_set_to_zero(self) -> None:
-        """Write guard blocks operations when ENABLE_WRITE_OPERATIONS=0."""
-        os.environ["ENABLE_WRITE_OPERATIONS"] = "0"
-        with pytest.raises(WriteOperationsDisabledError):
-            check_write_enabled()
-
-    def test_check_write_enabled_passes_when_enabled(self) -> None:
-        """Write guard allows operations when ENABLE_WRITE_OPERATIONS=1."""
-        os.environ["ENABLE_WRITE_OPERATIONS"] = "1"
-        check_write_enabled()  # should not raise
+def test_read_path_rejects_protected_secret_tree() -> None:
+    with pytest.raises(ValidationError, match="forbidden"):
+        validate_path("/root/.ssh/id_ed25519")
 
 
-class TestValidateCommand:
-    """Tests for shell metacharacter validation (L2+)."""
+def test_write_path_is_component_aware_and_default_deny() -> None:
+    assert validate_path("/tmp/app/config", for_write=True) == "/tmp/app/config"
+    with pytest.raises(ValidationError, match="safe roots"):
+        validate_path("/tmp-other/file", for_write=True)
+    with pytest.raises(ValidationError, match="forbidden"):
+        validate_path("/etc/app.conf", for_write=True)
 
-    def test_rejects_empty_command(self) -> None:
-        with pytest.raises(ValidationError, match="cannot be empty"):
-            validate_command("")
 
-    def test_rejects_non_string_command(self) -> None:
-        with pytest.raises(ValidationError, match="cannot be empty"):
-            validate_command(None)  # type: ignore[arg-type]
+def test_path_rejects_traversal_and_control_characters() -> None:
+    for value in ("relative", "/tmp/../etc/passwd", "/tmp/a\x00b"):
+        with pytest.raises(ValidationError):
+            validate_path(value)
 
-    def test_rejects_semicolon(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("ls; rm -rf /")
 
-    def test_rejects_pipe(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("cat /etc/passwd | mail someone")
+def test_command_is_parsed_allowlisted_and_requoted() -> None:
+    assert validate_command("echo 'hello world'") == "echo 'hello world'"
+    assert validate_command("uptime") == "uptime"
+    with pytest.raises(ValidationError, match="allowlist"):
+        validate_command("python -c pass")
+    with pytest.raises(ValidationError, match="metacharacters"):
+        validate_command("echo ok; id")
+    with pytest.raises(ValidationError, match="metacharacters"):
+        validate_command("cat /etc/hosts | grep x")
 
-    def test_rejects_backtick(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("echo `id`")
 
-    def test_rejects_dollar_sign(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("echo $(whoami)")
+def test_bounded_numeric_parameters_fail_instead_of_clamping() -> None:
+    assert validate_lines_param("50") == 50
+    assert validate_hours_param("12") == 12
+    for value in (0, 501, "bad"):
+        with pytest.raises(ValidationError):
+            validate_lines_param(value)
+    for value in (0, 25, "bad"):
+        with pytest.raises(ValidationError):
+            validate_hours_param(value)
 
-    def test_rejects_ampersand(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("sleep 10 &")
 
-    def test_rejects_single_quote(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("echo 'hello'")
+def test_domain_port_service_process_and_search_validation() -> None:
+    assert validate_domain("example.com") == "example.com"
+    assert validate_domain("-") == "-"
+    assert validate_port("443") == 443
+    assert validate_service_name("nginx.service") == "nginx.service"
+    assert validate_service_action("restart") == "restart"
+    assert validate_process_target("1234") == "1234"
+    assert validate_process_target("worker") == "worker"
+    assert validate_search_pattern("connection failed") == "connection failed"
+    for function, value in (
+        (validate_domain, "not a domain"),
+        (validate_port, "99999"),
+        (validate_service_name, "nginx;id"),
+        (validate_service_action, "delete"),
+        (validate_process_target, "worker;id"),
+        (validate_search_pattern, "x|cat"),
+    ):
+        with pytest.raises(ValidationError):
+            function(value)  # type: ignore[arg-type]
 
-    def test_rejects_double_quote(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command('echo "hello"')
 
-    def test_rejects_backslash(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("echo \\")
-
-    def test_rejects_newline(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("echo\nrm -rf /")
-
-    def test_rejects_redirect(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("cat /etc/passwd > /tmp/out")
-
-    def test_rejects_parentheses(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("(echo test)")
-
-    def test_rejects_curly_braces(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("{ echo test; }")
-
-    def test_rejects_brackets(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("[ -f /tmp/test ]")
-
-    def test_rejects_asterisk(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("rm *")
-
-    def test_rejects_question_mark(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("ls /tmp/?")
-
-    def test_rejects_exclamation_mark(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("!ls")
-
-    def test_rejects_tilde(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("ls ~")
-
-    def test_rejects_angle_brackets(self) -> None:
-        with pytest.raises(ValidationError, match="unsafe characters"):
-            validate_command("cat < /etc/passwd")
-
-    def test_accepts_simple_command(self) -> None:
-        result = validate_command("df -h")
-        assert result == "df -h"
-
-    def test_accepts_command_with_numbers(self) -> None:
-        result = validate_command("tail -50 /var/log/syslog")
-        assert result == "tail -50 /var/log/syslog"
-
-    def test_accepts_command_with_underscore(self) -> None:
-        result = validate_command("systemctl status nginx")
-        assert result == "systemctl status nginx"
+def test_content_limit_counts_encoded_bytes() -> None:
+    validate_content_size("a" * 100_000)
+    with pytest.raises(ValidationError, match="too large"):
+        validate_content_size("ą" * 100_000)

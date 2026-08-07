@@ -19,9 +19,9 @@ class AppContext:
     kernel: InvocationKernel
 
 
-def _caller(ctx: Context[AppContext], approval_token: str | None = None) -> CallerContext:
+def _caller(ctx: Context[AppContext]) -> CallerContext:
     settings = ctx.request_context.lifespan_context.settings
-    return CallerContext(settings.principal, settings.allowed_scopes, approval_token)
+    return CallerContext(settings.principal, settings.allowed_scopes)
 
 
 def _require_success(result: dict[str, Any]) -> dict[str, Any]:
@@ -37,7 +37,6 @@ async def _invoke(
     ctx: Context[AppContext],
     name: str,
     arguments: dict[str, Any],
-    approval_token: str | None = None,
 ) -> dict[str, Any]:
     kernel = ctx.request_context.lifespan_context.kernel
-    return _require_success(await kernel.invoke(name, arguments, _caller(ctx, approval_token)))
+    return _require_success(await kernel.invoke(name, arguments, _caller(ctx)))

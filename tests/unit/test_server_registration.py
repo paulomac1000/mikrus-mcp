@@ -34,7 +34,7 @@ async def test_registration_matches_active_manifests() -> None:
     assert "execute_command" not in names
 
 
-def test_mutating_tool_schemas_require_approval_token() -> None:
+def test_mutating_tool_schemas_do_not_expose_approval_tokens() -> None:
     from mikrus_mcp import server as module
 
     for name in (
@@ -47,8 +47,7 @@ def test_mutating_tool_schemas_require_approval_token() -> None:
         "update_system",
     ):
         signature = inspect.signature(getattr(module, name))
-        parameter = signature.parameters["approval_token"]
-        assert parameter.default is inspect.Parameter.empty
+        assert "approval_token" not in signature.parameters
 
 
 def test_http_builder_requires_streamable_http_settings() -> None:

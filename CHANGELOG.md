@@ -12,7 +12,7 @@ All notable changes to mikrus-mcp are recorded here.
 - Removed automatic fallback from an unavailable default target.
 - Split mixed-risk service and process tools into separate read and mutation tools.
 - Changed mutations to require operator enablement, scopes, and one-time
-  server-side approval records.
+  server-side approval records that are not exposed as MCP arguments.
 - Enabled SSH host verification by default.
 - Replaced silent numeric clamping and permissive write paths with fail-closed validation.
 
@@ -22,12 +22,18 @@ All notable changes to mikrus-mcp are recorded here.
   binding, deadlines, concurrency, execution, errors, sanitization, and telemetry.
 - Complete typed capability manifests with supported and active catalogs.
 - Loopback Host, Origin, bearer authentication, and request-body controls for HTTP.
-- Credential-scoped rate limiting, read-only retry policy, bounded HTTP and SSH output,
-  field-aware minimization, and protocol-native structured results.
+- Credential-scoped rate limiting, manifest-driven read-only retry policy, bounded HTTP
+  and SSH output, field-aware minimization, and protocol-native structured results.
+- A trusted local approval CLI and secure runtime reload of atomically replaced approval files.
+- Canonical remote path checks for read operations and write-parent containment.
 - Mocked official-client smoke tests and explicit TODO tests for real-system and
   provider-backed evidence.
 - Governed architecture, security, migration, compliance, and upstream-review documents.
-- SHA-pinned least-privilege CI, exact wheel smoke, and a container built from the same wheel.
+- SHA-pinned least-privilege CI, explicit workflow privilege-profile validation, exact
+  wheel smoke, a digest-pinned base image, and release promotion of the previously tested
+  CI wheelhouse and image archive without rebuilding.
+- Canonical-parent file writes using unpredictable `mktemp` files and atomic `mv -T`
+  replacement instead of predictable process-ID temporary paths.
 
 ### Deferred
 

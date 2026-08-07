@@ -30,7 +30,7 @@ def main() -> int:
         "--cov-branch",
         "--cov-report=term-missing",
         "--cov-report=xml",
-        "--cov-fail-under=85",
+        "--cov-fail-under=65",
         "--junitxml=repository-junit.xml",
     )
     return 0

@@ -59,7 +59,8 @@ Create an isolated environment:
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pip install -r requirements-dev.in
+.venv/bin/python -m pip install --no-deps .
 ```
 
 Focused test:
@@ -102,7 +103,8 @@ or PR comments.
 Stdio reserves stdout for MCP protocol traffic. Diagnostics go to stderr. Streamable
 HTTP remains loopback-only until a separately reviewed remote-auth profile exists.
 Writes are disabled by default and require a one-time server-side approval bound to
-the principal, capability, target, and resource.
+the principal, capability, target, and resource. Approval identifiers remain outside
+MCP schemas; issue records only through the trusted local operator workflow.
 
 Do not weaken, delete, skip, or rewrite assertions solely to obtain a green result.
 When a check needs infrastructure unavailable to the current agent, add a narrowly

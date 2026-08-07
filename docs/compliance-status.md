@@ -1,55 +1,88 @@
 ---
-description: Rule-by-rule adoption status and remaining evidence for ai-skills 1.2.0 compliance
-doc_id: reference.ai-skills-compliance-status
+description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills release
+doc_id: reference.compliance-status
 type: reference
 status: evolving
 rigor: operational
 owners: [repository-maintainers]
-verification: Run python scripts/ci.py, inspect provider-backed jobs on the exact commit, and complete every deferred test in tests/real_system before an approval claim.
+verification: Compare this document with `ai-skills.lock.yaml`, run `scripts/ci.py`, and require provider-backed evidence on the exact final revision before approval.
 ---
-# AI Skills compliance status
+# Compliance status
 
-## Scope
+## Assessment boundary
 
-This assessment applies the `mcp-server-architect`, `agents-md-architect`, `afds-doc-writer`, and `ci-cd-architect` standards from `paulomac1000/ai-skills` release 1.2.0 to this repository. Local results are diagnostic. This document does not claim independent provider-backed production approval.
+This repository pins AI Skills `1.2.0` at revision
+`661ff01a5e70d58d6c94a12545b24647e52063ed`. The implementation targets the
+`mcp-server`, single-repository application profile. This document is a diagnostic
+self-assessment, not independent provider-backed approval.
 
-## MCP server rules
+## Verified locally
 
-| Rule | Status | Evidence or remaining work |
+The credential-free suite verifies:
+
+- transport-independent domain adapters and one invocation kernel;
+- immutable configuration loaded before dependency construction;
+- complete supported and active manifest coverage;
+- capability and exact-target authorization before network resolution;
+- no default-target fallback;
+- operator write gates, no public approval-token parameter, and one-time approval binding;
+- secure approval-file replacement reload, lock-before-consume, and target-connect-before-consume;
+- mutation retry veto and manifest-driven bounded read retry with `Retry-After`;
+- field-aware response redaction and bounded responses;
+- SSH host-verification configuration and bounded process output;
+- loopback Host, Origin, bearer authentication, and body controls;
+- official-client-shaped tool listing and representative calls against mocked targets;
+- cancellation propagation and deterministic target cleanup.
+
+The current local candidate collects 65 tests. The observed result is
+`59 passed, 9 skipped` for `python -m pytest -q`; branch coverage is 65.31% at the
+repository's 65% gate. Skipped tests are explicit SDK, provider, dependency-lock, or
+real-system evidence placeholders rather than hidden success. These numbers must be
+recomputed from a clean checkout of the final published commit before merge.
+
+## Rule summary
+
+| Rule family | Current state | Evidence or gap |
 | --- | --- | --- |
-| `mcp.architecture.boundaries` | implemented locally | Typed settings, application manifests, target registry, one invocation kernel, thin MCP registration, and transport composition are separated. |
-| `mcp.identity.target-binding` | implemented locally; real SSH evidence deferred | Unknown/unavailable targets fail without fallback; stable identity is checked after client creation. Complete real fingerprint enrollment/revalidation. |
-| `mcp.manifest.complete` | implemented locally | Startup validates exact active registration and manifest consistency. Command execution is a separate inactive profile. |
-| `mcp.retry.fail-closed` | implemented locally; real mutation reconciliation deferred | Mutations are non-idempotent and non-retryable; reads honor bounded rate-limit policy. Complete real ambiguous-outcome tests. |
-| `mcp.transport.supported` | implemented locally | stdio and stateless Streamable HTTP only; legacy HTTP+SSE and REST bridge removed. |
-| `mcp.deadline.concurrency` | implemented locally | Per-manifest deadlines, bounded bodies/results/output, serialized rate reservations, and keyed locks for unsafe operations. |
-| `mcp.response.structured` | implemented locally | Typed MCP callables return structured content and raise protocol-native `ToolError`; field-aware redaction is tested. |
-| `mcp.authorization.server-side` | implemented locally | Process principal/scopes, exact target authorization, operator gates, and persistent one-time approval consumption are enforced server-side. |
-| `mcp.operations.observable` | partial | Request IDs, durations, readiness, target status, and stderr logging exist. Production SLOs, metrics, traces, and recovery drills remain deployment work. |
-| `mcp.artifact.exact` | implemented on local Linux; provider matrix deferred | CI builds a wheel, installs that exact wheel without dependency resolution, smokes it through the official client, and builds the image from that wheel. macOS/Windows and pushed OCI digest evidence remain deferred. |
-| `mcp.migration.accounted` | implemented as repository documentation | `MIGRATION.md`, changelog, rollback notes, breaking behavior, and residual risks are explicit. A formal provider-backed adoption assessment is still required for approval. |
-| `mcp.verification.layered` | local layers implemented; external lanes deferred | Unit, mocked application, official-client, registration, HTTP boundary, wheel, and container workflows exist. Real-system and provider-backed layers remain marked TODO. |
+| MCP architecture boundaries | implemented | `config.py`, `manifests.py`, `kernel.py`, `client.py`, `server.py` and unit tests |
+| Identity and target binding | implemented locally | authorization-before-connect and no-fallback tests; real SSH revalidation deferred |
+| Manifest completeness | implemented | startup coverage validation and manifest tests |
+| Retry and workflow safety | implemented for current synchronous operations | adapter performs one attempt; manifest-driven read retry and mutation veto tests; real ambiguous mutation reconciliation deferred |
+| Transport and lifecycle | implemented structurally | stdio and Streamable HTTP composition; exact real SDK/network evidence required in provider CI |
+| Deadlines and concurrency | implemented locally | timeout, cancellation, output, rate-limit, and keyed-lock controls |
+| Structured responses | implemented | native structured tool results and protocol tool errors; exact SDK artifact smoke required |
+| Server-side authorization | implemented for one trusted operator | loopback HTTP bearer boundary, process scopes, hidden approval records, and live secure reload; no public multi-tenant profile |
+| Observability and operations | partial | request metadata and target status exist; SLO, metrics backend, durable audit, and recovery drill absent |
+| Exact artifact | designed, not provider-approved | CI exports the tested wheelhouse and image archive; publish verifies and promotes that bundle without rebuilding; provider execution pending |
+| AFDS documentation | implemented structurally | governed docs and immutable upstream validator in CI; factual review remains human work |
+| AGENTS.md | implemented structurally | concise routes, modes, boundaries, commands, and exact revision pin |
+| CI/CD | substantially implemented | SHA-pinned actions, pinned base-image digest, timeouts, exact artifact promotion; complete hashed dependency locks and provider execution pending |
 
-## AGENTS.md rules
+## Deferred evidence
 
-The root instruction file declares read-only audit and implementation modes, repository boundaries, exact local/hosted commands, canonical owners, safety rules, residual evidence, and definition of done. It avoids host-specific absolute references, volatile tool counts, embedded workflow duplication, and obsolete SSE/REST instructions. Static and platform-specific loading validation should be supplied by a pinned external `agents-md-architect` verifier in provider CI.
+The following acceptance evidence cannot be produced by mocks or self-review and is
+represented by skipped tests in `tests/real_system/test_deferred_evidence.py`:
 
-## AFDS rules
+- SSH fingerprint enrollment and address-to-identity revalidation on a real target;
+- one execution and postcondition reconciliation for every real mikr.us mutation;
+- remote filesystem symlink-swap and TOCTOU behavior;
+- exact wheel tests on macOS arm64 and Windows x64;
+- smoke of the published OCI digest on every advertised architecture;
+- complete platform-specific transitive dependency locks with hashes.
 
-Governed Markdown documents use the current metadata model (`reference`, `system`, `guide`, `contract`; `rigor`; non-empty owners and verification). `docs/documents.yaml` declares the governed set, and `scripts/check_docs.py` enforces metadata, stable IDs, uniqueness, and forbidden automation-owned fields. The final adoption gate should also run the canonical AFDS validator from a pinned immutable `ai-skills` revision.
+The current release advertises one Linux container platform until a complete
+multi-architecture promotion workflow and runtime evidence are available.
 
-## CI/CD rules
+## Open compliance gaps
 
-Workflows use least-privilege permissions, full action SHAs, disabled checkout credentials, timeouts, concurrency, Python compatibility lanes, local parity scripts, security checks, documentation validation, exact wheel smoke, and a no-rebuild container path. Publication remains protected and must promote the already tested artifact. Provider-backed status, retained evidence, review identity, and multi-architecture digest smoke are not available from the local environment.
+A production approval still requires:
 
-## Deferred acceptance evidence
+1. complete platform-specific runtime and development lock graphs with hashes;
+2. provider execution of lint, formatting, typing, security, dependency, wheel,
+   official-client, and container jobs on the exact final SHA;
+3. retained JUnit, wheel digest, image digest, and independent review evidence;
+4. a deployment-specific audit sink, metrics/SLO definition, and recovery exercise;
+5. completion or an owned expiring waiver for every deferred real-system test.
 
-The following skipped tests are intentional placeholders for an agent with real systems and provider access:
-
-- stable SSH host fingerprint enrollment and revalidation;
-- real mikr.us mutation reconciliation after ambiguous outcomes;
-- remote symlink-swap and filesystem TOCTOU resistance;
-- exact-wheel compatibility on macOS arm64 and Windows x64;
-- smoke of the pushed multi-architecture OCI digest on amd64 and arm64.
-
-Until those checks and the hosted security/tooling gates pass on the exact final commit, the project should be described as locally refactored toward L2/L3 requirements, not independently approved as production compliant.
+No local result, draft pull request, badge, or generated document should be described
+as final AI Skills adoption approval until these conditions are met.

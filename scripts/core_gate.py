@@ -17,6 +17,16 @@ def run(*arguments: str) -> None:
 def main() -> int:
     run(sys.executable, "-m", "compileall", "-q", "src", "tests", "scripts")
     run(sys.executable, "scripts/check_docs.py")
+    run(sys.executable, "scripts/check_workflows.py")
+    run(
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests/unit",
+        "tests/smoke",
+        "--collect-only",
+        "-q",
+    )
     run(sys.executable, "-m", "pytest", "tests/unit", "tests/smoke", "-q")
     return 0
 

@@ -8,11 +8,13 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  PIP_VERSION: "25.2"
 
 jobs:
   quality:
@@ -32,13 +34,16 @@ jobs:
             pyproject.toml
             requirements-runtime.in
             requirements-dev.in
-      - name: Install development environment
+      - name: Build and install the exact wheel with development tools
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "pip==25.2"
-          python -m pip install ".[dev]"
-      - name: Run complete local gate
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install -r requirements-dev.in
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
+          python -m pip check
+      - name: Run complete quality gate
         run: python scripts/ci.py
       - name: Checkout immutable AI Skills authority
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -54,9 +59,15 @@ jobs:
           mapfile -t governed < <(python scripts/check_docs.py --print-governed)
           test "${#governed[@]}" -gt 0
           python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
-      - name: Audit workflows with pinned policy authority
-        run: >-
-          python .trusted-ai-skills/skills/ci-cd-architect/tools/check_github_actions_policy.py .
+      - name: Audit pull-request workflow with pinned policy authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .policy-input/.github/workflows
+          cp .github/workflows/ci.yml .policy-input/.github/workflows/ci.yml
+          python .trusted-ai-skills/skills/ci-cd-architect/tools/check_github_actions_policy.py .policy-input
+      - name: Audit repository workflow privilege profiles
+        run: python scripts/check_workflows.py
       - name: Upload quality diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -86,13 +97,19 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install and run credential-free suite
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-runtime.in
+            requirements-dev.in
+      - name: Build exact wheel and run credential-free suite
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "pip==25.2"
-          python -m pip install ".[dev]"
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install -r requirements-dev.in
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
+          python -m pip check
           python scripts/core_gate.py
 
   exact-wheel:
@@ -108,13 +125,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-runtime.in
       - name: Build exact application wheel and dependency wheelhouse
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "pip==25.2" "build==1.5.1"
-          python -m build --wheel
+          python -m pip install "pip==$PIP_VERSION" "build==1.5.1" \
+            "setuptools==83.0.0" "wheel==0.47.0"
+          python -m build --wheel --no-isolation
           mkdir -p wheelhouse
           python -m pip wheel --wheel-dir wheelhouse \
             "mcp==2.0.0" "httpx==0.28.1" "asyncssh==2.24.0" "uvicorn==0.51.0"
@@ -126,11 +146,12 @@ jobs:
           python scripts/artifact_smoke.py \
             --wheel "$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
             --wheelhouse wheelhouse
-      - name: Record wheel digests
+      - name: Record wheel digests and source revision
         shell: bash
         run: |
           set -euo pipefail
           sha256sum dist/*.whl wheelhouse/*.whl > wheel-digests.txt
+          printf '%s\n' "${{ github.event.pull_request.head.sha || github.sha }}" > commit-sha.txt
       - name: Upload exact wheel and wheelhouse
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -139,13 +160,14 @@ jobs:
             dist/*.whl
             wheelhouse/*.whl
             wheel-digests.txt
+            commit-sha.txt
           if-no-files-found: error
           retention-days: 30
 
   container:
     needs: exact-wheel
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -157,16 +179,38 @@ jobs:
           name: exact-wheel-${{ github.run_id }}
           path: .
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
-      - name: Build image from the exact wheelhouse
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
-        with:
-          context: .
-          load: true
-          push: false
-          tags: mikrus-mcp:${{ github.sha }}
-      - name: Smoke non-root image without backend I/O
+      - name: Verify wheel bundle revision
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint python mikrus-mcp:${{ github.sha }} -c \
+          test "$(cat commit-sha.txt)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          sha256sum --check wheel-digests.txt
+      - name: Build image once from the exact wheelhouse
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --load --platform linux/amd64 \
+            --tag "mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}" .
+      - name: Smoke and export the exact image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}"
+          docker run --rm --entrypoint python "$image" -c \
             "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+          mkdir -p release
+          docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
+          docker save --output release/image.tar "$image"
+          cp commit-sha.txt release/commit-sha.txt
+          sha256sum release/image.tar dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
+      - name: Upload immutable release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-bundle-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            release/
+            dist/*.whl
+            wheelhouse/*.whl
+            wheel-digests.txt
+          if-no-files-found: error
+          retention-days: 30

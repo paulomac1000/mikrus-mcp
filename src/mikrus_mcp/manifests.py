@@ -9,6 +9,8 @@ from mikrus_mcp.config import Settings
 
 SideEffects = Literal["read", "write", "destructive"]
 Confidentiality = Literal["public", "internal", "personal", "sensitive", "credential"]
+RetryCondition = Literal["rate-limit", "transient-upstream", "timeout"]
+ConcurrencyScope = Literal["none", "target", "target-capability", "target-resource"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,9 +25,9 @@ class CapabilityManifest:
     idempotent: bool
     idempotency_mechanism: str | None
     retryable: bool
-    retry_conditions: tuple[str, ...]
+    retry_conditions: tuple[RetryCondition, ...]
     concurrent_safe: bool
-    concurrency_scope: str
+    concurrency_scope: ConcurrencyScope
     timeout_ms: int
     requires_approval: bool
     required_scopes: tuple[str, ...]
@@ -203,3 +205,11 @@ def validate_manifests(registered_names: set[str], settings: Settings) -> None:
             raise RuntimeError(f"mutation must default to non-retryable: {manifest.name}")
         if manifest.requires_approval and manifest.side_effects == "read":
             raise RuntimeError(f"read capability unexpectedly requires approval: {manifest.name}")
+        if manifest.retryable and not manifest.retry_conditions:
+            raise RuntimeError(f"retryable capability lacks retry conditions: {manifest.name}")
+        if manifest.retry_conditions and not manifest.retryable:
+            raise RuntimeError(f"retry conditions require retryable=true: {manifest.name}")
+        if manifest.concurrent_safe != (manifest.concurrency_scope == "none"):
+            raise RuntimeError(
+                f"concurrency declaration is inconsistent for {manifest.name}"
+            )

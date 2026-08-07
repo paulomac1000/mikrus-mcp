@@ -1,0 +1,385 @@
+"""Single-attempt mikr.us HTTP adapter."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import re
+import shlex
+import time
+from typing import Any
+
+import httpx
+
+from mikrus_mcp.clients.common import (
+    RateLimiter,
+    _CACHEABLE_ENDPOINTS,
+    _CACHE_TTL_SECONDS,
+    _remote_read_prefix,
+    _remote_write_prefix,
+)
+from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.tools.constants import (
+    DEFAULT_HTTP_TIMEOUT,
+    EXEC_HTTP_TIMEOUT,
+    MAX_JOURNAL_LINES,
+    MAX_RESPONSE_BYTES,
+    MAX_SEARCH_RESULTS,
+)
+from mikrus_mcp.validators import (
+    ValidationError,
+    validate_command,
+    validate_container_name,
+    validate_content_size,
+    validate_domain,
+    validate_hours_param,
+    validate_lines_param,
+    validate_port,
+    validate_process_target,
+    validate_search_pattern,
+    validate_service_action,
+    validate_service_name,
+)
+
+
+class MikrusClient:
+    """Async HTTP adapter bound to one immutable mikr.us server identity."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        server_name: str,
+        *,
+        requests_per_minute: int = 5,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not base_url.startswith("https://"):
+            raise ValueError("mikr.us API URL must use HTTPS")
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.server_name = server_name
+        self.stable_identity = f"mikrus:{server_name}"
+        self._transport = transport
+        self._client: httpx.AsyncClient | None = None
+        self._rate_limiter = RateLimiter(requests_per_minute)
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_lock = asyncio.Lock()
+
+    def __repr__(self) -> str:
+        return f"MikrusClient(server={self.server_name!r}, url={self.base_url!r})"
+
+    async def open(self) -> None:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                transport=self._transport,
+                follow_redirects=False,
+                timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self) -> MikrusClient:
+        await self.open()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        return max(0.0, min(value, 60.0))
+
+    async def _cached(self, endpoint: str) -> Any | None:
+        if endpoint not in _CACHEABLE_ENDPOINTS:
+            return None
+        async with self._cache_lock:
+            item = self._cache.get(endpoint)
+            if item is None:
+                return None
+            created, value = item
+            if time.monotonic() - created >= _CACHE_TTL_SECONDS:
+                self._cache.pop(endpoint, None)
+                return None
+            return value
+
+    async def _store_cache(self, endpoint: str, value: Any) -> None:
+        if endpoint in _CACHEABLE_ENDPOINTS:
+            async with self._cache_lock:
+                self._cache[endpoint] = (time.monotonic(), value)
+
+    async def _request(
+        self,
+        endpoint: str,
+        extra_data: dict[str, str] | None = None,
+        *,
+        timeout: float = DEFAULT_HTTP_TIMEOUT,
+    ) -> Any:
+        """Perform exactly one upstream request. Retry policy belongs to the kernel."""
+        if self._client is None:
+            raise AppError(ErrorCode.UNAVAILABLE, "HTTP client is not open")
+        cached = await self._cached(endpoint)
+        if cached is not None:
+            return cached
+
+        url = f"{self.base_url}{endpoint}"
+        payload = {"srv": self.server_name, "key": self.api_key, **(extra_data or {})}
+        await self._rate_limiter.acquire()
+        try:
+            response = await self._client.post(
+                url,
+                data=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException as exc:
+            raise AppError(
+                ErrorCode.TIMEOUT,
+                f"mikr.us API request exceeded {timeout:g} seconds",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                "mikr.us API connection failed",
+            ) from exc
+
+        raw_length = response.headers.get("Content-Length")
+        if raw_length:
+            try:
+                declared_length = int(raw_length)
+            except ValueError as exc:
+                raise AppError(ErrorCode.UPSTREAM, "invalid upstream Content-Length") from exc
+            if declared_length > MAX_RESPONSE_BYTES:
+                raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+        if len(response.content) > MAX_RESPONSE_BYTES:
+            raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+
+        if response.status_code == 429:
+            raise AppError(
+                ErrorCode.RATE_LIMITED,
+                "mikr.us API rate limit reached",
+                retry_after_seconds=self._retry_after(response),
+            )
+        if response.status_code != 200:
+            reason = response.reason_phrase or "upstream request failed"
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                f"mikr.us API returned HTTP {response.status_code}: {reason}",
+            )
+
+        if "application/json" in response.headers.get("content-type", ""):
+            try:
+                value = response.json()
+            except json.JSONDecodeError as exc:
+                raise AppError(ErrorCode.UPSTREAM, "mikr.us API returned invalid JSON") from exc
+        else:
+            value = {"raw": response.text}
+        await self._store_cache(endpoint, value)
+        return value
+
+    async def get_server_info(self) -> Any:
+        return await self._request("/info")
+
+    async def list_servers(self) -> Any:
+        return await self._request("/serwery")
+
+    async def get_server_stats(self) -> Any:
+        return await self._request("/stats")
+
+    async def restart_server(self) -> Any:
+        return await self._request("/restart", timeout=EXEC_HTTP_TIMEOUT)
+
+    async def get_logs(self) -> Any:
+        return await self._request("/logs")
+
+    async def get_log_by_id(self, log_id: str) -> Any:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", log_id):
+            raise ValidationError("Invalid log ID")
+        return await self._request(f"/logs/{log_id}")
+
+    async def boost_server(self) -> Any:
+        return await self._request("/amfetamina")
+
+    async def get_db_info(self) -> Any:
+        # Credential responses deliberately bypass the process cache.
+        return await self._request("/db")
+
+    async def get_ports(self) -> Any:
+        return await self._request("/porty")
+
+    async def get_cloud(self) -> Any:
+        return await self._request("/cloud")
+
+    async def assign_domain(self, port: str, domain: str) -> Any:
+        validated_port = validate_port(port)
+        validated_domain = validate_domain(domain)
+        return await self._request(
+            "/domain",
+            {"port": str(validated_port), "domain": validated_domain},
+        )
+
+    async def execute_command(self, command: str) -> Any:
+        normalized = validate_command(command)
+        return await self._request(
+            "/exec", {"cmd": normalized}, timeout=EXEC_HTTP_TIMEOUT
+        )
+
+    async def _exec_read(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
+        return await self._request("/exec", {"cmd": command}, timeout=timeout)
+
+    async def _exec_mutation(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
+        return await self._request("/exec", {"cmd": command}, timeout=timeout)
+
+    async def read_file(self, path: str) -> Any:
+        prefix = _remote_read_prefix(path)
+        return await self._exec_read(
+            prefix
+            + 'file -b --mime-encoding "$resolved" | grep -q binary && '
+            + "echo 'ERROR: binary file' || head -n 200 -- \"$resolved\""
+        )
+
+    async def write_file(self, path: str, content: str) -> Any:
+        validate_content_size(content)
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        quoted_data = shlex.quote(encoded)
+        command = (
+            "set -eu; "
+            + _remote_write_prefix(path)
+            + 'umask 077; '
+            + 'tmp=$(mktemp --tmpdir="$resolved_parent" ".${leaf}.mcp.XXXXXX"); '
+            + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
+            + f'printf %s {quoted_data} | base64 -d > "$tmp"; '
+            + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
+            + 'trap - EXIT HUP INT TERM; echo WRITE_OK'
+        )
+        return await self._exec_mutation(command)
+
+    async def get_service_status(self, name: str) -> Any:
+        service = shlex.quote(validate_service_name(name))
+        return await self._exec_read(f"systemctl status --no-pager -- {service}")
+
+    async def change_service_state(self, name: str, action: str) -> Any:
+        service = shlex.quote(validate_service_name(name))
+        action = validate_service_action(action)
+        if action in {"status", "is-active", "is-enabled"}:
+            raise ValidationError("read-only service actions use get_service_status")
+        return await self._exec_mutation(f"systemctl {action} -- {service}")
+
+    async def analyze_disk(self, path: str = "/") -> Any:
+        return await self._exec_read(
+            _remote_read_prefix(path)
+            + 'df -h -- "$resolved"; echo ---TOP20---; '
+            + 'du -sh -- "$resolved"/* 2>/dev/null | sort -rh | head -n 20',
+            timeout=30.0,
+        )
+
+    async def check_port(self, port: str) -> Any:
+        value = validate_port(port)
+        return await self._exec_read(
+            f"ss -tlnp 2>/dev/null | grep -F ':{value} ' || echo PORT_NOT_LISTENING"
+        )
+
+    async def list_processes(self) -> Any:
+        return await self._exec_read("ps aux --sort=-%mem | head -n 20")
+
+    async def terminate_process(self, target: str) -> Any:
+        value = shlex.quote(validate_process_target(target))
+        if target.isdigit():
+            return await self._exec_mutation(f"kill -TERM -- {value}")
+        return await self._exec_mutation(f"pkill -TERM -x -- {value}")
+
+    async def update_system(self) -> Any:
+        return await self._exec_mutation(
+            "export DEBIAN_FRONTEND=noninteractive; apt-get update; "
+            "apt-get upgrade -y -o Dpkg::Options::=--force-confdef "
+            "-o Dpkg::Options::=--force-confold",
+            timeout=120.0,
+        )
+
+    async def list_directory(self, path: str) -> Any:
+        return await self._exec_read(
+            _remote_read_prefix(path) + 'ls -la -- "$resolved"'
+        )
+
+    async def tail_file(self, path: str, lines: int = 50) -> Any:
+        count = validate_lines_param(lines)
+        return await self._exec_read(
+            _remote_read_prefix(path) + f'tail -n {count} -- "$resolved"'
+        )
+
+    async def search_in_files(self, path: str, pattern: str) -> Any:
+        term = shlex.quote(validate_search_pattern(pattern))
+        return await self._exec_read(
+            _remote_read_prefix(path)
+            + f'grep -r -F -n --max-count={MAX_SEARCH_RESULTS} -- {term} "$resolved" '
+            + f"2>/dev/null | head -n {MAX_SEARCH_RESULTS}",
+            timeout=30.0,
+        )
+
+    async def get_memory_info(self) -> Any:
+        return await self._exec_read("free -h")
+
+    async def get_network_info(self) -> Any:
+        return await self._exec_read("ip addr; echo ---PORTS---; ss -tlnp")
+
+    async def get_process_tree(self) -> Any:
+        return await self._exec_read("ps auxf | head -n 100")
+
+    async def list_docker_containers(self) -> Any:
+        return self._parse_docker_jsonl(
+            await self._exec_read("docker ps -a --format '{{json .}}'")
+        )
+
+    async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
+        name = shlex.quote(validate_container_name(container))
+        count = validate_lines_param(lines)
+        return await self._exec_read(f"docker logs --tail {count} -- {name}")
+
+    async def get_docker_stats(self) -> Any:
+        return self._parse_docker_jsonl(
+            await self._exec_read("docker stats --no-stream --format '{{json .}}'")
+        )
+
+    async def get_journal_logs(self, unit: str, lines: int = 50) -> Any:
+        name = shlex.quote(validate_service_name(unit))
+        count = validate_lines_param(lines, MAX_JOURNAL_LINES)
+        return await self._exec_read(f"journalctl -u {name} -n {count} -q --no-pager")
+
+    async def find_system_errors(self, hours: int = 1) -> Any:
+        value = validate_hours_param(hours)
+        return await self._exec_read(
+            f"journalctl -p err --since '{value} hours ago' -q --no-pager "
+            f"-n {MAX_JOURNAL_LINES}"
+        )
+
+    async def search_journal_logs(self, term: str, lines: int = 50) -> Any:
+        pattern = shlex.quote(validate_search_pattern(term))
+        count = validate_lines_param(lines, MAX_JOURNAL_LINES)
+        return await self._exec_read(
+            f"journalctl -q --no-pager -n 5000 | grep -i -F -- {pattern} | tail -n {count}"
+        )
+
+    @staticmethod
+    def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
+        raw = str(result.get("output", ""))
+        parsed: list[dict[str, Any]] = []
+        for line in raw.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                parsed.append(value)
+        return {**result, "containers": parsed}
