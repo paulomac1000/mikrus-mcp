@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 
@@ -76,7 +76,7 @@ class RequestBodyLimitMiddleware:
             if not replayed:
                 replayed = True
                 return {"type": "http.request", "body": bytes(body), "more_body": False}
-            return await receive()
+            return cast(dict[str, Any], await receive())
 
         await self._app(scope, replay_receive, send)
 

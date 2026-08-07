@@ -155,7 +155,10 @@ class PolicyMixin:
                 if not all(character.isalnum() or character in "_-" for character in value):
                     raise ValidationError("Invalid log ID")
             case "assign_domain":
-                normalized["port"] = str(validate_port(normalized.get("port")))
+                port = normalized.get("port")
+                if not isinstance(port, (str, int)):
+                    raise ValidationError("port must be a string or integer")
+                normalized["port"] = str(validate_port(port))
                 normalized["domain"] = validate_domain(required_text("domain", maximum=253))
             case "execute_command":
                 normalized["cmd"] = validate_command(required_text("cmd", maximum=4_096))
@@ -164,6 +167,8 @@ class PolicyMixin:
             case "write_file":
                 normalized["path"] = validate_path(required_text("path"), for_write=True)
                 content = normalized.get("content")
+                if not isinstance(content, str):
+                    raise ValidationError("content must be a string")
                 validate_content_size(content)
             case "get_service_status":
                 normalized["name"] = validate_service_name(required_text("name", maximum=255))
@@ -174,7 +179,10 @@ class PolicyMixin:
                     raise ValidationError("read-only service actions use get_service_status")
                 normalized["action"] = action
             case "check_port":
-                normalized["port"] = str(validate_port(normalized.get("port")))
+                port = normalized.get("port")
+                if not isinstance(port, (str, int)):
+                    raise ValidationError("port must be a string or integer")
+                normalized["port"] = str(validate_port(port))
             case "terminate_process":
                 normalized["target"] = validate_process_target(required_text("target", maximum=128))
             case "tail_file":

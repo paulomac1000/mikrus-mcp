@@ -41,6 +41,7 @@ dev = [
     "pip-audit==2.10.1",
     "build==1.5.1",
     "PyYAML==6.0.3",
+    "types-PyYAML==6.0.12.20260518",
 ]
 
 [project.scripts]

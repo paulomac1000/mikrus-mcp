@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from mikrus_mcp.clients.mikrus import MikrusClient
 from mikrus_mcp.clients.ssh import SshClient
@@ -54,4 +54,4 @@ def build_client(config: TargetConfig) -> Client:
         if not (config.api_url and config.api_key and config.server_id):
             raise ValueError("mikrus target is missing validated API configuration")
         return MikrusClient(config.api_url, config.api_key, config.server_id)
-    return SshClient(config)
+    return cast(Client, SshClient(config))
