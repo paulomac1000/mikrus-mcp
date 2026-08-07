@@ -51,6 +51,7 @@ class Client(Protocol):
 
 def build_client(config: TargetConfig) -> Client:
     if config.type == "mikrus":
-        assert config.api_url and config.api_key and config.server_id
+        if not (config.api_url and config.api_key and config.server_id):
+            raise ValueError("mikrus target is missing validated API configuration")
         return MikrusClient(config.api_url, config.api_key, config.server_id)
     return SshClient(config)

@@ -158,7 +158,7 @@ class BearerAuthMiddleware:
         if not isinstance(token, str) or len(token) < 32:
             raise ValueError("HTTP bearer token must contain at least 32 characters")
         self._app = app
-        self._expected = f"Bearer {token}".encode("utf-8")
+        self._expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":

@@ -5,10 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
 
-from pydantic import JsonValue
-
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import JsonValue
 
 from mikrus_mcp.config import Settings
 from mikrus_mcp.kernel import CallerContext, InvocationKernel

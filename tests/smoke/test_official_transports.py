@@ -39,7 +39,7 @@ async def test_official_client_over_stdio_subprocess() -> None:
     environment = dict(os.environ)
     environment.update(
         {
-            "PYTHONPATH": str((__import__("pathlib").Path(__file__).parents[2] / "src")),
+            "PYTHONPATH": str(__import__("pathlib").Path(__file__).parents[2] / "src"),
             "MIKRUS_API_KEY": "test-key",
             "MIKRUS_SERVER_NAME": "srv",
             "MCP_TRANSPORT": "stdio",
