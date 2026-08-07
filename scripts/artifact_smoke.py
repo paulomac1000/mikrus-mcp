@@ -40,7 +40,7 @@ def main() -> int:
         subprocess.run([*base, *RUNTIME_REQUIREMENTS], check=True)
         subprocess.run([*base, "--no-deps", str(wheel)], check=True)
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
-        code = r'''
+        code = r"""
 import asyncio
 from mcp.client import Client
 from mikrus_mcp.config import Settings, TargetConfig
@@ -77,7 +77,7 @@ async def smoke():
             )
 
 asyncio.run(smoke())
-'''
+"""
         subprocess.run([str(python), "-c", code], check=True)
     print(f"Exact wheel smoke passed: {wheel.name} sha256={digest}")
     return 0

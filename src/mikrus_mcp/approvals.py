@@ -25,9 +25,7 @@ def normalized_arguments_digest(arguments: Mapping[str, Any]) -> str:
     The target selector is excluded because approvals bind the stable target identity
     separately. Callers must provide the post-validation/normalization arguments.
     """
-    operation_arguments = {
-        key: value for key, value in arguments.items() if key != "server"
-    }
+    operation_arguments = {key: value for key, value in arguments.items() if key != "server"}
     try:
         encoded = json.dumps(
             operation_arguments,
@@ -108,7 +106,9 @@ class ApprovalRegistry:
 
     @staticmethod
     def _identity(metadata: os.stat_result) -> _FileIdentity:
-        return _FileIdentity(metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size)
+        return _FileIdentity(
+            metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size
+        )
 
     @staticmethod
     def _validate_metadata(metadata: os.stat_result) -> None:

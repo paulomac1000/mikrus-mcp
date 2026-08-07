@@ -86,7 +86,8 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
         allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
     )
     registry = TargetRegistry(
-        {"srv": target}, factory=lambda value: MockClient(value)  # type: ignore[arg-type]
+        {"srv": target},
+        factory=lambda value: MockClient(value),  # type: ignore[arg-type]
     )
     app = build_http_app(
         build_server(settings, registry=registry, approvals=ApprovalRegistry()), settings
@@ -101,9 +102,7 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
                 break
             await asyncio.sleep(0.01)
         assert server.started
-        async with httpx2.AsyncClient(
-            headers={"Authorization": f"Bearer {token}"}
-        ) as http_client:
+        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as http_client:
             async with streamable_http_client(
                 f"http://127.0.0.1:{port}/mcp", http_client=http_client
             ) as (read, write):

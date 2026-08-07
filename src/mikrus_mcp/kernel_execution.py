@@ -17,6 +17,7 @@ class ExecutionMixin:
     registry: TargetRegistry
 
     if TYPE_CHECKING:
+
         def catalog(self, *, active_only: bool = False) -> list[dict[str, object]]: ...
 
     async def _execute(
@@ -64,9 +65,7 @@ class ExecutionMixin:
             case "get_cloud":
                 return await client.get_cloud()
             case "assign_domain":
-                return await client.assign_domain(
-                    str(args["port"]), str(args["domain"])
-                )
+                return await client.assign_domain(str(args["port"]), str(args["domain"]))
             case "execute_command":
                 return await client.execute_command(str(args["cmd"]))
             case "read_file":
@@ -76,9 +75,7 @@ class ExecutionMixin:
             case "get_service_status":
                 return await client.get_service_status(str(args["name"]))
             case "change_service_state":
-                return await client.change_service_state(
-                    str(args["name"]), str(args["action"])
-                )
+                return await client.change_service_state(str(args["name"]), str(args["action"]))
             case "analyze_disk":
                 return await client.analyze_disk(str(args.get("path", "/")))
             case "check_port":
@@ -92,13 +89,9 @@ class ExecutionMixin:
             case "list_directory":
                 return await client.list_directory(str(args["path"]))
             case "tail_file":
-                return await client.tail_file(
-                    str(args["path"]), int(args.get("lines", 50))
-                )
+                return await client.tail_file(str(args["path"]), int(args.get("lines", 50)))
             case "search_in_files":
-                return await client.search_in_files(
-                    str(args["path"]), str(args["pattern"])
-                )
+                return await client.search_in_files(str(args["path"]), str(args["pattern"]))
             case "get_memory_info":
                 return await client.get_memory_info()
             case "get_network_info":
@@ -114,9 +107,7 @@ class ExecutionMixin:
             case "get_docker_stats":
                 return await client.get_docker_stats()
             case "get_journal_logs":
-                return await client.get_journal_logs(
-                    str(args["unit"]), int(args.get("lines", 50))
-                )
+                return await client.get_journal_logs(str(args["unit"]), int(args.get("lines", 50)))
             case "find_system_errors":
                 return await client.find_system_errors(int(args.get("hours", 1)))
             case "search_journal_logs":

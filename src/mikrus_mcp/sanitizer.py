@@ -41,10 +41,7 @@ def sanitize_data(value: object, *, field_name: str | None = None) -> object:
     if isinstance(value, str):
         return sanitize_text(value)
     if isinstance(value, Mapping):
-        return {
-            str(key): sanitize_data(item, field_name=str(key))
-            for key, item in value.items()
-        }
+        return {str(key): sanitize_data(item, field_name=str(key)) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [sanitize_data(item) for item in value]
     return value

@@ -26,9 +26,7 @@ def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
-def _integer(
-    env: Mapping[str, str], name: str, default: int, minimum: int, maximum: int
-) -> int:
+def _integer(env: Mapping[str, str], name: str, default: int, minimum: int, maximum: int) -> int:
     raw = env.get(name)
     try:
         value = default if raw is None else int(raw)
@@ -153,11 +151,7 @@ class Settings:
                 raise ValueError(
                     f"target mapping key '{key}' does not match target name '{target.name}'"
                 )
-            if (
-                target.type == "ssh"
-                and not target.verify_host_key
-                and not self.allow_insecure_ssh
-            ):
+            if target.type == "ssh" and not target.verify_host_key and not self.allow_insecure_ssh:
                 raise ValueError(
                     f"target '{target.name}' disables SSH host verification without "
                     "MCP_ALLOW_INSECURE_SSH=1"

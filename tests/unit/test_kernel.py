@@ -172,9 +172,7 @@ async def test_cancellation_is_not_swallowed(target: TargetConfig) -> None:
     )
     kernel = InvocationKernel(settings, registry=registry)
     task = asyncio.create_task(
-        kernel.invoke(
-            "get_server_info", {}, CallerContext("principal", settings.allowed_scopes)
-        )
+        kernel.invoke("get_server_info", {}, CallerContext("principal", settings.allowed_scopes))
     )
     await asyncio.sleep(0)
     task.cancel()
@@ -192,15 +190,11 @@ async def test_validation_happens_before_approval_consumption(target: TargetConf
     approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
     caller = CallerContext("principal", settings.allowed_scopes)
 
-    invalid = await kernel.invoke(
-        "write_file", {"path": "/etc/passwd", "content": "x"}, caller
-    )
+    invalid = await kernel.invoke("write_file", {"path": "/etc/passwd", "content": "x"}, caller)
     assert invalid["error"]["code"] == "VALIDATION_FAILED"
     assert client.calls == []
 
-    approved = await kernel.invoke(
-        "write_file", {"path": "/tmp/a", "content": "x"}, caller
-    )
+    approved = await kernel.invoke("write_file", {"path": "/tmp/a", "content": "x"}, caller)
     assert approved["success"] is True
 
 

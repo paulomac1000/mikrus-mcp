@@ -17,7 +17,7 @@ def _remote_read_prefix(path: str) -> str:
     """Resolve a remote path and reject canonical protected locations."""
     target = shlex.quote(validate_path(path))
     return (
-        f"target={target}; resolved=$(realpath -e -- \"$target\"); "
+        f'target={target}; resolved=$(realpath -e -- "$target"); '
         'case "$resolved" in '
         "/etc/shadow|/etc/gshadow|/root/.ssh|/root/.ssh/*|/proc/kcore) "
         "echo 'protected path' >&2; exit 64;; "
@@ -29,7 +29,7 @@ def _remote_write_prefix(path: str) -> str:
     """Resolve the remote parent and bind a write to canonical safe roots."""
     target = shlex.quote(validate_path(path, for_write=True))
     return (
-        f"target={target}; parent=$(dirname -- \"$target\"); "
+        f'target={target}; parent=$(dirname -- "$target"); '
         'leaf=$(basename -- "$target"); '
         'resolved_parent=$(realpath -e -- "$parent"); '
         'case "$resolved_parent" in '

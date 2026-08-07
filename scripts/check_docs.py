@@ -80,8 +80,7 @@ def main() -> int:
             findings.append(f"{path.relative_to(ROOT)}: expected exactly one H1")
 
     production = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (ROOT / "src/mikrus_mcp").rglob("*.py")
+        path.read_text(encoding="utf-8") for path in (ROOT / "src/mikrus_mcp").rglob("*.py")
     )
     for marker in STALE:
         if marker in production:

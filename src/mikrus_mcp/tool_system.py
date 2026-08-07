@@ -13,9 +13,7 @@ async def execute_command(
     server: str | None = None,
 ) -> ToolResult:
     """Execute one allowlisted command in the disabled-by-default command profile."""
-    return await _invoke(
-        ctx, "execute_command", {"server": server, "cmd": cmd}
-    )
+    return await _invoke(ctx, "execute_command", {"server": server, "cmd": cmd})
 
 
 async def read_file(
@@ -124,9 +122,7 @@ async def tail_file(
     server: str | None = None,
 ) -> ToolResult:
     """Return a bounded tail of an authorized text file."""
-    return await _invoke(
-        ctx, "tail_file", {"server": server, "path": path, "lines": lines}
-    )
+    return await _invoke(ctx, "tail_file", {"server": server, "path": path, "lines": lines})
 
 
 async def search_in_files(
@@ -158,9 +154,7 @@ async def get_process_tree(ctx: Context[AppContext], server: str | None = None) 
     return await _invoke(ctx, "get_process_tree", {"server": server})
 
 
-async def list_docker_containers(
-    ctx: Context[AppContext], server: str | None = None
-) -> ToolResult:
+async def list_docker_containers(ctx: Context[AppContext], server: str | None = None) -> ToolResult:
     """List Docker containers visible to the configured target identity."""
     return await _invoke(ctx, "list_docker_containers", {"server": server})
 
@@ -179,9 +173,7 @@ async def get_docker_logs(
     )
 
 
-async def get_docker_stats(
-    ctx: Context[AppContext], server: str | None = None
-) -> ToolResult:
+async def get_docker_stats(ctx: Context[AppContext], server: str | None = None) -> ToolResult:
     """Return one bounded Docker resource snapshot."""
     return await _invoke(ctx, "get_docker_stats", {"server": server})
 
@@ -206,9 +198,7 @@ async def find_system_errors(
     server: str | None = None,
 ) -> ToolResult:
     """Return bounded error-level journal entries from a validated time window."""
-    return await _invoke(
-        ctx, "find_system_errors", {"server": server, "hours": hours}
-    )
+    return await _invoke(ctx, "find_system_errors", {"server": server, "hours": hours})
 
 
 async def search_journal_logs(

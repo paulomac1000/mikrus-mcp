@@ -232,9 +232,7 @@ class MikrusClient:
 
     async def execute_command(self, command: str) -> Any:
         normalized = validate_command(command)
-        return await self._request(
-            "/exec", {"cmd": normalized}, timeout=EXEC_HTTP_TIMEOUT
-        )
+        return await self._request("/exec", {"cmd": normalized}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def _exec_read(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
         return await self._request("/exec", {"cmd": command}, timeout=timeout)
@@ -257,12 +255,12 @@ class MikrusClient:
         command = (
             "set -eu; "
             + _remote_write_prefix(path)
-            + 'umask 077; '
+            + "umask 077; "
             + 'tmp=$(mktemp --tmpdir="$resolved_parent" ".${leaf}.mcp.XXXXXX"); '
             + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
             + f'printf %s {quoted_data} | base64 -d > "$tmp"; '
             + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
-            + 'trap - EXIT HUP INT TERM; echo WRITE_OK'
+            + "trap - EXIT HUP INT TERM; echo WRITE_OK"
         )
         return await self._exec_mutation(command)
 
@@ -309,15 +307,11 @@ class MikrusClient:
         )
 
     async def list_directory(self, path: str) -> Any:
-        return await self._exec_read(
-            _remote_read_prefix(path) + 'ls -la -- "$resolved"'
-        )
+        return await self._exec_read(_remote_read_prefix(path) + 'ls -la -- "$resolved"')
 
     async def tail_file(self, path: str, lines: int = 50) -> Any:
         count = validate_lines_param(lines)
-        return await self._exec_read(
-            _remote_read_prefix(path) + f'tail -n {count} -- "$resolved"'
-        )
+        return await self._exec_read(_remote_read_prefix(path) + f'tail -n {count} -- "$resolved"')
 
     async def search_in_files(self, path: str, pattern: str) -> Any:
         term = shlex.quote(validate_search_pattern(pattern))
@@ -338,9 +332,7 @@ class MikrusClient:
         return await self._exec_read("ps auxf | head -n 100")
 
     async def list_docker_containers(self) -> Any:
-        return self._parse_docker_jsonl(
-            await self._exec_read("docker ps -a --format '{{json .}}'")
-        )
+        return self._parse_docker_jsonl(await self._exec_read("docker ps -a --format '{{json .}}'"))
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
         name = shlex.quote(validate_container_name(container))
@@ -360,8 +352,7 @@ class MikrusClient:
     async def find_system_errors(self, hours: int = 1) -> Any:
         value = validate_hours_param(hours)
         return await self._exec_read(
-            f"journalctl -p err --since '{value} hours ago' -q --no-pager "
-            f"-n {MAX_JOURNAL_LINES}"
+            f"journalctl -p err --since '{value} hours ago' -q --no-pager -n {MAX_JOURNAL_LINES}"
         )
 
     async def search_journal_logs(self, term: str, lines: int = 50) -> Any:

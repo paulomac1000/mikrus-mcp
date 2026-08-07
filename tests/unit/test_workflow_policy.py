@@ -7,11 +7,7 @@ from scripts.check_workflows import ROOT, audit
 
 def test_repository_workflows_match_declared_profiles() -> None:
     workflow_dir = ROOT / ".github" / "workflows"
-    findings = [
-        finding
-        for path in sorted(workflow_dir.glob("*.yml"))
-        for finding in audit(path)
-    ]
+    findings = [finding for path in sorted(workflow_dir.glob("*.yml")) for finding in audit(path)]
     assert findings == []
 
 

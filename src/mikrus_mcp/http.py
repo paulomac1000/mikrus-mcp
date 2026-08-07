@@ -165,9 +165,7 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
         values = [
-            value
-            for key, value in scope.get("headers", [])
-            if key.lower() == b"authorization"
+            value for key, value in scope.get("headers", []) if key.lower() == b"authorization"
         ]
         if len(values) != 1 or not hmac.compare_digest(values[0], self._expected):
             await RequestBodyLimitMiddleware._reject(send, 401, b"authentication required")

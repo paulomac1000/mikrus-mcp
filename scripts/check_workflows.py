@@ -197,7 +197,11 @@ def audit(path: Path) -> list[str]:
                 findings.append(
                     f"{path.name}: job {job_name!r} grants unexpected {scope}: {access}"
                 )
-        if path.name == "publish.yml" and job_name == "publish" and raw_job.get("environment") != "release":
+        if (
+            path.name == "publish.yml"
+            and job_name == "publish"
+            and raw_job.get("environment") != "release"
+        ):
             findings.append(f"{path.name}: publish job must use the protected release environment")
 
         steps = raw_job.get("steps")

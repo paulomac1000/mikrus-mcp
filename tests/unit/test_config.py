@@ -21,9 +21,7 @@ def test_multi_target_default_is_explicit() -> None:
         "api": {"type": "mikrus", "key": "k", "srv": "srv"},
         "ssh": {"type": "ssh", "host": "127.0.0.1"},
     }
-    settings = load_settings(
-        {"MCP_SERVERS": json.dumps(raw), "MCP_DEFAULT_SERVER": "ssh"}
-    )
+    settings = load_settings({"MCP_SERVERS": json.dumps(raw), "MCP_DEFAULT_SERVER": "ssh"})
     assert settings.default_target == "ssh"
     assert settings.targets["ssh"].verify_host_key is True
 

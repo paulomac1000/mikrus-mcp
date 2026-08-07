@@ -43,6 +43,7 @@ class PolicyMixin:
     _sleep: Callable[[float], Awaitable[None]]
 
     if TYPE_CHECKING:
+
         async def _execute(
             self,
             name: str,
@@ -68,21 +69,15 @@ class PolicyMixin:
         if not caller.principal:
             raise AppError(ErrorCode.AUTHENTICATION, "principal is not authenticated")
         missing = [
-            scope
-            for scope in manifest.required_scopes
-            if not self._has_scope(caller.scopes, scope)
+            scope for scope in manifest.required_scopes if not self._has_scope(caller.scopes, scope)
         ]
         if missing:
             raise AppError(
                 ErrorCode.AUTHORIZATION,
                 "principal lacks required capability scope",
             )
-        if manifest.target_required and not (
-            self._has_scope(caller.scopes, f"target:{target}")
-        ):
-            raise AppError(
-                ErrorCode.AUTHORIZATION, "principal is not authorized for target"
-            )
+        if manifest.target_required and not (self._has_scope(caller.scopes, f"target:{target}")):
+            raise AppError(ErrorCode.AUTHORIZATION, "principal is not authorized for target")
 
     @staticmethod
     def _resource(manifest: CapabilityManifest, arguments: dict[str, Any]) -> str:
@@ -157,64 +152,44 @@ class PolicyMixin:
         match name:
             case "get_log_by_id":
                 value = required_text("log_id", maximum=128)
-                if not all(
-                    character.isalnum() or character in "_-" for character in value
-                ):
+                if not all(character.isalnum() or character in "_-" for character in value):
                     raise ValidationError("Invalid log ID")
             case "assign_domain":
                 normalized["port"] = str(validate_port(normalized.get("port")))
-                normalized["domain"] = validate_domain(
-                    required_text("domain", maximum=253)
-                )
+                normalized["domain"] = validate_domain(required_text("domain", maximum=253))
             case "execute_command":
-                normalized["cmd"] = validate_command(
-                    required_text("cmd", maximum=4_096)
-                )
+                normalized["cmd"] = validate_command(required_text("cmd", maximum=4_096))
             case "read_file" | "list_directory" | "analyze_disk":
                 normalized["path"] = validate_path(required_text("path"))
             case "write_file":
-                normalized["path"] = validate_path(
-                    required_text("path"), for_write=True
-                )
+                normalized["path"] = validate_path(required_text("path"), for_write=True)
                 content = normalized.get("content")
                 validate_content_size(content)
             case "get_service_status":
-                normalized["name"] = validate_service_name(
-                    required_text("name", maximum=255)
-                )
+                normalized["name"] = validate_service_name(required_text("name", maximum=255))
             case "change_service_state":
-                normalized["name"] = validate_service_name(
-                    required_text("name", maximum=255)
-                )
+                normalized["name"] = validate_service_name(required_text("name", maximum=255))
                 action = validate_service_action(required_text("action", maximum=32))
                 if action in {"status", "is-active", "is-enabled"}:
-                    raise ValidationError(
-                        "read-only service actions use get_service_status"
-                    )
+                    raise ValidationError("read-only service actions use get_service_status")
                 normalized["action"] = action
             case "check_port":
                 normalized["port"] = str(validate_port(normalized.get("port")))
             case "terminate_process":
-                normalized["target"] = validate_process_target(
-                    required_text("target", maximum=128)
-                )
+                normalized["target"] = validate_process_target(required_text("target", maximum=128))
             case "tail_file":
                 normalized["path"] = validate_path(required_text("path"))
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
             case "search_in_files":
                 normalized["path"] = validate_path(required_text("path"))
-                normalized["pattern"] = validate_search_pattern(
-                    required_text("pattern")
-                )
+                normalized["pattern"] = validate_search_pattern(required_text("pattern"))
             case "get_docker_logs":
                 normalized["container"] = validate_container_name(
                     required_text("container", maximum=128)
                 )
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
             case "get_journal_logs":
-                normalized["unit"] = validate_service_name(
-                    required_text("unit", maximum=255)
-                )
+                normalized["unit"] = validate_service_name(required_text("unit", maximum=255))
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
             case "find_system_errors":
                 normalized["hours"] = validate_hours_param(normalized.get("hours", 1))
@@ -235,9 +210,7 @@ class PolicyMixin:
                 "write operations are disabled by operator policy",
             )
         if manifest.command_profile and not self.settings.command_execution_enabled:
-            raise AppError(
-                ErrorCode.AUTHORIZATION, "command execution profile is disabled"
-            )
+            raise AppError(ErrorCode.AUTHORIZATION, "command execution profile is disabled")
 
     def _approval_available(
         self,
@@ -249,9 +222,7 @@ class PolicyMixin:
         if not manifest.requires_approval:
             return
         resource = self._resource(manifest, arguments)
-        if not self.approvals.has_matching(
-            manifest.name, caller.principal, target, resource
-        ):
+        if not self.approvals.has_matching(manifest.name, caller.principal, target, resource):
             raise AppError(
                 ErrorCode.AUTHORIZATION,
                 "a valid one-time server-side approval record is required",
@@ -267,9 +238,7 @@ class PolicyMixin:
         if not manifest.requires_approval:
             return
         resource = self._resource(manifest, arguments)
-        if not self.approvals.consume_matching(
-            manifest.name, caller.principal, target, resource
-        ):
+        if not self.approvals.consume_matching(manifest.name, caller.principal, target, resource):
             raise AppError(
                 ErrorCode.AUTHORIZATION,
                 "the server-side approval expired or was consumed before execution",
@@ -285,8 +254,7 @@ class PolicyMixin:
             case "none":
                 if not manifest.concurrent_safe:
                     raise RuntimeError(
-                        "manifest "
-                        f"{manifest.name} declares unsafe concurrency with no scope"
+                        f"manifest {manifest.name} declares unsafe concurrency with no scope"
                     )
                 return None
             case "target":

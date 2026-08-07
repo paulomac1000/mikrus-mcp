@@ -5,10 +5,7 @@ import pytest
 
 @pytest.mark.real_backend
 @pytest.mark.skip(
-    reason=(
-        "TODO(real-system): verify stable SSH host fingerprint enrollment "
-        "and revalidation"
-    )
+    reason=("TODO(real-system): verify stable SSH host fingerprint enrollment and revalidation")
 )
 def test_real_ssh_identity_revalidation() -> None:
     pass
@@ -17,8 +14,7 @@ def test_real_ssh_identity_revalidation() -> None:
 @pytest.mark.real_backend
 @pytest.mark.skip(
     reason=(
-        "TODO(real-system): exercise every mikr.us mutation once and reconcile "
-        "ambiguous outcomes"
+        "TODO(real-system): exercise every mikr.us mutation once and reconcile ambiguous outcomes"
     )
 )
 def test_real_mikrus_mutation_reconciliation() -> None:
@@ -38,10 +34,7 @@ def test_remote_filesystem_symlink_race() -> None:
 
 @pytest.mark.artifact
 @pytest.mark.skip(
-    reason=(
-        "TODO(provider): install and test exact wheels on macOS arm64 and "
-        "Windows x64"
-    )
+    reason=("TODO(provider): install and test exact wheels on macOS arm64 and Windows x64")
 )
 def test_cross_platform_exact_artifact_matrix() -> None:
     pass
@@ -49,10 +42,7 @@ def test_cross_platform_exact_artifact_matrix() -> None:
 
 @pytest.mark.artifact
 @pytest.mark.skip(
-    reason=(
-        "TODO(provider): smoke the pushed multi-architecture OCI digest on "
-        "amd64 and arm64"
-    )
+    reason=("TODO(provider): smoke the pushed multi-architecture OCI digest on amd64 and arm64")
 )
 def test_published_multiarch_image_digest() -> None:
     pass

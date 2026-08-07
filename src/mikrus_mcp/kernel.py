@@ -97,9 +97,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         try:
             manifest = MANIFESTS.get(name)
             if manifest is None or name not in self.active_names:
-                raise AppError(
-                    ErrorCode.NOT_FOUND, f"unknown or inactive capability: {name}"
-                )
+                raise AppError(ErrorCode.NOT_FOUND, f"unknown or inactive capability: {name}")
             normalized = self._validate_arguments(name, arguments, manifest)
             target = str(normalized.get("server") or self.settings.default_target)
             if manifest.target_required:
@@ -126,9 +124,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 )
 
             lock = self._lock_for(manifest, target, normalized)
-            timeout_seconds = min(
-                manifest.timeout_ms, self.settings.default_deadline_ms
-            ) / 1000
+            timeout_seconds = min(manifest.timeout_ms, self.settings.default_deadline_ms) / 1000
 
             async def execute_once_locked() -> Any:
                 prepared_client: Client | None = None
@@ -160,9 +156,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     async with lock:
                         data = await execute_once_locked()
             sanitized = sanitize_data(data)
-            encoded = json.dumps(
-                sanitized, ensure_ascii=False, default=str
-            ).encode("utf-8")
+            encoded = json.dumps(sanitized, ensure_ascii=False, default=str).encode("utf-8")
             if len(encoded) > self.settings.max_result_bytes:
                 raise AppError(ErrorCode.UPSTREAM, "result exceeds configured size limit")
             return {

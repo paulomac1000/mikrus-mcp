@@ -98,9 +98,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         api_key = env.get("MIKRUS_API_KEY")
         server_id = env.get("MIKRUS_SERVER_NAME")
         if not api_key or not server_id:
-            raise ValueError(
-                "set MCP_SERVERS or both MIKRUS_API_KEY and MIKRUS_SERVER_NAME"
-            )
+            raise ValueError("set MCP_SERVERS or both MIKRUS_API_KEY and MIKRUS_SERVER_NAME")
         parsed = {
             server_id: _target(
                 server_id,
@@ -118,9 +116,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     scope_raw = env.get("MCP_ALLOWED_SCOPES", "tool:*,target:*")
     scopes = frozenset(value.strip() for value in scope_raw.split(",") if value.strip())
     default_target = (
-        env.get("MCP_DEFAULT_SERVER")
-        or env.get("MIKRUS_DEFAULT_SERVER")
-        or next(iter(parsed))
+        env.get("MCP_DEFAULT_SERVER") or env.get("MIKRUS_DEFAULT_SERVER") or next(iter(parsed))
     )
     settings = Settings(
         targets=MappingProxyType(parsed),
@@ -136,9 +132,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         max_request_body_bytes=_integer(
             env, "MCP_MAX_REQUEST_BODY_BYTES", 1_048_576, 1_024, 16_777_216
         ),
-        max_result_bytes=_integer(
-            env, "MCP_MAX_RESULT_BYTES", 1_000_000, 1_024, 16_777_216
-        ),
+        max_result_bytes=_integer(env, "MCP_MAX_RESULT_BYTES", 1_000_000, 1_024, 16_777_216),
         approval_file=_optional_regular_file(
             env.get("MCP_APPROVAL_FILE"), name="MCP_APPROVAL_FILE", secret=True
         ),

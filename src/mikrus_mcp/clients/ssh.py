@@ -204,12 +204,12 @@ class SshClient:
         command = (
             "set -eu; "
             + _remote_write_prefix(path)
-            + 'umask 077; '
+            + "umask 077; "
             + 'tmp=$(mktemp --tmpdir="$resolved_parent" ".${leaf}.mcp.XXXXXX"); '
             + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
             + f'printf %s {shlex.quote(encoded)} | base64 -d > "$tmp"; '
             + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
-            + 'trap - EXIT HUP INT TERM; echo WRITE_OK'
+            + "trap - EXIT HUP INT TERM; echo WRITE_OK"
         )
         return await self._run(command, timeout=EXEC_HTTP_TIMEOUT)
 
@@ -222,9 +222,7 @@ class SshClient:
         action = validate_service_action(action)
         if action in {"status", "is-active", "is-enabled"}:
             raise ValidationError("read-only service actions use get_service_status")
-        return await self._run(
-            f"systemctl {action} -- {shlex.quote(validate_service_name(name))}"
-        )
+        return await self._run(f"systemctl {action} -- {shlex.quote(validate_service_name(name))}")
 
     async def analyze_disk(self, path: str = "/") -> Any:
         return await self._run(
@@ -258,15 +256,11 @@ class SshClient:
         )
 
     async def list_directory(self, path: str) -> Any:
-        return await self._run(
-            _remote_read_prefix(path) + 'ls -la -- "$resolved"'
-        )
+        return await self._run(_remote_read_prefix(path) + 'ls -la -- "$resolved"')
 
     async def tail_file(self, path: str, lines: int = 50) -> Any:
         count = validate_lines_param(lines)
-        return await self._run(
-            _remote_read_prefix(path) + f'tail -n {count} -- "$resolved"'
-        )
+        return await self._run(_remote_read_prefix(path) + f'tail -n {count} -- "$resolved"')
 
     async def search_in_files(self, path: str, pattern: str) -> Any:
         term = shlex.quote(validate_search_pattern(pattern))

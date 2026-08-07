@@ -168,7 +168,7 @@ async def test_file_commands_revalidate_canonical_remote_paths() -> None:
     assert 'test ! -L "$target"' in write_command
     assert 'mktemp --tmpdir="$resolved_parent"' in write_command
     assert 'mv -fT -- "$tmp" "$target"' in write_command
-    assert '.mcp.$$' not in write_command
+    assert ".mcp.$$" not in write_command
 
 
 def test_ssh_identity_and_timeout_are_derived_from_target_config() -> None:

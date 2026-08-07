@@ -106,7 +106,10 @@ async def test_invalid_json_and_oversized_responses_fail_closed() -> None:
         )
 
     client = MikrusClient(
-        "https://api.mikr.us", "key", "srv", requests_per_minute=100_000,
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
         transport=httpx.MockTransport(invalid),
     )
     async with client:
@@ -119,7 +122,10 @@ async def test_invalid_json_and_oversized_responses_fail_closed() -> None:
         )
 
     client = MikrusClient(
-        "https://api.mikr.us", "key", "srv", requests_per_minute=100_000,
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
         transport=httpx.MockTransport(oversized),
     )
     async with client:
