@@ -59,11 +59,13 @@ async def smoke(image: str) -> None:
             if missing.is_error is not True:
                 raise RuntimeError(f"missing-target failure boundary was not enforced: {missing!r}")
 
-            write = await session.call_tool(
+            write_result = await session.call_tool(
                 "write_file", arguments={"path": "/srv/artifact-smoke", "content": "x"}
             )
-            if write.is_error is not True:
-                raise RuntimeError(f"container approval boundary was not enforced: {write!r}")
+            if write_result.is_error is not True:
+                raise RuntimeError(
+                    f"container approval boundary was not enforced: {write_result!r}"
+                )
 
 
 def main() -> int:
