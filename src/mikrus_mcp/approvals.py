@@ -16,7 +16,6 @@ from typing import Any, Final
 
 _MAX_APPROVAL_FILE_BYTES: Final = 1_048_576
 _ARGUMENT_DIGEST_LENGTH: Final = 64
-_TEST_ARGUMENTS_WILDCARD: Final = "<test-any-arguments>"
 
 
 def normalized_arguments_digest(arguments: Mapping[str, Any]) -> str:
@@ -299,26 +298,14 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
-        arguments_digest: str | None = None,
+        arguments_digest: str,
         *,
         ttl_seconds: float = 60.0,
     ) -> str:
-        """Issue an in-memory-only wildcard when legacy tests omit a digest."""
-        if arguments_digest is not None:
-            return self.issue(
-                capability, principal, target, resource, arguments_digest, ttl_seconds=ttl_seconds
-            )
-        if self._source_path is not None:
-            raise ValueError("persistent test approvals require an arguments digest")
-        token = secrets.token_urlsafe(32)
-        with self._lock:
-            now = time.time()
-            records = self._without_expired(self._records, now)
-            records[token] = ApprovalRecord(
-                capability, principal, target, resource, _TEST_ARGUMENTS_WILDCARD, now + ttl_seconds
-            )
-            self._records = records
-        return token
+        """Issue a fully bound approval for tests without weakening matching semantics."""
+        return self.issue(
+            capability, principal, target, resource, arguments_digest, ttl_seconds=ttl_seconds
+        )
 
     @staticmethod
     def _without_expired(
@@ -341,10 +328,7 @@ class ApprovalRegistry:
             and record.principal == principal
             and record.target == target
             and record.resource == resource
-            and (
-                record.arguments_digest == _TEST_ARGUMENTS_WILDCARD
-                or secrets.compare_digest(record.arguments_digest, arguments_digest)
-            )
+            and secrets.compare_digest(record.arguments_digest, arguments_digest)
             and record.expires_at >= now
         )
 
@@ -354,13 +338,10 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
-        arguments_digest: str | None = None,
+        arguments_digest: str,
     ) -> bool:
-        """Check for a bound approval without consuming it."""
-        if arguments_digest is None:
-            arguments_digest = _TEST_ARGUMENTS_WILDCARD
-        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
-            arguments_digest = _validate_arguments_digest(arguments_digest)
+        """Check for a fully bound approval without consuming it."""
+        arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()
@@ -377,13 +358,10 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
-        arguments_digest: str | None = None,
+        arguments_digest: str,
     ) -> bool:
-        """Atomically consume one matching approval immediately before execution."""
-        if arguments_digest is None:
-            arguments_digest = _TEST_ARGUMENTS_WILDCARD
-        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
-            arguments_digest = _validate_arguments_digest(arguments_digest)
+        """Atomically consume one fully bound approval immediately before execution."""
+        arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()
@@ -409,15 +387,12 @@ class ApprovalRegistry:
         principal: str,
         target: str,
         resource: str,
-        arguments_digest: str | None = None,
+        arguments_digest: str,
     ) -> bool:
         """Consume one explicit token for trusted non-MCP integrations and tests."""
         if not isinstance(token, str) or not token:
             return False
-        if arguments_digest is None:
-            arguments_digest = _TEST_ARGUMENTS_WILDCARD
-        elif arguments_digest != _TEST_ARGUMENTS_WILDCARD:
-            arguments_digest = _validate_arguments_digest(arguments_digest)
+        arguments_digest = _validate_arguments_digest(arguments_digest)
         now = time.time()
         with self._lock:
             self._reload_locked()

@@ -13,6 +13,7 @@ from mikrus_mcp.config_models import (
     TargetConfig,
     Transport,
     _boolean,
+    _default_stdio_principal,
     _integer,
     _optional_regular_file,
     _secret_text_file,
@@ -112,7 +113,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         }
 
     transport = env.get("MCP_TRANSPORT", "stdio").strip().casefold()
-    principal_default = "local-http-user" if transport == "streamable-http" else "local-stdio-user"
+    principal_default = (
+        "http-request-bound" if transport == "streamable-http" else _default_stdio_principal()
+    )
     scope_raw = env.get("MCP_ALLOWED_SCOPES", "tool:*,target:*")
     scopes = frozenset(value.strip() for value in scope_raw.split(",") if value.strip())
     default_target = (
@@ -127,7 +130,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         principal=env.get("MCP_PRINCIPAL", principal_default).strip(),
         allowed_scopes=scopes,
         write_enabled=_boolean(env, "MCP_WRITE_ENABLED", False),
-        command_execution_enabled=_boolean(env, "MCP_COMMAND_EXECUTION_ENABLED", False),
         default_deadline_ms=_integer(env, "MCP_DEFAULT_DEADLINE_MS", 10_000, 100, 120_000),
         max_request_body_bytes=_integer(
             env, "MCP_MAX_REQUEST_BODY_BYTES", 1_048_576, 1_024, 16_777_216

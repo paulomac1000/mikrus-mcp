@@ -34,7 +34,6 @@ class CapabilityManifest:
     target_binding: str
     target_required: bool = True
     resource_argument: str | None = None
-    command_profile: bool = False
 
     def as_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -90,7 +89,6 @@ def _mutation(
     impact: str = "persistent",
     timeout_ms: int = 30_000,
     resource_argument: str | None = None,
-    command_profile: bool = False,
 ) -> CapabilityManifest:
     return CapabilityManifest(
         name=name,
@@ -111,7 +109,6 @@ def _mutation(
         required_scopes=(f"tool:{name}", "write:server"),
         target_binding="configured immutable target identity plus approval-bound resource",
         resource_argument=resource_argument,
-        command_profile=command_profile,
     )
 
 
@@ -129,14 +126,6 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_ports": _read("get_ports"),
     "get_cloud": _read("get_cloud", "personal"),
     "assign_domain": _mutation("assign_domain", resource_argument="domain"),
-    "execute_command": _mutation(
-        "execute_command",
-        destructive=True,
-        impact="outage",
-        timeout_ms=60_000,
-        resource_argument="cmd",
-        command_profile=True,
-    ),
     "read_file": _read("read_file", "sensitive", resource_argument="path"),
     "write_file": _mutation("write_file", resource_argument="path"),
     "get_service_status": _read("get_service_status", resource_argument="name"),
@@ -176,10 +165,8 @@ MANIFESTS: dict[str, CapabilityManifest] = {
 
 
 def active_names(settings: Settings) -> set[str]:
-    names = set(MANIFESTS)
-    if not settings.command_execution_enabled:
-        names.remove("execute_command")
-    return names
+    del settings
+    return set(MANIFESTS)
 
 
 def validate_manifests(registered_names: set[str], settings: Settings) -> None:

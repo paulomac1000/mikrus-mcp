@@ -20,7 +20,6 @@ from mikrus_mcp.tools.constants import (
 )
 from mikrus_mcp.validators import (
     ValidationError,
-    validate_command,
     validate_container_name,
     validate_content_size,
     validate_hours_param,
@@ -87,7 +86,9 @@ class SshClient:
                 await wait_closed()
             self._connection = None
 
-    async def _run(self, command: str, *, timeout: float | None = None) -> dict[str, Any]:
+    async def _run(
+        self, command: str, *, timeout: float | None = None, mutation: bool = False
+    ) -> dict[str, Any]:
         if self._connection is None:
             raise AppError(ErrorCode.UNAVAILABLE, "SSH client is not open")
         limit = MAX_PROCESS_OUTPUT_BYTES
@@ -122,11 +123,13 @@ class SshClient:
                 await process.wait()
         except TimeoutError as exc:
             process.terminate()
-            raise AppError(
-                ErrorCode.TIMEOUT,
-                f"SSH command exceeded {seconds:g} seconds",
-                retryable=False,
-            ) from exc
+            code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
+            message = (
+                "SSH mutation outcome is unknown after timeout; reconcile target state before retry"
+                if mutation
+                else f"SSH command exceeded {seconds:g} seconds"
+            )
+            raise AppError(code, message, retryable=False) from exc
         except asyncio.CancelledError:
             process.terminate()
             raise
@@ -188,9 +191,6 @@ class SshClient:
             "exit_code": int(process.exit_status),
         }
 
-    async def execute_command(self, command: str) -> Any:
-        return await self._run(validate_command(command), timeout=EXEC_HTTP_TIMEOUT)
-
     async def read_file(self, path: str) -> Any:
         return await self._run(
             _remote_read_prefix(path)
@@ -211,7 +211,7 @@ class SshClient:
             + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
             + "trap - EXIT HUP INT TERM; echo WRITE_OK"
         )
-        return await self._run(command, timeout=EXEC_HTTP_TIMEOUT)
+        return await self._run(command, timeout=EXEC_HTTP_TIMEOUT, mutation=True)
 
     async def get_service_status(self, name: str) -> Any:
         return await self._run(
@@ -222,7 +222,9 @@ class SshClient:
         action = validate_service_action(action)
         if action in {"status", "is-active", "is-enabled"}:
             raise ValidationError("read-only service actions use get_service_status")
-        return await self._run(f"systemctl {action} -- {shlex.quote(validate_service_name(name))}")
+        return await self._run(
+            f"systemctl {action} -- {shlex.quote(validate_service_name(name))}", mutation=True
+        )
 
     async def analyze_disk(self, path: str = "/") -> Any:
         return await self._run(
@@ -244,8 +246,8 @@ class SshClient:
     async def terminate_process(self, target: str) -> Any:
         value = shlex.quote(validate_process_target(target))
         if target.isdigit():
-            return await self._run(f"kill -TERM -- {value}")
-        return await self._run(f"pkill -TERM -x -- {value}")
+            return await self._run(f"kill -TERM -- {value}", mutation=True)
+        return await self._run(f"pkill -TERM -x -- {value}", mutation=True)
 
     async def update_system(self) -> Any:
         return await self._run(
@@ -253,6 +255,7 @@ class SshClient:
             "apt-get upgrade -y -o Dpkg::Options::=--force-confdef "
             "-o Dpkg::Options::=--force-confold",
             timeout=120,
+            mutation=True,
         )
 
     async def list_directory(self, path: str) -> Any:

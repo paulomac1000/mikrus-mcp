@@ -210,3 +210,11 @@ def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) 
     assert path.stat().st_mode & 0o077 == 0
     registry = ApprovalRegistry.from_file(path)
     assert registry.consume_matching("write_file", "operator", "mikrus:srv-id", "/tmp/a", approved)
+
+
+def test_matching_apis_require_arguments_digest() -> None:
+    registry = ApprovalRegistry()
+    with pytest.raises(TypeError):
+        registry.has_matching("write_file", "operator", "mikrus:srv", "/tmp/a")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        registry.consume_matching("write_file", "operator", "mikrus:srv", "/tmp/a")  # type: ignore[call-arg]

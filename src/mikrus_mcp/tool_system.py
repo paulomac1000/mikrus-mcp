@@ -7,15 +7,6 @@ from mcp.server.mcpserver import Context
 from mikrus_mcp.tool_common import AppContext, ToolResult, _invoke
 
 
-async def execute_command(
-    cmd: str,
-    ctx: Context[AppContext],
-    server: str | None = None,
-) -> ToolResult:
-    """Execute one allowlisted command in the disabled-by-default command profile."""
-    return await _invoke(ctx, "execute_command", {"server": server, "cmd": cmd})
-
-
 async def read_file(
     path: str,
     ctx: Context[AppContext],

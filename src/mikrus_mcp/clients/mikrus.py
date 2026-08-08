@@ -29,7 +29,6 @@ from mikrus_mcp.tools.constants import (
 )
 from mikrus_mcp.validators import (
     ValidationError,
-    validate_command,
     validate_container_name,
     validate_content_size,
     validate_domain,
@@ -126,8 +125,9 @@ class MikrusClient:
         extra_data: dict[str, str] | None = None,
         *,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
+        mutation: bool = False,
     ) -> Any:
-        """Perform exactly one upstream request. Retry policy belongs to the kernel."""
+        """Perform one upstream request with phase-aware failure classification."""
         if self._client is None:
             raise AppError(ErrorCode.UNAVAILABLE, "HTTP client is not open")
         cached = await self._cached(endpoint)
@@ -144,27 +144,43 @@ class MikrusClient:
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=timeout,
             )
+        except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:
+            raise AppError(
+                ErrorCode.TRANSIENT_UPSTREAM,
+                "mikr.us API could not be reached before request completion",
+            ) from exc
         except httpx.TimeoutException as exc:
-            raise AppError(
-                ErrorCode.TIMEOUT,
-                f"mikr.us API request exceeded {timeout:g} seconds",
-            ) from exc
+            code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
+            message = (
+                "mutation outcome is unknown after an upstream timeout; reconcile target state before retry"
+                if mutation
+                else f"mikr.us API request exceeded {timeout:g} seconds"
+            )
+            raise AppError(code, message) from exc
         except httpx.HTTPError as exc:
-            raise AppError(
-                ErrorCode.UPSTREAM,
-                "mikr.us API connection failed",
-            ) from exc
+            code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TRANSIENT_UPSTREAM
+            message = (
+                "mutation outcome is unknown after the upstream connection failed; "
+                "reconcile target state before retry"
+                if mutation
+                else "mikr.us API connection failed transiently"
+            )
+            raise AppError(code, message) from exc
 
         raw_length = response.headers.get("Content-Length")
         if raw_length:
             try:
                 declared_length = int(raw_length)
             except ValueError as exc:
-                raise AppError(ErrorCode.UPSTREAM, "invalid upstream Content-Length") from exc
+                raise AppError(
+                    ErrorCode.UPSTREAM_PROTOCOL, "invalid upstream Content-Length"
+                ) from exc
             if declared_length > MAX_RESPONSE_BYTES:
-                raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+                raise AppError(
+                    ErrorCode.UPSTREAM_PROTOCOL, "upstream response exceeds size limit"
+                )
         if len(response.content) > MAX_RESPONSE_BYTES:
-            raise AppError(ErrorCode.UPSTREAM, "upstream response exceeds size limit")
+            raise AppError(ErrorCode.UPSTREAM_PROTOCOL, "upstream response exceeds size limit")
 
         if response.status_code == 429:
             raise AppError(
@@ -174,16 +190,27 @@ class MikrusClient:
             )
         if response.status_code != 200:
             reason = response.reason_phrase or "upstream request failed"
+            if 500 <= response.status_code <= 599:
+                code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TRANSIENT_UPSTREAM
+                detail = (
+                    "mutation outcome is unknown after an upstream server failure; "
+                    "reconcile target state before retry"
+                    if mutation
+                    else f"mikr.us API returned transient HTTP {response.status_code}: {reason}"
+                )
+                raise AppError(code, detail)
             raise AppError(
-                ErrorCode.UPSTREAM,
-                f"mikr.us API returned HTTP {response.status_code}: {reason}",
+                ErrorCode.UPSTREAM_REJECTED,
+                f"mikr.us API rejected the request with HTTP {response.status_code}: {reason}",
             )
 
         if "application/json" in response.headers.get("content-type", ""):
             try:
                 value = response.json()
             except json.JSONDecodeError as exc:
-                raise AppError(ErrorCode.UPSTREAM, "mikr.us API returned invalid JSON") from exc
+                raise AppError(
+                    ErrorCode.UPSTREAM_PROTOCOL, "mikr.us API returned invalid JSON"
+                ) from exc
         else:
             value = {"raw": response.text}
         await self._store_cache(endpoint, value)
@@ -199,7 +226,7 @@ class MikrusClient:
         return await self._request("/stats")
 
     async def restart_server(self) -> Any:
-        return await self._request("/restart", timeout=EXEC_HTTP_TIMEOUT)
+        return await self._request("/restart", timeout=EXEC_HTTP_TIMEOUT, mutation=True)
 
     async def get_logs(self) -> Any:
         return await self._request("/logs")
@@ -210,7 +237,7 @@ class MikrusClient:
         return await self._request(f"/logs/{log_id}")
 
     async def boost_server(self) -> Any:
-        return await self._request("/amfetamina")
+        return await self._request("/amfetamina", mutation=True)
 
     async def get_db_info(self) -> Any:
         # Credential responses deliberately bypass the process cache.
@@ -228,17 +255,14 @@ class MikrusClient:
         return await self._request(
             "/domain",
             {"port": str(validated_port), "domain": validated_domain},
+            mutation=True,
         )
-
-    async def execute_command(self, command: str) -> Any:
-        normalized = validate_command(command)
-        return await self._request("/exec", {"cmd": normalized}, timeout=EXEC_HTTP_TIMEOUT)
 
     async def _exec_read(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
         return await self._request("/exec", {"cmd": command}, timeout=timeout)
 
     async def _exec_mutation(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
-        return await self._request("/exec", {"cmd": command}, timeout=timeout)
+        return await self._request("/exec", {"cmd": command}, timeout=timeout, mutation=True)
 
     async def read_file(self, path: str) -> Any:
         prefix = _remote_read_prefix(path)

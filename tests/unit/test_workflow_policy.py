@@ -34,3 +34,12 @@ jobs:
     findings = audit(workflow)
     assert any("forbidden contents: write" in finding for finding in findings)
     assert any("references secrets" in finding for finding in findings)
+
+
+def test_sha_only_release_does_not_create_stable_version_tag() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    assert 'release_tag: ${{ steps.revision.outputs.release_tag }}' in workflow
+    assert 'echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}' in workflow
+    assert 'if [[ -n "$RELEASE_TAG" ]]; then' in workflow
+    assert 'version_ref="$repository:$VERSION"' in workflow

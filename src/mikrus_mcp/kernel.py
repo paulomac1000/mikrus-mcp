@@ -79,8 +79,6 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         for name in sorted(names):
             value = MANIFESTS[name].as_dict()
             value["active"] = name in self.active_names
-            if name == "execute_command" and name not in self.active_names:
-                value["inactive_reason"] = "command execution profile is disabled"
             result.append(value)
         return result
 

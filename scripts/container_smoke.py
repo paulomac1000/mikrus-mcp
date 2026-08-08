@@ -32,6 +32,8 @@ async def smoke(image: str) -> None:
             "MIKRUS_SERVER_NAME=container-srv",
             "-e",
             "MCP_TRANSPORT=stdio",
+            "-e",
+            "MCP_WRITE_ENABLED=1",
             image,
         ],
         env=environment,
@@ -46,6 +48,22 @@ async def smoke(image: str) -> None:
             result = await session.call_tool("describe_mikrus_capabilities", arguments={})
             if result.is_error is True or result.structured_content is None:
                 raise RuntimeError(f"container MCP invocation failed: {result!r}")
+
+            configured = await session.call_tool("list_configured_servers", arguments={})
+            if configured.is_error is True or configured.structured_content is None:
+                raise RuntimeError(f"container local read failed: {configured!r}")
+
+            missing = await session.call_tool(
+                "get_server_info", arguments={"server": "missing-target"}
+            )
+            if missing.is_error is not True:
+                raise RuntimeError(f"missing-target failure boundary was not enforced: {missing!r}")
+
+            write = await session.call_tool(
+                "write_file", arguments={"path": "/tmp/artifact-smoke", "content": "x"}
+            )
+            if write.is_error is not True:
+                raise RuntimeError(f"container approval boundary was not enforced: {write!r}")
 
 
 def main() -> int:

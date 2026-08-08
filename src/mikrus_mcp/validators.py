@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from pathlib import PurePosixPath
 from typing import Final
 
@@ -63,37 +62,6 @@ _WRITE_ROOTS: Final = tuple(
         "/tmp",
         "/var/log",
         "/var/www",
-    )
-)
-_ALLOWED_EXECUTABLES: Final = frozenset(
-    {
-        "cat",
-        "df",
-        "docker",
-        "du",
-        "echo",
-        "free",
-        "grep",
-        "head",
-        "ip",
-        "journalctl",
-        "ls",
-        "ps",
-        "ss",
-        "tail",
-        "uptime",
-    }
-)
-_SHELL_METACHARACTERS: Final = frozenset(";|&<>`$(){}[]*?!~\\\n\r\t")
-_DANGEROUS: Final = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:^|\s)rm\s+.*(?:^|\s)/(?:\s|$)",
-        r"(?:^|\s)mkfs(?:\.|\s)",
-        r"(?:^|\s)dd\s+.*\b(?:if|of)=",
-        r":\s*\(\s*\)\s*\{",
-        r"chmod\s+777\s+/",
-        r">\s*/dev/(?:sd|nvme|vd)",
     )
 )
 
@@ -179,33 +147,6 @@ def validate_content_size(content: str, max_size: int = MAX_WRITE_SIZE) -> None:
     size = len(content.encode("utf-8"))
     if size > max_size:
         raise ValidationError(f"Content too large: {size} bytes (max {max_size})")
-
-
-def check_dangerous_command(command: str) -> None:
-    if any(pattern.search(command) for pattern in _DANGEROUS):
-        raise ValidationError("Dangerous command pattern detected")
-
-
-def validate_command(command: str) -> str:
-    """Parse a command, enforce an executable allowlist, and quote every argument."""
-    if not isinstance(command, str) or not command.strip():
-        raise ValidationError("Command cannot be empty")
-    if any(character in _SHELL_METACHARACTERS for character in command):
-        raise ValidationError("Shell metacharacters are not allowed")
-    try:
-        arguments = shlex.split(command, posix=True)
-    except ValueError as exc:
-        raise ValidationError("Command quoting is invalid") from exc
-    if not arguments:
-        raise ValidationError("Command cannot be empty")
-    executable = arguments[0]
-    if executable not in _ALLOWED_EXECUTABLES:
-        raise ValidationError(f"Executable '{executable}' is not in the allowlist")
-    if len(arguments) > 64 or sum(len(value) for value in arguments) > 4_096:
-        raise ValidationError("Command arguments exceed the configured limit")
-    normalized = shlex.join(arguments)
-    check_dangerous_command(normalized)
-    return normalized
 
 
 def validate_lines_param(lines: int | str, max_lines: int = MAX_TAIL_LINES) -> int:

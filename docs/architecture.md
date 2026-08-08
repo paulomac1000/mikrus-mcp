@@ -56,7 +56,7 @@ Every invocation performs these steps in order:
 2. reject unknown arguments and normalize bounded local values;
 3. resolve the configured target selector and target kind without network I/O;
 4. authenticate the process or HTTP boundary and authorize capability and target scopes;
-5. enforce operator write and command-profile policy;
+5. enforce operator write policy;
 6. verify that a bound approval exists when required, without consuming it;
 7. acquire the manifest-defined deadline-bound concurrency lock;
 8. lazily open the exact target and verify its stable configured identity;
@@ -67,14 +67,15 @@ Every invocation performs these steps in order:
 
 A lock timeout, target connection failure, or binding mismatch does not consume an
 approval. Mutations are not automatically retried after rate limits, disconnects,
-timeouts, or ambiguous outcomes. Adapters perform one request attempt; manifests and
-the kernel are the only retry-policy source.
+timeouts, or ambiguous outcomes. For mikr.us mutations, post-submission timeout/disconnect
+and qualifying 5xx outcomes are classified as ambiguous and require state reconciliation.
+Reads distinguish transient transport/5xx failures from rejected or protocol-invalid
+responses; only the transient class can satisfy manifest retry conditions. Adapters
+perform one request attempt; manifests and the kernel are the only retry-policy source.
 
 ## Public components
 
-The supported catalog contains a complete manifest for every public tool. The active
-catalog can remove capabilities through operator policy, currently the raw command
-profile. Introspection exposes both catalogs without target I/O.
+The supported catalog contains a complete manifest for every public tool. General-purpose raw command execution is intentionally absent; privileged actions are represented by operation-specific capabilities. Introspection exposes the catalog without target I/O.
 
 Mixed-risk operations are split. Service inspection and mutation use different tools,
 as do process listing and termination. This keeps one manifest and one schema aligned

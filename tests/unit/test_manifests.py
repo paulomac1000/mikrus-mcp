@@ -2,7 +2,7 @@ from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
 
 
-def settings(command: bool = False) -> Settings:
+def settings() -> Settings:
     target = TargetConfig(
         "srv",
         "mikrus",
@@ -10,7 +10,7 @@ def settings(command: bool = False) -> Settings:
         api_key="k",
         server_id="srv",
     )
-    return Settings({"srv": target}, "srv", command_execution_enabled=command)
+    return Settings({"srv": target}, "srv")
 
 
 def test_every_mutation_is_conservative() -> None:
@@ -28,9 +28,9 @@ def test_sensitive_reads_declare_confidentiality() -> None:
     assert MANIFESTS["get_network_info"].confidentiality == "sensitive"
 
 
-def test_command_execution_is_not_in_the_default_active_catalog() -> None:
+def test_general_purpose_command_execution_has_no_manifest() -> None:
+    assert "execute_command" not in MANIFESTS
     assert "execute_command" not in active_names(settings())
-    assert "execute_command" in active_names(settings(command=True))
 
 
 def test_manifest_validation_fails_on_registration_drift() -> None:

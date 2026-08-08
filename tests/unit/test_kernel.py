@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from mikrus_mcp.approvals import normalized_arguments_digest
 from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.kernel import ApprovalRegistry, CallerContext, InvocationKernel, TargetRegistry
@@ -35,10 +36,6 @@ class MockMikrusClient:
     async def write_file(self, path: str, content: str) -> dict[str, object]:
         self.calls.append(("write_file", (path, content)))
         return {"output": "WRITE_OK"}
-
-    async def execute_command(self, cmd: str) -> dict[str, object]:
-        self.calls.append(("execute_command", (cmd,)))
-        return {"output": "ok"}
 
 
 @pytest.fixture
@@ -130,7 +127,13 @@ async def test_write_requires_operator_gate_and_one_time_approval(target: Target
     kernel = InvocationKernel(enabled, registry=registry, approvals=approvals)
     no_token = await kernel.invoke("write_file", {"path": "/tmp/a", "content": "x"}, caller)
     assert no_token["error"]["code"] == "AUTHORIZATION_FAILED"
-    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
     approved = await kernel.invoke(
         "write_file",
         {"path": "/tmp/a", "content": "x"},
@@ -147,9 +150,10 @@ async def test_write_requires_operator_gate_and_one_time_approval(target: Target
 
 
 @pytest.mark.asyncio
-async def test_command_profile_is_inactive_by_default(target: TargetConfig) -> None:
-    settings = make_settings(target, write_enabled=True, command_execution_enabled=False)
+async def test_general_purpose_command_capability_is_absent(target: TargetConfig) -> None:
+    settings = make_settings(target, write_enabled=True)
     kernel = InvocationKernel(settings)
+    assert "execute_command" not in kernel.active_names
     result = await kernel.invoke(
         "execute_command",
         {"cmd": "uptime"},
@@ -187,7 +191,13 @@ async def test_validation_happens_before_approval_consumption(target: TargetConf
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True)
     kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
-    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
     caller = CallerContext("principal", settings.allowed_scopes)
 
     invalid = await kernel.invoke("write_file", {"path": "/etc/passwd", "content": "x"}, caller)
@@ -244,7 +254,13 @@ async def test_manifest_controls_read_retry_but_mutation_is_single_attempt(
     assert read["success"] is True
     assert client.read_attempts == 2
 
-    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
     write = await kernel.invoke(
         "write_file",
         {"path": "/tmp/a", "content": "x"},
@@ -264,7 +280,13 @@ async def test_approval_is_not_consumed_while_waiting_for_lock(
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True, default_deadline_ms=100)
     kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
-    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
     arguments = {"path": "/tmp/a", "content": "x"}
     lock = kernel._lock_for(MANIFESTS["write_file"], "prod", arguments)
     assert lock is not None
@@ -278,7 +300,13 @@ async def test_approval_is_not_consumed_while_waiting_for_lock(
     finally:
         lock.release()
     assert result["error"]["code"] == "TIMEOUT"
-    assert approvals.has_matching("write_file", "principal", target.stable_identity, "/tmp/a")
+    assert approvals.has_matching(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
 
 
 @pytest.mark.asyncio
@@ -316,7 +344,13 @@ async def test_approval_is_not_consumed_when_target_connection_fails(
     )
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True)
-    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
     result = await InvocationKernel(
         settings,
         registry=registry,
@@ -327,4 +361,56 @@ async def test_approval_is_not_consumed_when_target_connection_fails(
         CallerContext("principal", settings.allowed_scopes),
     )
     assert result["error"]["code"] == "UNAVAILABLE"
-    assert approvals.has_matching("write_file", "principal", target.stable_identity, "/tmp/a")
+    assert approvals.has_matching(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest({"path": "/tmp/a", "content": "x"}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_kernel_retries_only_explicit_transient_upstream_errors(target: TargetConfig) -> None:
+    class ClassifiedClient(MockMikrusClient):
+        def __init__(self, config: TargetConfig, code: ErrorCode) -> None:
+            super().__init__(config)
+            self.code = code
+            self.attempts = 0
+
+        async def get_server_info(self) -> dict[str, object]:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise AppError(self.code, "classified failure")
+            return {"server_id": "srv"}
+
+    settings = make_settings(target)
+    caller = CallerContext("principal", settings.allowed_scopes)
+
+    transient = ClassifiedClient(target, ErrorCode.TRANSIENT_UPSTREAM)
+    transient_registry = TargetRegistry(
+        {"prod": target}, factory=lambda _: transient  # type: ignore[arg-type]
+    )
+    transient_kernel = InvocationKernel(settings, registry=transient_registry)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    transient_kernel._sleep = no_sleep
+    result = await transient_kernel.invoke("get_server_info", {}, caller)
+    assert result["success"] is True
+    assert transient.attempts == 2
+
+    for code in (
+        ErrorCode.UPSTREAM_PROTOCOL, ErrorCode.UPSTREAM_REJECTED, ErrorCode.UPSTREAM
+    ):
+        permanent = ClassifiedClient(target, code)
+        permanent_registry = TargetRegistry(
+            {"prod": target}, factory=lambda _, client=permanent: client  # type: ignore[arg-type]
+        )
+        permanent_kernel = InvocationKernel(settings, registry=permanent_registry)
+        permanent_kernel._sleep = no_sleep
+        result = await permanent_kernel.invoke("get_server_info", {}, caller)
+        assert result["success"] is False
+        assert result["error"]["code"] == code.value
+        assert permanent.attempts == 1

@@ -26,7 +26,7 @@ first migration pass.
 - Mutations require process scopes, write enablement, and one-time approval records.
 - `manage_service` is replaced by `get_service_status` and `change_service_state`.
 - `manage_process` is replaced by `list_processes` and `terminate_process`.
-- Raw command execution is disabled unless its separate profile is enabled.
+- General-purpose raw command execution is not exposed; privileged system actions use operation-specific tools and validation.
 - Out-of-range line and time parameters fail instead of being silently clamped.
 - File writes outside safe roots fail instead of producing a warning.
 
@@ -59,13 +59,13 @@ first migration pass.
   --wheelhouse wheelhouse
 ```
 
-Verify that tool discovery contains no legacy mixed-risk names and no command tool
-unless its profile is enabled.
+Verify that tool discovery contains no legacy mixed-risk names and does not expose
+`execute_command`.
 
 ## Rollback
 
-Disable write and command profiles first. Stop the 2.0 process, restore the previous
-immutable wheel or image digest, and restore the previous client configuration. Do
+Disable writes first. Stop the 2.0 process, restore the previous immutable wheel or
+image digest, and restore the previous client configuration. Do
 not restore legacy public SSE exposure or target fallback as an emergency shortcut.
 
 ## Residual evidence

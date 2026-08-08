@@ -28,6 +28,7 @@ jobs:
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
       version: ${{ steps.revision.outputs.version }}
+      release_tag: ${{ steps.revision.outputs.release_tag }}
       quarantine_ref: ${{ steps.quarantine.outputs.ref }}
       quarantine_digest: ${{ steps.quarantine.outputs.digest }}
     steps:
@@ -80,6 +81,7 @@ jobs:
           fi
           echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
       - name: Locate successful CI release bundle
         id: evidence
         shell: bash
@@ -199,6 +201,7 @@ jobs:
           EXPECTED_DIGEST: ${{ needs.validate-release.outputs.quarantine_digest }}
           RELEASE_SHA: ${{ needs.validate-release.outputs.sha }}
           VERSION: ${{ needs.validate-release.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -209,10 +212,13 @@ jobs:
           docker buildx imagetools create --tag "$immutable_ref" "$source_ref"
           promoted="$(docker buildx imagetools inspect "$immutable_ref" --format '{{.Manifest.Digest}}')"
           test "$promoted" = "$EXPECTED_DIGEST"
-          version_ref="$repository:$VERSION"
-          docker buildx imagetools create --tag "$version_ref" "$source_ref"
-          tagged="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
-          test "$tagged" = "$EXPECTED_DIGEST"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            test "$RELEASE_TAG" = "v$VERSION"
+            version_ref="$repository:$VERSION"
+            docker buildx imagetools create --tag "$version_ref" "$source_ref"
+            tagged="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
+            test "$tagged" = "$EXPECTED_DIGEST"
+          fi
           echo "digest=$EXPECTED_DIGEST" >> "$GITHUB_OUTPUT"
           echo "subject_name=$repository" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45

@@ -66,8 +66,6 @@ class ExecutionMixin:
                 return await client.get_cloud()
             case "assign_domain":
                 return await client.assign_domain(str(args["port"]), str(args["domain"]))
-            case "execute_command":
-                return await client.execute_command(str(args["cmd"]))
             case "read_file":
                 return await client.read_file(str(args["path"]))
             case "write_file":

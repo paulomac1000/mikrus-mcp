@@ -2,7 +2,6 @@ import pytest
 
 from mikrus_mcp.validators import (
     ValidationError,
-    validate_command,
     validate_content_size,
     validate_domain,
     validate_hours_param,
@@ -33,17 +32,6 @@ def test_path_rejects_traversal_and_control_characters() -> None:
     for value in ("relative", "/tmp/../etc/passwd", "/tmp/a\x00b"):
         with pytest.raises(ValidationError):
             validate_path(value)
-
-
-def test_command_is_parsed_allowlisted_and_requoted() -> None:
-    assert validate_command("echo 'hello world'") == "echo 'hello world'"
-    assert validate_command("uptime") == "uptime"
-    with pytest.raises(ValidationError, match="allowlist"):
-        validate_command("python -c pass")
-    with pytest.raises(ValidationError, match="metacharacters"):
-        validate_command("echo ok; id")
-    with pytest.raises(ValidationError, match="metacharacters"):
-        validate_command("cat /etc/hosts | grep x")
 
 
 def test_bounded_numeric_parameters_fail_instead_of_clamping() -> None:

@@ -89,17 +89,16 @@ def test_secret_files_must_have_private_permissions(tmp_path: Path) -> None:
     assert settings.targets["ssh"].ssh_key == key.resolve()
 
 
-def test_scope_and_command_profiles_are_process_configuration() -> None:
+def test_scopes_and_stdio_principal_are_process_configuration() -> None:
     settings = load_settings(
         {
             "MIKRUS_API_KEY": "k",
             "MIKRUS_SERVER_NAME": "srv",
             "MCP_ALLOWED_SCOPES": "tool:get_server_info,target:srv",
-            "MCP_COMMAND_EXECUTION_ENABLED": "true",
         }
     )
     assert settings.allowed_scopes == frozenset({"tool:get_server_info", "target:srv"})
-    assert settings.command_execution_enabled is True
+    assert settings.principal.startswith(("posix-uid:", "os-user:"))
 
 
 def test_streamable_http_requires_private_bearer_token_file(tmp_path: Path) -> None:

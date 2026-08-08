@@ -13,7 +13,7 @@ verification: Run policy, target-binding, approval, HTTP-boundary, sanitizer, SS
 
 The server exposes privileged administration capabilities for explicitly configured
 mikr.us and SSH targets. It is designed for one trusted local operator profile, not a
-public multi-tenant service. Local stdio uses the configured process principal.
+public multi-tenant service. Local stdio defaults to an effective-OS principal (`posix-uid:<uid>` on POSIX) and may use an explicitly configured service identity.
 Loopback Streamable HTTP authenticates each request with the protected bearer token and
 derives a request-scoped non-secret principal identifier from that credential.
 
@@ -21,7 +21,7 @@ derives a request-scoped non-secret principal identifier from that credential.
 
 The operator controls process environment, target configuration, filesystem-mounted
 secrets, stdio principal scopes, HTTP bearer credentials and scopes, write enablement,
-command-profile enablement, and approval records. MCP arguments, upstream responses,
+and approval records. MCP arguments, upstream responses,
 remote file contents, logs, and errors are untrusted.
 
 Streamable HTTP accepts literal loopback addresses only and rejects requests without the
@@ -58,8 +58,7 @@ Every mutation is non-retryable and non-idempotent by default. It requires all o
 
 Local arguments and target existence are validated before approval matching. For a target
 mutation the target is connected and its stable identity is revalidated before the
-one-time approval is consumed. The model cannot create an approval. Raw command execution
-also requires `MCP_COMMAND_EXECUTION_ENABLED=true` and an executable allowlist.
+one-time approval is consumed. The model cannot create an approval. General-purpose raw command execution is not a public capability; privileged system actions are split into operation-specific tools with bounded schemas and validators.
 
 ## Filesystem and process execution
 
@@ -71,9 +70,7 @@ Remote filesystems can still have platform-specific rename, mount, hard-link, an
 race behavior. The dedicated real-system symlink-race test must pass for each
 production target class before relying on this control.
 
-Commands assembled by public raw-command input are parsed into an argument vector,
-restricted to an executable allowlist, bounded, and shell-quoted. Internal adapter
-commands use validated values and fixed command templates. SSH stdout and stderr share
+There is no public raw-command string boundary. Internal adapter commands use validated values, fixed operation-specific templates, explicit option separators where supported, and shell quoting for data values. SSH stdout and stderr share
 a byte limit and process deadline; cancellation terminates the owned process.
 
 ## Data handling
@@ -90,9 +87,11 @@ process cache. Raw upstream response bodies are not copied into public errors.
 ## Failure behavior
 
 Validation, authentication, authorization, not-found, conflict, rate-limit, timeout,
-unavailable, upstream, ambiguous-outcome, cancellation, and internal failures remain
-distinct. Cancellation is re-raised. Mutations are never retried after rate limiting,
-timeout, disconnect, or an ambiguous outcome.
+unavailable, transient-upstream, upstream-rejected, upstream-protocol, ambiguous-outcome,
+cancellation, and internal failures remain distinct. Only explicitly transient read failures
+are eligible for manifest-controlled retry. A mutation timeout, disconnect after request
+submission, or qualifying upstream 5xx is reported as `AMBIGUOUS_OUTCOME`; the caller must
+reconcile target state before any new mutation attempt. Cancellation is re-raised.
 
 The server is ready when configuration, manifest coverage, kernel construction, and
 transport construction succeed. Target connection is lazy; per-target status is

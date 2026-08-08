@@ -17,9 +17,9 @@ timeouts, concurrency, redaction, and structured failures.
 - Mutations are disabled unless `MCP_WRITE_ENABLED=true` and require a one-time approval bound to the principal, capability, stable target identity, resource, and normalized operation arguments.
 - Mutations are not automatically retried after timeout, disconnect, rate limiting, or ambiguous completion.
 - Capability manifests must cover every registered tool or startup fails.
-- Raw command execution is absent from the default catalog. Its compatibility profile is disabled unless the operator explicitly enables it and supplies an executable allowlist.
+- General-purpose raw command execution is not exposed. Privileged system operations are separate capabilities with operation-specific validation.
 
-Read [SECURITY.md](SECURITY.md) before enabling writes or the command compatibility profile.
+Read [SECURITY.md](SECURITY.md) before enabling writes.
 
 ## Local development
 
@@ -57,7 +57,7 @@ export MCP_HTTP_BEARER_TOKEN_FILE="$PWD/.mcp-http-token"
 ```
 
 Clients connect to `http://127.0.0.1:8000/mcp` with `Authorization: Bearer <token>`.
-Each authenticated HTTP request receives a request-scoped principal derived as a SHA-256 identifier of the bearer credential; the raw bearer token is never used as the principal value. Process-global `MCP_PRINCIPAL` remains the local stdio identity and is not used to authorize Streamable HTTP requests.
+Each authenticated HTTP request receives a request-scoped principal derived as a SHA-256 identifier of the bearer credential; the raw bearer token is never used as the principal value. Stdio derives its default principal from the effective OS identity (`posix-uid:<uid>` on POSIX); `MCP_PRINCIPAL` may explicitly name a service identity. Process-global identity is not used to authorize Streamable HTTP requests.
 Remote proxy deployment is outside the supported security profile.
 
 ## Release promotion
@@ -70,7 +70,9 @@ that exact digest with `docker buildx imagetools create`; it does not checkout c
 source, load the candidate image, or execute candidate code.
 
 Configure `QUARANTINE_REGISTRY` and `QUARANTINE_REPOSITORY` as repository variables plus
-write/read quarantine credentials as release secrets before using `publish.yml`.
+write/read quarantine credentials as release secrets before using `publish.yml`. A manual release selected by full commit SHA publishes only the immutable `sha-<40>` tag; the stable version tag is emitted only when the selected release identity is an existing matching `v<version>` tag.
+
+The reviewed container profile is stdio-only. Streamable HTTP is an application transport but is not advertised as a host-published container profile.
 
 See [MIGRATION.md](MIGRATION.md), [docs/architecture.md](docs/architecture.md), and
 [docs/compliance-status.md](docs/compliance-status.md) for migration details, evidence, and residual risks.

@@ -131,3 +131,106 @@ async def test_invalid_json_and_oversized_responses_fail_closed() -> None:
     async with client:
         with pytest.raises(AppError, match="size limit"):
             await client.get_server_info()
+
+
+@pytest.mark.asyncio
+async def test_read_retry_taxonomy_distinguishes_transient_rejected_and_protocol_failures() -> None:
+    async def transient(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(transient),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.get_server_info()
+    assert caught.value.code is ErrorCode.TRANSIENT_UPSTREAM
+
+    async def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(rejected),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.get_server_info()
+    assert caught.value.code is ErrorCode.UPSTREAM_REJECTED
+
+    async def invalid_json(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"not-json",
+            headers={"content-type": "application/json"},
+            request=request,
+        )
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(invalid_json),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.get_server_info()
+    assert caught.value.code is ErrorCode.UPSTREAM_PROTOCOL
+
+
+@pytest.mark.asyncio
+async def test_mutation_timeout_and_5xx_are_ambiguous_but_preconnect_failure_is_not() -> None:
+    async def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("response timed out", request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(timeout),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.restart_server()
+    assert caught.value.code is ErrorCode.AMBIGUOUS
+    assert caught.value.retryable is False
+    assert "reconcile" in caught.value.message
+
+    async def failed_after_send(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(failed_after_send),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.restart_server()
+    assert caught.value.code is ErrorCode.AMBIGUOUS
+
+    async def connect_failure(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connect failed", request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(connect_failure),
+    )
+    async with client:
+        with pytest.raises(AppError) as caught:
+            await client.restart_server()
+    assert caught.value.code is ErrorCode.TRANSIENT_UPSTREAM

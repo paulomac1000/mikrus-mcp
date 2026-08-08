@@ -20,6 +20,7 @@ A newer hardening branch is being evaluated separately. It must not replace the 
 authority until its exact revision is provider-green and the required independent
 provider review exists. Migration evidence must use real provider identifiers; it must
 never synthesize a reviewer or review ID.
+The newer candidate schema currently requires a concrete reviewer object even in `structural-attestation` mode. Because this PR has no provider review submission, a schema-valid `migration-assessment.yaml` cannot yet be committed without inventing review evidence; this is tracked as a candidate-contract limitation rather than bypassed locally.
 
 ## Credential-free acceptance contract
 
@@ -35,12 +36,11 @@ The repository gates verify:
   operation arguments;
 - secure approval-file replacement reload, lock-before-consume, and
   target-connect-before-consume;
-- mutation retry veto and manifest-driven bounded read retry with `Retry-After`;
+- mutation retry veto, ambiguous-outcome classification, and manifest-driven bounded read retry limited to explicit transient failures with `Retry-After`;
 - field-aware response redaction and bounded responses;
 - SSH host-verification configuration and bounded process output;
 - loopback Host, Origin, bearer authentication, and body controls;
-- official MCP client tool listing, schema inspection, and real stdio and Streamable HTTP
-  calls from the installed exact wheel;
+- official MCP client tool listing, schema inspection, representative fake-upstream read, missing-target failure, and approval-boundary rejection over real stdio and Streamable HTTP subprocesses from the installed exact wheel;
 - cancellation propagation and deterministic target cleanup;
 - exact-wheel installation and official-client smoke over every advertised transport;
 - container build from the exact wheelhouse, official-client MCP invocation, and immutable
@@ -60,13 +60,13 @@ checked-out commit SHA equals the pull-request or release candidate SHA.
 | MCP architecture boundaries | implemented | `config.py`, `manifests.py`, `kernel.py`, `clients/`, `server.py` and unit tests |
 | Identity and target binding | implemented for supported local transports | request-scoped HTTP principal, stable target-identity approvals, authorization-before-connect, and no fallback are covered; real SSH host-key identity evidence remains open |
 | Manifest completeness | implemented locally | startup coverage validation and manifest tests; mapping to the newer canonical AI Skills schema remains migration work |
-| Retry and workflow safety | implemented for current operations | adapter performs one attempt; manifest-driven read retry and mutation veto tests; real ambiguous mutation reconciliation deferred |
+| Retry and workflow safety | implemented classification / reconciliation still operational work | adapters perform one request attempt; only explicit transient reads are retryable; mutation timeout/disconnect/qualifying 5xx becomes `AMBIGUOUS_OUTCOME`; real postcondition reconciliation remains deferred |
 | Transport and lifecycle | implemented | stdio and authenticated loopback Streamable HTTP with official-client tests |
 | Deadlines and concurrency | implemented locally | timeout, cancellation, output, rate-limit, and keyed-lock controls |
 | Structured responses | implemented | native structured tool results and protocol tool errors; exact wheel is exercised by the official client |
 | Server-side authorization | single-operator profile | stdio process identity and request-scoped bearer-derived HTTP identity feed hidden approvals bound to normalized arguments and stable target identity; resource-granular multi-tenant authorization remains out of scope |
 | Observability and operations | partial | request metadata and target status exist; SLO, metrics backend, durable audit, and recovery drill absent |
-| Exact artifact | implemented in CI | the installed exact wheel is exercised over real stdio and Streamable HTTP, the exact container receives an official-client MCP invocation, and release promotes the tested quarantined digest without executing candidate code in the privileged publisher |
+| Exact artifact | implemented in CI | the installed exact wheel is exercised over real stdio and Streamable HTTP with listing/read/failure/write-boundary checks; the exact container receives a deeper stdio official-client smoke; the reviewed container deployment profile is stdio-only; release promotes the tested quarantined digest without executing candidate code in the privileged publisher |
 | AFDS documentation | migration pending | current pinned validator governs authored docs; AFDS v2 migration waits for a green replacement authority and valid migration assessment |
 | AGENTS.md | implemented structurally | routes, modes, boundaries, commands, and exact revision pin; factual drift remains reviewable |
 | CI/CD | substantially implemented | SHA-pinned actions, digest-pinned base image, audited pip, release ancestry check, source-free digest promotion, and exact-artifact gates; complete hashed dependency locks remain open |

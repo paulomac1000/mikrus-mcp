@@ -6,7 +6,7 @@ import ipaddress
 import os
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -70,6 +70,14 @@ def _secret_text_file(raw: object, *, name: str) -> str | None:
     return value
 
 
+def _default_stdio_principal() -> str:
+    if hasattr(os, "geteuid"):
+        return f"posix-uid:{os.geteuid()}"
+    import getpass
+
+    return f"os-user:{getpass.getuser()}"
+
+
 def _require_loopback(host: str) -> None:
     try:
         address = ipaddress.ip_address(host)
@@ -111,10 +119,9 @@ class Settings:
     transport: Transport = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
-    principal: str = "local-stdio-user"
+    principal: str = field(default_factory=_default_stdio_principal)
     allowed_scopes: frozenset[str] = frozenset({"tool:*", "target:*"})
     write_enabled: bool = False
-    command_execution_enabled: bool = False
     default_deadline_ms: int = 10_000
     max_request_body_bytes: int = 1_048_576
     max_result_bytes: int = 1_000_000

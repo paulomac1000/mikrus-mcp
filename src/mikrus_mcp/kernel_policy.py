@@ -16,7 +16,6 @@ from mikrus_mcp.manifests import CapabilityManifest
 from mikrus_mcp.targets import TargetRegistry
 from mikrus_mcp.validators import (
     ValidationError,
-    validate_command,
     validate_container_name,
     validate_content_size,
     validate_domain,
@@ -106,7 +105,6 @@ class PolicyMixin:
             "get_ports": set(),
             "get_cloud": set(),
             "assign_domain": {"port", "domain"},
-            "execute_command": {"cmd"},
             "read_file": {"path"},
             "write_file": {"path", "content"},
             "get_service_status": {"name"},
@@ -160,8 +158,6 @@ class PolicyMixin:
                     raise ValidationError("port must be a string or integer")
                 normalized["port"] = str(validate_port(port))
                 normalized["domain"] = validate_domain(required_text("domain", maximum=253))
-            case "execute_command":
-                normalized["cmd"] = validate_command(required_text("cmd", maximum=4_096))
             case "read_file" | "list_directory" | "analyze_disk":
                 normalized["path"] = validate_path(required_text("path"))
             case "write_file":
@@ -217,40 +213,6 @@ class PolicyMixin:
                 ErrorCode.AUTHORIZATION,
                 "write operations are disabled by operator policy",
             )
-        if manifest.command_profile and not self.settings.command_execution_enabled:
-            raise AppError(ErrorCode.AUTHORIZATION, "command execution profile is disabled")
-
-    def _approval_available(
-        self,
-        caller: CallerContext,
-        manifest: CapabilityManifest,
-        target: str,
-        arguments: dict[str, Any],
-    ) -> None:
-        if not manifest.requires_approval:
-            return
-        resource = self._resource(manifest, arguments)
-        if not self.approvals.has_matching(manifest.name, caller.principal, target, resource):
-            raise AppError(
-                ErrorCode.AUTHORIZATION,
-                "a valid one-time server-side approval record is required",
-            )
-
-    def _consume_approval(
-        self,
-        caller: CallerContext,
-        manifest: CapabilityManifest,
-        target: str,
-        arguments: dict[str, Any],
-    ) -> None:
-        if not manifest.requires_approval:
-            return
-        resource = self._resource(manifest, arguments)
-        if not self.approvals.consume_matching(manifest.name, caller.principal, target, resource):
-            raise AppError(
-                ErrorCode.AUTHORIZATION,
-                "the server-side approval expired or was consumed before execution",
-            )
 
     def _lock_key(
         self,
@@ -294,7 +256,7 @@ class PolicyMixin:
     def _retry_condition(error: AppError) -> str | None:
         return {
             ErrorCode.RATE_LIMITED: "rate-limit",
-            ErrorCode.UPSTREAM: "transient-upstream",
+            ErrorCode.TRANSIENT_UPSTREAM: "transient-upstream",
             ErrorCode.TIMEOUT: "timeout",
         }.get(error.code)
 
