@@ -389,7 +389,8 @@ async def test_kernel_retries_only_explicit_transient_upstream_errors(target: Ta
 
     transient = ClassifiedClient(target, ErrorCode.TRANSIENT_UPSTREAM)
     transient_registry = TargetRegistry(
-        {"prod": target}, factory=lambda _: transient  # type: ignore[arg-type]
+        {"prod": target},
+        factory=lambda _: transient,  # type: ignore[arg-type]
     )
     transient_kernel = InvocationKernel(settings, registry=transient_registry)
 
@@ -401,12 +402,11 @@ async def test_kernel_retries_only_explicit_transient_upstream_errors(target: Ta
     assert result["success"] is True
     assert transient.attempts == 2
 
-    for code in (
-        ErrorCode.UPSTREAM_PROTOCOL, ErrorCode.UPSTREAM_REJECTED, ErrorCode.UPSTREAM
-    ):
+    for code in (ErrorCode.UPSTREAM_PROTOCOL, ErrorCode.UPSTREAM_REJECTED, ErrorCode.UPSTREAM):
         permanent = ClassifiedClient(target, code)
         permanent_registry = TargetRegistry(
-            {"prod": target}, factory=lambda _, client=permanent: client  # type: ignore[arg-type]
+            {"prod": target},
+            factory=lambda _, client=permanent: client,  # type: ignore[arg-type]
         )
         permanent_kernel = InvocationKernel(settings, registry=permanent_registry)
         permanent_kernel._sleep = no_sleep

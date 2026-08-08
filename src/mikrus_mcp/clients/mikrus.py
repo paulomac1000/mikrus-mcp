@@ -177,9 +177,7 @@ class MikrusClient:
                     ErrorCode.UPSTREAM_PROTOCOL, "invalid upstream Content-Length"
                 ) from exc
             if declared_length > MAX_RESPONSE_BYTES:
-                raise AppError(
-                    ErrorCode.UPSTREAM_PROTOCOL, "upstream response exceeds size limit"
-                )
+                raise AppError(ErrorCode.UPSTREAM_PROTOCOL, "upstream response exceeds size limit")
         if len(response.content) > MAX_RESPONSE_BYTES:
             raise AppError(ErrorCode.UPSTREAM_PROTOCOL, "upstream response exceeds size limit")
 
