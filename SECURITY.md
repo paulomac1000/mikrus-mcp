@@ -12,48 +12,54 @@ verification: Run policy, target-binding, approval, HTTP-boundary, sanitizer, SS
 ## Responsibility
 
 The server exposes privileged administration capabilities for explicitly configured
-mikr.us and SSH targets. It is designed for one trusted local process principal. It is not a public multi-tenant
-service. Loopback Streamable HTTP authenticates one configured process principal with an
-owner-only bearer token, but it does not provide public remote-user identity or tenant isolation.
+mikr.us and SSH targets. It is designed for one trusted local operator profile, not a
+public multi-tenant service. Local stdio uses the configured process principal.
+Loopback Streamable HTTP authenticates each request with the protected bearer token and
+derives a request-scoped non-secret principal identifier from that credential.
 
 ## Trust boundaries
 
 The operator controls process environment, target configuration, filesystem-mounted
-secrets, principal scopes, write enablement, command-profile enablement, and approval
-records. MCP arguments, upstream responses, remote file contents, logs, and errors are
-untrusted.
+secrets, stdio principal scopes, HTTP bearer credentials and scopes, write enablement,
+command-profile enablement, and approval records. MCP arguments, upstream responses,
+remote file contents, logs, and errors are untrusted.
 
 Streamable HTTP accepts literal loopback addresses only and rejects requests without the
-configured bearer token before body parsing. Deployment behind a remote proxy is unsupported until a separate profile defines TLS, authenticated principal
-extraction, audience validation, per-resource authorization, proxy-header trust, and
-abuse controls.
+configured bearer token before body parsing. The authenticated caller is attached to the
+ASGI request scope and read through the public MCP request context; HTTP authorization
+does not fall back to the process-global principal. Deployment behind a remote proxy is
+unsupported until a separate profile defines TLS, audience validation, proxy-header
+trust, external principal extraction, per-resource authorization, and abuse controls.
 
 ## Target identity
 
-Each configured target has a stable public name and stable adapter identity. The
-kernel authorizes the caller and target selector before lazy connection. A missing,
-failed, or unavailable target returns an error; another target is never selected.
+Each configured target has a public selector alias and a stable adapter identity. The
+kernel authorizes the caller and selector before lazy connection. Approval records bind
+the stable adapter identity, not the alias, so changing an alias to a different server ID
+or SSH endpoint invalidates previously persisted approvals. A missing, failed, or
+unavailable target returns an error; another target is never selected.
 
-SSH verifies host identity using AsyncSSH's default `known_hosts` policy or an
-explicit regular `known_hosts` file. Disabling verification requires the separate
-`MCP_ALLOW_INSECURE_SSH=1` development acknowledgement and remains unsuitable for
-production.
+After connection, the registry verifies that the client's resolved stable identity still
+matches the configured stable identity. SSH verifies host identity using AsyncSSH's
+default `known_hosts` policy or an explicit regular `known_hosts` file. Disabling
+verification requires the separate `MCP_ALLOW_INSECURE_SSH=1` development
+acknowledgement and remains unsuitable for production.
 
 ## Mutation policy
 
 Every mutation is non-retryable and non-idempotent by default. It requires all of:
 
 1. an active capability manifest;
-2. caller capability and target scopes from process configuration;
+2. caller capability and target scopes from the authenticated request or local stdio configuration;
 3. `MCP_WRITE_ENABLED=true`;
 4. a valid unexpired one-time approval loaded from a protected file;
-5. an exact binding to principal, capability, target, and resource;
+5. an exact binding to principal, capability, stable target identity, resource, and normalized operation arguments;
 6. a deadline-bound target-resource lock.
 
-Local arguments and target existence are validated before approval consumption. An approval
-token is consumed on any approval-binding attempt. The model cannot create an
-approval. Raw command execution also requires
-`MCP_COMMAND_EXECUTION_ENABLED=true` and an executable allowlist.
+Local arguments and target existence are validated before approval matching. For a target
+mutation the target is connected and its stable identity is revalidated before the
+one-time approval is consumed. The model cannot create an approval. Raw command execution
+also requires `MCP_COMMAND_EXECUTION_ENABLED=true` and an executable allowlist.
 
 ## Filesystem and process execution
 
@@ -91,6 +97,16 @@ timeout, disconnect, or an ambiguous outcome.
 The server is ready when configuration, manifest coverage, kernel construction, and
 transport construction succeed. Target connection is lazy; per-target status is
 reported separately.
+
+## Release trust boundary
+
+Release validation is separated from privileged publication. A read-only job requires the
+selected full commit SHA to be reachable from the repository default branch, verifies the
+exact CI release bundle, exercises the candidate image, and records the tested digest in an
+isolated quarantine registry. The protected publisher receives only the validated quarantine
+reference and digest. It does not checkout candidate source and does not load or execute the
+candidate image; it promotes the exact digest with registry-side manifest operations and then
+attests that digest. Missing quarantine configuration or digest mismatch fails closed.
 
 ## Reporting vulnerabilities
 
