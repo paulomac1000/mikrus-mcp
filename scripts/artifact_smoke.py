@@ -151,7 +151,9 @@ async def exercise_session(session, upstream):
     before_read = len(upstream.paths)
     assert_success(await session.call_tool("get_server_info", arguments={}), "representative read")
     if upstream.paths[before_read:] != ["/info"]:
-        raise RuntimeError(f"representative read did not hit exact fake upstream once: {upstream.paths!r}")
+        raise RuntimeError(
+            f"representative read did not hit exact fake upstream once: {upstream.paths!r}"
+        )
 
     before_failure = len(upstream.paths)
     assert_failure(

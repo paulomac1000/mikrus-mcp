@@ -152,7 +152,8 @@ class MikrusClient:
         except httpx.TimeoutException as exc:
             code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
             message = (
-                "mutation outcome is unknown after an upstream timeout; reconcile target state before retry"
+                "mutation outcome is unknown after an upstream timeout; "
+                "reconcile target state before retry"
                 if mutation
                 else f"mikr.us API request exceeded {timeout:g} seconds"
             )
