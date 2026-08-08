@@ -93,6 +93,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         started = time.monotonic()
         target = self.settings.default_target
         target_identity = "<none>"
+        mutation_execution_started = False
         try:
             manifest = MANIFESTS.get(name)
             if manifest is None or name not in self.active_names:
@@ -127,6 +128,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             timeout_seconds = min(manifest.timeout_ms, self.settings.default_deadline_ms) / 1000
 
             async def execute_once_locked() -> Any:
+                nonlocal mutation_execution_started
                 prepared_client: Client | None = None
                 if manifest.target_required and manifest.requires_approval:
                     prepared_client = await self.registry.get(target)
@@ -141,6 +143,8 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                         ErrorCode.AUTHORIZATION,
                         "the server-side approval expired or was consumed before execution",
                     )
+                if manifest.side_effects != "read":
+                    mutation_execution_started = True
                 return await self._execute_with_policy_retry(
                     manifest,
                     name,
@@ -180,6 +184,14 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 retry_after_seconds=exc.retry_after_seconds,
             )
         except TimeoutError:
+            if mutation_execution_started:
+                return self._failure(
+                    ErrorCode.AMBIGUOUS,
+                    "mutation outcome is unknown after the operation deadline expired; "
+                    "reconcile target state before retry",
+                    request_id,
+                    started,
+                )
             return self._failure(
                 ErrorCode.TIMEOUT, "operation deadline exceeded", request_id, started
             )
