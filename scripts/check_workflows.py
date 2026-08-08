@@ -200,7 +200,9 @@ def audit(path: Path) -> list[str]:
                 )
         if path.name == "publish.yml" and job_name == "publish":
             if raw_job.get("environment") != "release":
-                findings.append(f"{path.name}: publish job must use the protected release environment")
+                findings.append(
+                    f"{path.name}: publish job must use the protected release environment"
+                )
             steps = raw_job.get("steps")
             if isinstance(steps, list):
                 for index, step in enumerate(steps, start=1):
