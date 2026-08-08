@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_ref:
-        description: Existing release tag to promote
+        description: Existing v* tag or full 40-character commit SHA reachable from the default branch
         required: true
         type: string
 
@@ -21,38 +21,64 @@ concurrency:
 jobs:
   validate-release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
       version: ${{ steps.revision.outputs.version }}
+      quarantine_ref: ${{ steps.quarantine.outputs.ref }}
+      quarantine_digest: ${{ steps.quarantine.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Resolve and validate release identity
+      - name: Resolve and constrain release identity
         id: revision
         shell: bash
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_TAG: ${{ github.ref_name }}
-          REQUESTED_REF: ${{ inputs.release_ref }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+          REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref }}
         run: |
           set -euo pipefail
-          release_tag="$EVENT_TAG"
-          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
-            release_tag="${REQUESTED_REF#refs/tags/}"
+          requested="$REQUESTED_REF"
+          release_tag=""
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            release_tag="$EVENT_REF_NAME"
+            requested="refs/tags/$release_tag"
           fi
-          git show-ref --verify --quiet "refs/tags/$release_tag"
-          sha="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+          if [[ "$requested" =~ ^[0-9a-f]{40}$ ]]; then
+            release_sha="$requested"
+          else
+            case "$requested" in
+              refs/tags/v*) release_tag="${requested#refs/tags/}" ;;
+              v*) release_tag="$requested" ;;
+              *) echo "release_ref must be an existing v* tag or full commit SHA" >&2; exit 1 ;;
+            esac
+            git show-ref --verify --quiet "refs/tags/$release_tag" || {
+              echo "Tag not found: $release_tag" >&2
+              exit 1
+            }
+            release_sha="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+          fi
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$release_sha^{commit}"
+          git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH" || {
+            echo "Selected revision is not reachable from origin/$DEFAULT_BRANCH" >&2
+            exit 1
+          }
+          git checkout --detach "$release_sha"
+          test "$(git rev-parse HEAD)" = "$release_sha"
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          test "$release_tag" = "v$version"
-          test "${#sha}" -eq 40
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [[ -n "$release_tag" ]]; then
+            test "$release_tag" = "v$version"
+            test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$release_sha"
+          fi
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Locate successful CI release bundle
         id: evidence
@@ -80,38 +106,68 @@ jobs:
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > release-bundle.zip
           mkdir bundle
           unzip -q release-bundle.zip -d bundle
-      - name: Verify and smoke exact CI bundle
+      - name: Verify exact CI bundle and wheel transports
         shell: bash
         env:
           RELEASE_SHA: ${{ steps.revision.outputs.sha }}
         run: |
           set -euo pipefail
-          cd bundle
-          test "$(cat release/commit-sha.txt)" = "$RELEASE_SHA"
-          sha256sum --check release/bundle-sha256.txt
-          python ../scripts/artifact_smoke.py \
-            --wheel "$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
-            --wheelhouse wheelhouse
-      - name: Close promotion bundle
+          test "$(cat bundle/release/commit-sha.txt)" = "$RELEASE_SHA"
+          (cd bundle && sha256sum --check release/bundle-sha256.txt)
+          python scripts/artifact_smoke.py \
+            --wheel "$(find bundle/dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
+            --wheelhouse bundle/wheelhouse
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - name: Load and smoke candidate image outside protected publisher
+        id: candidate
         shell: bash
         env:
-          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
           VERSION: ${{ steps.revision.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir promotion
-          cp bundle/release/image.tar promotion/image.tar
-          cp bundle/release/image-id.txt promotion/image-id.txt
-          cp bundle/release/commit-sha.txt promotion/commit-sha.txt
-          printf 'RELEASE_SHA=%s\nVERSION=%s\n' "$RELEASE_SHA" "$VERSION" > promotion/release.env
-          sha256sum promotion/image.tar > promotion/image-sha256.txt
-      - name: Upload closed promotion bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          loaded="$(docker load --input bundle/release/image.tar)"
+          source_image="${loaded#Loaded image: }"
+          test "$source_image" != "$loaded"
+          test "$(docker image inspect --format='{{.Id}}' "$source_image")" = \
+            "$(cat bundle/release/image-id.txt)"
+          docker run --rm --entrypoint python "$source_image" -c \
+            "import os; from mikrus_mcp import __version__; assert __version__ == '$VERSION'; assert os.getuid() == 10001"
+          echo "image=$source_image" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
-          name: promotion-${{ steps.revision.outputs.sha }}
-          path: promotion/
-          if-no-files-found: error
-          retention-days: 7
+          registry: ${{ vars.QUARANTINE_REGISTRY }}
+          username: ${{ secrets.QUARANTINE_USERNAME }}
+          password: ${{ secrets.QUARANTINE_PASSWORD }}
+      - name: Push candidate only to isolated quarantine
+        id: quarantine
+        shell: bash
+        env:
+          LOCAL_IMAGE: ${{ steps.candidate.outputs.image }}
+          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
+          QUARANTINE_REGISTRY: ${{ vars.QUARANTINE_REGISTRY }}
+          QUARANTINE_REPOSITORY: ${{ vars.QUARANTINE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          test -n "$QUARANTINE_REGISTRY"
+          test -n "$QUARANTINE_REPOSITORY"
+          quarantine_ref="$QUARANTINE_REGISTRY/$QUARANTINE_REPOSITORY:sha-$RELEASE_SHA"
+          docker tag "$LOCAL_IMAGE" "$quarantine_ref"
+          docker push "$quarantine_ref"
+          digest="$(docker buildx imagetools inspect "$quarantine_ref" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "ref=$quarantine_ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Smoke exact quarantined digest
+        shell: bash
+        env:
+          QUARANTINE_REF: ${{ steps.quarantine.outputs.ref }}
+          QUARANTINE_DIGEST: ${{ steps.quarantine.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python -m venv .container-smoke
+          .container-smoke/bin/python -m pip install --no-index --find-links=bundle/wheelhouse "mcp==2.0.0"
+          image="${QUARANTINE_REF%:*}@$QUARANTINE_DIGEST"
+          .container-smoke/bin/python scripts/container_smoke.py --image "$image"
 
   publish:
     needs: validate-release
@@ -120,62 +176,47 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: none
-      actions: read
       packages: write
       id-token: write
       attestations: write
     steps:
-      - name: Download closed promotion bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
-          name: promotion-${{ needs.validate-release.outputs.sha }}
-          path: promotion
-      - name: Verify closed promotion identity
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ needs.validate-release.outputs.sha }}
-          EXPECTED_VERSION: ${{ needs.validate-release.outputs.version }}
-        run: |
-          set -euo pipefail
-          source promotion/release.env
-          test "$RELEASE_SHA" = "$EXPECTED_SHA"
-          test "$VERSION" = "$EXPECTED_VERSION"
-          test "${#RELEASE_SHA}" -eq 40
-          test "$(cat promotion/commit-sha.txt)" = "$RELEASE_SHA"
-          sha256sum --check promotion/image-sha256.txt
+          registry: ${{ vars.QUARANTINE_REGISTRY }}
+          username: ${{ secrets.QUARANTINE_READ_USERNAME }}
+          password: ${{ secrets.QUARANTINE_READ_PASSWORD }}
       - uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Load, smoke, and tag exact CI image
+      - name: Promote exact tested digest without loading candidate image
+        id: promote
         shell: bash
+        env:
+          QUARANTINE_REF: ${{ needs.validate-release.outputs.quarantine_ref }}
+          EXPECTED_DIGEST: ${{ needs.validate-release.outputs.quarantine_digest }}
+          RELEASE_SHA: ${{ needs.validate-release.outputs.sha }}
+          VERSION: ${{ needs.validate-release.outputs.version }}
         run: |
           set -euo pipefail
-          source promotion/release.env
-          loaded="$(docker load --input promotion/image.tar)"
-          source_image="${loaded#Loaded image: }"
-          test "$source_image" != "$loaded"
-          test "$(docker image inspect --format='{{.Id}}' "$source_image")" = \
-            "$(cat promotion/image-id.txt)"
-          docker run --rm --entrypoint python "$source_image" -c \
-            "import os; from mikrus_mcp import __version__; assert __version__ == '$VERSION'; assert os.getuid() == 10001"
-          docker tag "$source_image" "ghcr.io/${GITHUB_REPOSITORY}:$VERSION"
-          docker tag "$source_image" "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA"
-      - name: Push previously validated image
-        id: push
-        shell: bash
-        run: |
-          set -euo pipefail
-          source promotion/release.env
-          docker push "ghcr.io/${GITHUB_REPOSITORY}:$VERSION"
-          docker push "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA"
-          digest="$(docker inspect --format='{{index .RepoDigests 0}}' \
-            "ghcr.io/${GITHUB_REPOSITORY}:sha-$RELEASE_SHA" | cut -d@ -f2)"
-          test -n "$digest"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          source_ref="${QUARANTINE_REF%:*}@$EXPECTED_DIGEST"
+          immutable_ref="$repository:sha-$RELEASE_SHA"
+          docker buildx imagetools create --tag "$immutable_ref" "$source_ref"
+          promoted="$(docker buildx imagetools inspect "$immutable_ref" --format '{{.Manifest.Digest}}')"
+          test "$promoted" = "$EXPECTED_DIGEST"
+          version_ref="$repository:$VERSION"
+          docker buildx imagetools create --tag "$version_ref" "$source_ref"
+          tagged="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
+          test "$tagged" = "$EXPECTED_DIGEST"
+          echo "digest=$EXPECTED_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "subject_name=$repository" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
         with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-name: ${{ steps.promote.outputs.subject_name }}
+          subject-digest: ${{ steps.promote.outputs.digest }}
           push-to-registry: true

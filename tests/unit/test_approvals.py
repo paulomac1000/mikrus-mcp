@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -164,6 +165,18 @@ def test_matching_lookup_does_not_consume_record() -> None:
 def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) -> None:
     path = tmp_path / "approvals.json"
     root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["MCP_SERVERS"] = json.dumps(
+        {
+            "prod": {
+                "type": "mikrus",
+                "key": "test-key",
+                "srv": "srv-id",
+                "api_url": "https://api.mikr.us",
+            }
+        }
+    )
+    env["MCP_DEFAULT_SERVER"] = "prod"
     completed = subprocess.run(
         [
             sys.executable,
@@ -174,7 +187,7 @@ def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) 
             "write_file",
             "--principal",
             "operator",
-            "--target",
+            "--server",
             "prod",
             "--resource",
             "/tmp/a",
@@ -184,6 +197,7 @@ def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) 
             "60",
         ],
         cwd=root,
+        env=env,
         check=True,
         capture_output=True,
         text=True,
@@ -191,7 +205,10 @@ def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) 
     issued = json.loads(completed.stdout)
     approved = write_digest()
     assert issued["arguments_digest"] == approved
+    assert issued["target_identity"] == "mikrus:srv-id"
     assert "approval_id" not in issued
     assert path.stat().st_mode & 0o077 == 0
     registry = ApprovalRegistry.from_file(path)
-    assert registry.consume_matching("write_file", "operator", "prod", "/tmp/a", approved)
+    assert registry.consume_matching(
+        "write_file", "operator", "mikrus:srv-id", "/tmp/a", approved
+    )

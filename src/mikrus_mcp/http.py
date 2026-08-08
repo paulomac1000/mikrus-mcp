@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
-from typing import Any, cast
+from typing import Any, Final, cast
 from urllib.parse import urlsplit
+
+AUTH_SCOPE_KEY: Final = "mikrus_mcp.authenticated_caller"
+
+
+def bearer_principal(token: str) -> str:
+    """Derive a stable non-secret principal identifier from one bearer credential."""
+    if not isinstance(token, str) or len(token) < 32:
+        raise ValueError("HTTP bearer token must contain at least 32 characters")
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"bearer-sha256:{digest}"
 
 
 class RequestBodyLimitMiddleware:
@@ -152,13 +163,15 @@ class LoopbackOriginMiddleware:
 
 
 class BearerAuthMiddleware:
-    """Authenticate every HTTP request before MCP body parsing or invocation."""
+    """Authenticate HTTP and attach a request-scoped caller identity to ASGI scope."""
 
-    def __init__(self, app: Any, token: str) -> None:
-        if not isinstance(token, str) or len(token) < 32:
-            raise ValueError("HTTP bearer token must contain at least 32 characters")
+    def __init__(self, app: Any, token: str, scopes: frozenset[str]) -> None:
         self._app = app
         self._expected = f"Bearer {token}".encode()
+        self._principal = bearer_principal(token)
+        if not scopes or any(not isinstance(scope, str) or not scope for scope in scopes):
+            raise ValueError("HTTP authorization scopes must be non-empty strings")
+        self._scopes = tuple(sorted(scopes))
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -170,4 +183,9 @@ class BearerAuthMiddleware:
         if len(values) != 1 or not hmac.compare_digest(values[0], self._expected):
             await RequestBodyLimitMiddleware._reject(send, 401, b"authentication required")
             return
-        await self._app(scope, receive, send)
+        authenticated_scope = dict(scope)
+        authenticated_scope[AUTH_SCOPE_KEY] = {
+            "principal": self._principal,
+            "scopes": self._scopes,
+        }
+        await self._app(authenticated_scope, receive, send)

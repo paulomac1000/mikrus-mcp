@@ -104,6 +104,7 @@ def build_http_app(server: MCPServer[AppContext], settings: Settings) -> Any:
             settings.port,
         ),
         settings.http_bearer_token,
+        settings.allowed_scopes,
     )
 
 

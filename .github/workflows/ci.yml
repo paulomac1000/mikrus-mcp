@@ -139,7 +139,7 @@ jobs:
           python -m pip wheel --wheel-dir wheelhouse \
             "mcp==2.0.0" "httpx==0.28.1" "asyncssh==2.24.0" "uvicorn==0.51.0"
           cp dist/mikrus_mcp-*.whl wheelhouse/
-      - name: Smoke exact wheel through official MCP client
+      - name: Smoke exact wheel through real advertised transports
         shell: bash
         run: |
           set -euo pipefail
@@ -178,6 +178,9 @@ jobs:
         with:
           name: exact-wheel-${{ github.run_id }}
           path: .
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
       - name: Verify wheel bundle revision
         shell: bash
@@ -191,13 +194,16 @@ jobs:
           set -euo pipefail
           docker buildx build --load --platform linux/amd64 \
             --tag "mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}" .
-      - name: Smoke and export the exact image
+      - name: Smoke MCP invocation and export the exact image
         shell: bash
         run: |
           set -euo pipefail
           image="mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}"
           docker run --rm --entrypoint python "$image" -c \
             "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+          python -m venv .container-smoke
+          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "mcp==2.0.0"
+          .container-smoke/bin/python scripts/container_smoke.py --image "$image"
           mkdir -p release
           docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
           docker save --output release/image.tar "$image"

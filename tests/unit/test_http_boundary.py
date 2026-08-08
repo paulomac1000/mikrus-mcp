@@ -6,9 +6,11 @@ from typing import Any
 import pytest
 
 from mikrus_mcp.http import (
+    AUTH_SCOPE_KEY,
     BearerAuthMiddleware,
     LoopbackOriginMiddleware,
     RequestBodyLimitMiddleware,
+    bearer_principal,
 )
 
 
@@ -118,16 +120,19 @@ async def test_empty_origin_is_accepted_for_non_browser_clients() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bearer_auth_rejects_before_application() -> None:
+async def test_bearer_auth_rejects_before_application_and_binds_request_identity() -> None:
     called = False
+    observed: dict[str, Any] = {}
+    token = "x" * 32
 
     async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
         nonlocal called
         called = True
+        observed.update(scope)
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    middleware = BearerAuthMiddleware(inner, "x" * 32)
+    middleware = BearerAuthMiddleware(inner, token, frozenset({"tool:*", "target:prod"}))
     denied = await run_asgi(
         middleware,
         {"type": "http", "headers": [(b"authorization", b"Bearer wrong")]},
@@ -142,3 +147,7 @@ async def test_bearer_auth_rejects_before_application() -> None:
         [],
     )
     assert allowed[0]["status"] == 204
+    assert observed[AUTH_SCOPE_KEY] == {
+        "principal": bearer_principal(token),
+        "scopes": ("target:prod", "tool:*"),
+    }

@@ -94,6 +94,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         token = _request_id.set(request_id)
         started = time.monotonic()
         target = self.settings.default_target
+        target_identity = "<none>"
         try:
             manifest = MANIFESTS.get(name)
             if manifest is None or name not in self.active_names:
@@ -102,6 +103,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             target = str(normalized.get("server") or self.settings.default_target)
             if manifest.target_required:
                 target_config = self.registry.config(target)
+                target_identity = target_config.stable_identity
                 if name in self._MIKRUS_ONLY and target_config.type != "mikrus":
                     raise AppError(
                         ErrorCode.VALIDATION,
@@ -114,7 +116,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             if manifest.requires_approval and not self.approvals.has_matching(
                 manifest.name,
                 caller.principal,
-                target,
+                target_identity,
                 resource,
                 arguments_digest,
             ):
@@ -133,7 +135,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 if manifest.requires_approval and not self.approvals.consume_matching(
                     manifest.name,
                     caller.principal,
-                    target,
+                    target_identity,
                     resource,
                     arguments_digest,
                 ):

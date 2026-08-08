@@ -17,6 +17,7 @@ from mikrus_mcp.approvals import (  # noqa: E402
     ApprovalRegistry,
     normalized_arguments_digest,
 )
+from mikrus_mcp.config import load_settings  # noqa: E402
 
 
 def _initialize(path: Path) -> None:
@@ -38,7 +39,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--file", required=True, type=Path)
     value.add_argument("--capability", required=True)
     value.add_argument("--principal", required=True)
-    value.add_argument("--target", required=True)
+    value.add_argument(
+        "--server",
+        required=True,
+        help="Configured server alias; the approval is persisted against its stable identity",
+    )
     value.add_argument("--resource", required=True)
     value.add_argument(
         "--arguments-json",
@@ -58,8 +63,14 @@ def main() -> int:
     if not isinstance(operation_arguments, dict):
         raise SystemExit("--arguments-json must encode a JSON object")
     if "server" in operation_arguments:
-        raise SystemExit("--arguments-json must omit server; target is bound separately")
+        raise SystemExit("--arguments-json must omit server; target identity is bound separately")
     arguments_digest = normalized_arguments_digest(operation_arguments)
+
+    settings = load_settings()
+    try:
+        target_identity = settings.targets[args.server].stable_identity
+    except KeyError as exc:
+        raise SystemExit(f"unknown configured server: {args.server}") from exc
 
     path = args.file.absolute()
     _initialize(path)
@@ -70,7 +81,7 @@ def main() -> int:
     registry.issue(
         args.capability,
         args.principal,
-        args.target,
+        target_identity,
         args.resource,
         arguments_digest,
         ttl_seconds=args.ttl_seconds,
@@ -80,7 +91,8 @@ def main() -> int:
             {
                 "capability": args.capability,
                 "principal": args.principal,
-                "target": args.target,
+                "server": args.server,
+                "target_identity": target_identity,
                 "resource": args.resource,
                 "arguments_digest": arguments_digest,
                 "ttl_seconds": args.ttl_seconds,

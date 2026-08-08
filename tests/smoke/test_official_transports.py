@@ -14,8 +14,9 @@ from mcp import ClientSession, StdioServerParameters  # noqa: E402
 from mcp.client.stdio import stdio_client  # noqa: E402
 from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 
-from mikrus_mcp.approvals import ApprovalRegistry
+from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.config import Settings, TargetConfig
+from mikrus_mcp.http import bearer_principal
 from mikrus_mcp.server import build_http_app, build_server
 from mikrus_mcp.targets import TargetRegistry
 
@@ -23,6 +24,7 @@ from mikrus_mcp.targets import TargetRegistry
 class MockClient:
     def __init__(self, config: TargetConfig) -> None:
         self.stable_identity = config.stable_identity
+        self.writes: list[tuple[str, str]] = []
 
     async def open(self) -> None:
         return None
@@ -33,13 +35,17 @@ class MockClient:
     async def get_server_info(self) -> dict[str, object]:
         return {"server_id": "srv", "source": "http-mock"}
 
+    async def write_file(self, path: str, content: str) -> dict[str, object]:
+        self.writes.append((path, content))
+        return {"output": "WRITE_OK"}
+
 
 @pytest.mark.asyncio
 async def test_official_client_over_stdio_subprocess() -> None:
     environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
     environment.update(
         {
-            "PYTHONPATH": str(__import__("pathlib").Path(__file__).parents[2] / "src"),
             "MIKRUS_API_KEY": "test-key",
             "MIKRUS_SERVER_NAME": "srv",
             "MCP_TRANSPORT": "stdio",
@@ -83,14 +89,26 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
         host="127.0.0.1",
         port=port,
         http_bearer_token=token,
+        principal="process-principal-must-not-authorize-http",
+        write_enabled=True,
         allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
     )
+    mock = MockClient(target)
     registry = TargetRegistry(
         {"srv": target},
-        factory=lambda value: MockClient(value),  # type: ignore[arg-type]
+        factory=lambda value: mock,  # type: ignore[arg-type]
+    )
+    approvals = ApprovalRegistry()
+    write_arguments = {"path": "/tmp/a", "content": "x"}
+    approvals.issue(
+        "write_file",
+        bearer_principal(token),
+        target.stable_identity,
+        "/tmp/a",
+        normalized_arguments_digest(write_arguments),
     )
     app = build_http_app(
-        build_server(settings, registry=registry, approvals=ApprovalRegistry()), settings
+        build_server(settings, registry=registry, approvals=approvals), settings
     )
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
@@ -108,13 +126,16 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
             ) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    result = await session.call_tool("get_server_info", arguments={})
-                    assert result.is_error is not True
-                    assert result.structured_content is not None
-                    structured: dict[str, Any] = result.structured_content.get(
-                        "result", result.structured_content
+                    read_result = await session.call_tool("get_server_info", arguments={})
+                    assert read_result.is_error is not True
+                    assert read_result.structured_content is not None
+                    structured: dict[str, Any] = read_result.structured_content.get(
+                        "result", read_result.structured_content
                     )
                     assert structured["data"]["source"] == "http-mock"
+                    write_result = await session.call_tool("write_file", arguments=write_arguments)
+                    assert write_result.is_error is not True
+                    assert mock.writes == [("/tmp/a", "x")]
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, timeout=10)

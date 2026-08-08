@@ -130,7 +130,7 @@ async def test_write_requires_operator_gate_and_one_time_approval(target: Target
     kernel = InvocationKernel(enabled, registry=registry, approvals=approvals)
     no_token = await kernel.invoke("write_file", {"path": "/tmp/a", "content": "x"}, caller)
     assert no_token["error"]["code"] == "AUTHORIZATION_FAILED"
-    approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
+    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
     approved = await kernel.invoke(
         "write_file",
         {"path": "/tmp/a", "content": "x"},
@@ -187,7 +187,7 @@ async def test_validation_happens_before_approval_consumption(target: TargetConf
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True)
     kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
-    approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
+    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
     caller = CallerContext("principal", settings.allowed_scopes)
 
     invalid = await kernel.invoke("write_file", {"path": "/etc/passwd", "content": "x"}, caller)
@@ -244,7 +244,7 @@ async def test_manifest_controls_read_retry_but_mutation_is_single_attempt(
     assert read["success"] is True
     assert client.read_attempts == 2
 
-    approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
+    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
     write = await kernel.invoke(
         "write_file",
         {"path": "/tmp/a", "content": "x"},
@@ -264,7 +264,7 @@ async def test_approval_is_not_consumed_while_waiting_for_lock(
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True, default_deadline_ms=100)
     kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
-    approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
+    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
     arguments = {"path": "/tmp/a", "content": "x"}
     lock = kernel._lock_for(MANIFESTS["write_file"], "prod", arguments)
     assert lock is not None
@@ -278,7 +278,7 @@ async def test_approval_is_not_consumed_while_waiting_for_lock(
     finally:
         lock.release()
     assert result["error"]["code"] == "TIMEOUT"
-    assert approvals.has_matching("write_file", "principal", "prod", "/tmp/a")
+    assert approvals.has_matching("write_file", "principal", target.stable_identity, "/tmp/a")
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,7 @@ async def test_approval_is_not_consumed_when_target_connection_fails(
     )
     approvals = ApprovalRegistry()
     settings = make_settings(target, write_enabled=True)
-    approvals.issue_for_test("write_file", "principal", "prod", "/tmp/a")
+    approvals.issue_for_test("write_file", "principal", target.stable_identity, "/tmp/a")
     result = await InvocationKernel(
         settings,
         registry=registry,
@@ -327,4 +327,4 @@ async def test_approval_is_not_consumed_when_target_connection_fails(
         CallerContext("principal", settings.allowed_scopes),
     )
     assert result["error"]["code"] == "UNAVAILABLE"
-    assert approvals.has_matching("write_file", "principal", "prod", "/tmp/a")
+    assert approvals.has_matching("write_file", "principal", target.stable_identity, "/tmp/a")
