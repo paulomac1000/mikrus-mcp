@@ -58,9 +58,7 @@ async def test_kernel_rejects_alias_bound_approval_and_accepts_stable_identity()
     assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
     assert not client.calls
 
-    approvals.issue(
-        "write_file", "principal", target.stable_identity, "/tmp/a", digest
-    )
+    approvals.issue("write_file", "principal", target.stable_identity, "/tmp/a", digest)
     allowed = await InvocationKernel(settings, registry=registry, approvals=approvals).invoke(
         "write_file", arguments, CallerContext("principal", settings.allowed_scopes)
     )

@@ -209,6 +209,4 @@ def test_operator_cli_issues_reloadable_argument_bound_approval(tmp_path: Path) 
     assert "approval_id" not in issued
     assert path.stat().st_mode & 0o077 == 0
     registry = ApprovalRegistry.from_file(path)
-    assert registry.consume_matching(
-        "write_file", "operator", "mikrus:srv-id", "/tmp/a", approved
-    )
+    assert registry.consume_matching("write_file", "operator", "mikrus:srv-id", "/tmp/a", approved)

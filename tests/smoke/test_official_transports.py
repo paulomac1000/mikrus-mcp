@@ -107,9 +107,7 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
         "/tmp/a",
         normalized_arguments_digest(write_arguments),
     )
-    app = build_http_app(
-        build_server(settings, registry=registry, approvals=approvals), settings
-    )
+    app = build_http_app(build_server(settings, registry=registry, approvals=approvals), settings)
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on")
     )

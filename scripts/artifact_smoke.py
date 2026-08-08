@@ -18,7 +18,7 @@ RUNTIME_REQUIREMENTS = (
     "uvicorn==0.51.0",
 )
 
-TRANSPORT_SMOKE_CODE = r'''
+TRANSPORT_SMOKE_CODE = r"""
 import asyncio
 import os
 import socket
@@ -144,7 +144,7 @@ async def main():
 
 
 asyncio.run(main())
-'''
+"""
 
 
 def parser() -> argparse.ArgumentParser:
