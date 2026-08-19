@@ -26,7 +26,7 @@ def _remote_read_prefix(path: str) -> str:
     )
 
 
-_REMOTE_ATOMIC_WRITE = r'''
+_REMOTE_ATOMIC_WRITE = r"""
 import base64
 import os
 import stat
@@ -93,7 +93,7 @@ finally:
     for descriptor in reversed(opened):
         os.close(descriptor)
 print("WRITE_OK")
-'''.strip()
+""".strip()
 
 
 def _remote_atomic_write_command(path: str, content: str) -> str:
