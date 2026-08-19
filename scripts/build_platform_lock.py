@@ -28,8 +28,8 @@ def render_lock(wheelhouse: Path, *, python_version: str, source: str) -> str:
         "# Exactly one verified wheel artifact is allowed per distribution.",
         "",
     ]
-    for canonical in sorted(records):
-        display_name, display_version, digest = records[canonical]
+    for canonical_key in sorted(records):
+        display_name, display_version, digest = records[canonical_key]
         lines.append(f"{display_name}=={display_version} --hash=sha256:{digest}")
     return "\n".join(lines) + "\n"
 
