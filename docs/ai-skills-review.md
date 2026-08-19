@@ -1,58 +1,84 @@
 ---
-description: Review findings and proposed amendments for the ai-skills 1.2.0 standards and templates
+afds_schema_version: 2
+description: Review findings and remaining amendments for the pinned post-1.2.0 ai-skills hardening authority
 doc_id: reference.ai-skills-upstream-review
 type: reference
 status: evolving
 rigor: informative
 owners: [repository-maintainers]
-verification: Compare each finding with the immutable ai-skills 1.2.0 standard, generator, template, contract, and current MCP protocol/SDK release before upstreaming.
 ---
 # AI Skills upstream review
 
-## Findings
+## Current authority
 
-### Exact Python artifact guidance conflicts with generated container paths
+This repository currently evaluates the post-1.2.0 hardening authority pinned in
+`ai-skills.lock.yaml`. Earlier findings about canonical skill locks, protocol revisions,
+atomic child controls, provider-neutral evidence records, AFDS v2, and multi-architecture
+promotion are now represented by executable contracts or references in that authority.
+They are no longer treated here as missing features merely because they were absent from
+the published 1.2.0 baseline.
 
-The MCP standard requires building one wheel, testing that exact wheel, copying the same wheel into the image, verifying its digest, and never rebuilding the package from source inside the image. The Python generator and CI templates should be checked mechanically to ensure every generated Dockerfile and hosted workflow follows that rule. A generator regression should fail whenever `pip install .`, editable installation, or source rebuild appears in an artifact acceptance path.
+The authority pin does not itself mean that the upstream branch is provider-green or
+independently accepted. Consumer CI validates the exact pinned source contract; upstream
+provider evidence and adopter acceptance remain separate claims.
 
-### Generated acceptance should distinguish source tests from installed-wheel tests
+## Resolved review findings
 
-Editable or source-tree test execution is useful during development but cannot establish `mcp.artifact.exact`. The standard would be clearer if the generated baseline required separate named jobs for source quality, exact wheel installation, official-client wheel smoke, image-from-wheel, and pushed-digest smoke. Each evidence claim should identify which artifact it proves.
+### Read idempotency and retry semantics
 
-### Adoption controls are too coarse for independent failures
+The earlier capability schema forced every read to declare both `idempotent: false` and
+`retryable: false`. The current pinned authority now treats reads as naturally
+idempotent while leaving retry opt-in. It also avoids requiring a mutation-style
+idempotency key solely because an idempotent read is retryable. `mikrus-mcp` therefore
+keeps explicit transient/rate-limit retry conditions for reads without degrading the
+read contract.
 
-The current MCP catalog maps large normative sections to single rule IDs. One `mcp.response.structured` result can hide independent failures in protocol-native errors, output bounds, provenance, confidentiality minimization, partial state, or schemas. Preserve stable parent rules but add atomic child controls and require evidence for each applicable child.
+### Malformed approval binding validation
 
-### Consumer repositories need a canonical skill lock
+Both the canonical capability validator and generated Python validator previously called
+`set()` directly on arbitrary list values. Non-hashable entries could therefore escape as
+a `TypeError` instead of becoming a controlled validation finding. The pinned authority
+validates binding element types before set conversion.
 
-README guidance says consumers should pin both repository revision and skill version, but there is no small mandatory consumer-side lock contract. Add an `ai-skills.lock.yaml` schema containing repository identity, full commit SHA, selected skill versions, protocol revisions, and verifier identity. Validators should reject mutable branch URLs, stale vendored validators, and version drift.
+### Reusable workflow inherited permissions
 
-### AFDS needs an explicit legacy-schema migration path
+The workflow auditor now evaluates effective write permission for local reusable workflow
+calls rather than checking only job-local `permissions`. A caller cannot hide inherited
+workflow-level write authority from the recursive-audit guard.
 
-Older adopters can contain `type: ref`, `rigor_tier`, `ttl_days`, `last_verified`, broad exemptions, and a historical validator while appearing AFDS-enabled. Add a configuration schema version, a migration diagnostic for legacy fields, and an adoption test proving that the canonical validator—not a stale local copy—owns approval. Clarify which root files may be exempt from structure and which metadata rules still apply.
+### Python generator destination symlinks
 
-### Protocol revision is a missing compatibility axis
+The generator now checks the lexical destination path components for symlink/reparse
+objects before resolving the path. Resolution can no longer erase the evidence that an
+untrusted destination parent was reached through a link.
 
-SDK package version and MCP protocol revision are related but independent. The 2026-07-28 protocol revision introduces materially different negotiation and request metadata. Add declared `protocol_revisions` to manifests, compatibility matrices, generator tests, and adoption evidence. Require explicit results for the current production revision and each supported compatibility revision.
+## Remaining upstream defect
 
-### Provider-backed evidence should expose an adapter contract
+### Structural request-changes assessment still requires reviewer evidence
 
-The current acceptance implementation is intentionally specific to public GitHub.com and GitHub Actions. Publish a provider adapter interface that defines trusted API origins, run/job/artifact identity, immutable source binding, result digests, review identity, and retention. Other providers can then remain unsupported without making the domain model appear GitHub-specific.
+The current adoption-assessment schema requires `decision.reviewer` for every decision,
+including a pre-review `request-changes` structural assessment. The validator likewise
+validates reviewer identity unconditionally. This creates the wrong evidence incentive:
+an adopter which has found blocking gaps but has not yet received a provider review must
+either omit the machine-readable assessment or fabricate a review ID and reviewer
+identity.
 
-### Multi-architecture promotion is underspecified
+The contract should require `decision.reviewer` only when a reviewer-backed decision is
+actually claimed, and must require it for `approve`. A reviewer object supplied for
+`request-changes` or `rejected` should still be validated normally. The default template
+for structural `request-changes` should omit reviewer coordinates rather than contain
+placeholder provider evidence.
 
-“Build once and promote the same image” needs a precise OCI playbook for multiple platforms. Define per-platform OCI layout/digest production, native or emulated smoke requirements, manifest-list assembly without rebuild, final index digest attestation, and verification that every platform digest in the index was tested.
+This is an upstream contract correction, not a reason for `mikrus-mcp` to fabricate
+acceptance evidence. Until the authority includes that correction, the adopting
+repository can record its structural state in prose and tests but must not label a
+reviewer-less document as schema-valid adoption acceptance.
 
-### Stable skill maturity and adopter approval need clearer wording
+## Consumer-side requirements retained here
 
-A stable skill means the standard and its own compatibility evidence are stable; it does not mean an adopting repository is compliant. Templates, README text, and adoption reports should use distinct terms for skill maturity, structural conformance, diagnostic local evidence, provider-backed acceptance, and independent production approval.
-
-## Proposed upstream changes
-
-1. Add atomic child controls under each broad adoption rule.
-2. Add `ai-skills.lock.yaml` and its validator.
-3. Add protocol revision to every MCP compatibility declaration.
-4. Add generator tests that reject source rebuilds in exact-artifact lanes.
-5. Add an AFDS legacy migration command and schema-versioned configuration.
-6. Publish a provider adapter interface and a multi-architecture OCI promotion reference workflow.
-7. Tighten terminology so local green tests cannot be reported as independent approval.
+Even after the upstream contract repairs, this repository must independently prove its
+own implementation. In particular, canonical manifests do not establish correct runtime
+activation; schema-valid identity fields do not prove real SSH host-key behavior; a
+filesystem primitive still needs race evidence on deployed filesystems; hashed lock
+contracts still require committed graphs for every declared lane; and provider-green CI
+does not substitute for independent production review.
