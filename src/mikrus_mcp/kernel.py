@@ -166,9 +166,10 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             )
             if not 100 <= requested_deadline <= self.settings.server_max_deadline_ms:
                 raise AppError(ErrorCode.VALIDATION, "request deadline is outside server policy")
-            timeout_seconds = min(
-                manifest.timeout_ms, requested_deadline, self.settings.server_max_deadline_ms
-            ) / 1000
+            timeout_seconds = (
+                min(manifest.timeout_ms, requested_deadline, self.settings.server_max_deadline_ms)
+                / 1000
+            )
 
             async def execute_once_locked() -> Any:
                 nonlocal mutation_execution_started
