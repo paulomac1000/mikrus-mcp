@@ -147,9 +147,9 @@ jobs:
           python scripts/core_gate.py
 
   lock-evidence:
-    name: Hashed locks (linux-x64-py${{ matrix.python }})
+    name: Platform locks (linux-x64-py${{ matrix.python }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
-      - name: Compile exact hashed runtime and development graphs from clean outputs
+      - name: Compile, download and bind exact platform artifacts
         shell: bash
         env:
           PYTHON_VERSION: ${{ matrix.python }}
@@ -171,22 +171,40 @@ jobs:
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
           lock_id="linux-x64-py${PYTHON_VERSION//./}"
-          mkdir lock-output
+          mkdir -p compiled lock-output runtime-wheelhouse dev-wheelhouse
           python -m piptools compile \
             --allow-unsafe \
             --generate-hashes \
             --strip-extras \
-            --output-file="lock-output/requirements-runtime-$lock_id.lock" \
+            --output-file="compiled/runtime.lock" \
             requirements-runtime.in
           python -m piptools compile \
             --allow-unsafe \
             --generate-hashes \
             --strip-extras \
-            --output-file="lock-output/requirements-dev-$lock_id.lock" \
+            --output-file="compiled/dev.lock" \
             requirements-dev.in
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest runtime-wheelhouse -r compiled/runtime.lock
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest dev-wheelhouse -r compiled/dev.lock
+          python scripts/build_platform_lock.py \
+            --wheelhouse runtime-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-runtime.in \
+            --output "lock-output/requirements-runtime-$lock_id.lock"
+          python scripts/build_platform_lock.py \
+            --wheelhouse dev-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-dev.in \
+            --output "lock-output/requirements-dev-$lock_id.lock"
+          python -m pip install --dry-run --only-binary=:all: --require-hashes \
+            -r "lock-output/requirements-runtime-$lock_id.lock"
+          python -m pip install --dry-run --only-binary=:all: --require-hashes \
+            -r "lock-output/requirements-dev-$lock_id.lock"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
+          name: platform-locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: lock-output/
           if-no-files-found: error
           retention-days: 7
