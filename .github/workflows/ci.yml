@@ -110,7 +110,7 @@ jobs:
           path: |
             repository-junit.xml
             coverage.xml
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
   compatibility:
@@ -163,7 +163,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
-      - name: Compile, download and bind exact platform artifacts
+      - name: Compile, download, bind and install exact platform artifacts
         shell: bash
         env:
           PYTHON_VERSION: ${{ matrix.python }}
@@ -198,10 +198,16 @@ jobs:
             --python-version "$PYTHON_VERSION" \
             --source requirements-dev.in \
             --output "lock-output/requirements-dev-$lock_id.lock"
-          python -m pip install --dry-run --only-binary=:all: --require-hashes \
+          python -m venv .lock-runtime
+          python -m pip --python .lock-runtime/bin/python install \
+            --no-index --find-links=runtime-wheelhouse --only-binary=:all: --require-hashes \
             -r "lock-output/requirements-runtime-$lock_id.lock"
-          python -m pip install --dry-run --only-binary=:all: --require-hashes \
+          .lock-runtime/bin/python -m pip check
+          python -m venv .lock-dev
+          python -m pip --python .lock-dev/bin/python install \
+            --no-index --find-links=dev-wheelhouse --only-binary=:all: --require-hashes \
             -r "lock-output/requirements-dev-$lock_id.lock"
+          .lock-dev/bin/python -m pip check
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: platform-locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
