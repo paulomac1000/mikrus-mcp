@@ -1,105 +1,113 @@
 ---
-description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills release
+afds_schema_version: 2
+description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
 status: evolving
 rigor: operational
 owners: [repository-maintainers]
-verification: Compare this document with `ai-skills.lock.yaml`, run `scripts/ci.py`, and require provider-backed evidence on the exact final revision before approval.
+verification:
+  kind: command
+  value: Compare this document with `ai-skills.lock.yaml`, run `scripts/ci.py`, and require provider-backed evidence on the exact final revision before approval.
 ---
 # Compliance status
 
 ## Assessment boundary
 
-This repository pins AI Skills `1.2.0` at revision
-`661ff01a5e70d58d6c94a12545b24647e52063ed`. The implementation targets the
-`mcp-server`, single-repository application profile. This document is a diagnostic
-self-assessment, not independent provider-backed approval.
+This repository pins AI Skills `1.2.0` to immutable revision
+`2b04b30f4d3883437dd1738ceaaae61567b0c564`. The revision is a post-1.2.0 hardening
+candidate and is used as the current contract authority for this migration. Its exact
+head does not yet have complete provider-green upstream evidence, so this repository
+does not infer upstream release acceptance from the pin.
 
-A newer hardening branch is being evaluated separately. It must not replace the pinned
-authority until its exact revision is provider-green and the required independent
-provider review exists. Migration evidence must use real provider identifiers; it must
-never synthesize a reviewer or review ID.
-The newer candidate schema currently requires a concrete reviewer object even in `structural-attestation` mode. Because this PR has no provider review submission, a schema-valid `migration-assessment.yaml` cannot yet be committed without inventing review evidence; this is tracked as a candidate-contract limitation rather than bypassed locally.
+This document is a diagnostic self-assessment. Provider CI on the exact adopting
+revision and independent review are separate evidence. No reviewer, review ID, provider
+run, artifact digest, or real-system result may be invented to make an assessment pass.
+
+## Implemented contract changes
+
+The repository now provides:
+
+- immutable per-skill AI Skills lock entries with version, full revision, and normative entrypoint;
+- canonical language-neutral capability projections with operation kind, risk, lifecycle state, retry/idempotency semantics, approval policy, concurrency, response bound, and protocol revisions;
+- separate supported and active catalogs, including explicit reasons for inactive capabilities;
+- verified SSH peer identity based on the SHA-256 host-key fingerprint for mutation approval binding;
+- prohibition of writes over deliberately unverified SSH;
+- no-follow directory-descriptor remote writes shared by SSH and the mikr.us `/exec` backend;
+- independent capability, request, and server deadline bounds instead of the previous global 10-second truncation;
+- provenance metadata and retry guidance preserved across the public MCP boundary;
+- response limits applied to the serialized application envelope;
+- startup/liveness/readiness/dependency/capability-degradation health dimensions;
+- exact application-wheel SHA verification inside the container build;
+- a hashed Linux x64 CPython 3.12 runtime lock and provider jobs which generate candidate hashed runtime/development locks for Python 3.12, 3.13, and 3.14;
+- AFDS v2 frontmatter for every governed document.
 
 ## Credential-free acceptance contract
 
-The repository gates verify:
+The repository gates cover:
 
-- transport-independent domain adapters and one invocation kernel;
+- transport-independent backend adapters and one invocation kernel;
 - immutable configuration loaded before dependency construction;
 - complete supported and active manifest coverage;
-- capability and exact-target authorization before network resolution;
+- capability and exact-target authorization before protected target operations;
 - no default-target fallback;
-- operator write gates, no public approval-token parameter, and one-time approvals
-  bound to the principal, capability, stable target identity, resource, and normalized
-  operation arguments;
-- secure approval-file replacement reload, lock-before-consume, and
-  target-connect-before-consume;
-- mutation retry veto, ambiguous-outcome classification, and manifest-driven bounded read retry limited to explicit transient failures with `Retry-After`;
-- field-aware response redaction and bounded responses;
-- SSH host-verification configuration and bounded process output;
+- operator write gates and one-time approvals bound to principal, capability, resolved target identity, resource, and normalized operation arguments;
+- mutation retry veto, ambiguous-outcome classification, and bounded read retry limited to explicit transient failures;
+- field-aware response redaction, provenance, retry guidance, and final-envelope size bounds;
+- SSH host verification, peer-fingerprint identity, and bounded process output;
 - loopback Host, Origin, bearer authentication, and body controls;
 - official MCP client tool listing, schema inspection, representative fake-upstream read, missing-target failure, and approval-boundary rejection over real stdio and Streamable HTTP subprocesses from the installed exact wheel;
 - cancellation propagation and deterministic target cleanup;
 - exact-wheel installation and official-client smoke over every advertised transport;
-- container build from the exact wheelhouse, official-client MCP invocation, and immutable
-  release-bundle export;
-- release-candidate ancestry validation and quarantine-to-production digest promotion
-  without loading or running candidate code in the privileged publisher;
+- container build from the verified wheelhouse and application-wheel digest;
+- release-candidate ancestry validation and quarantine-to-production digest promotion without executing candidate code in the privileged publisher;
 - lint, formatting, strict typing, security scan, dependency audit, and coverage gates.
 
-Test counts, coverage percentages, artifact digests, and provider conclusions are not
-stored in this document. They are per-revision evidence and are valid only when the
-checked-out commit SHA equals the pull-request or release candidate SHA.
+Test counts, coverage percentages, artifact digests, and provider conclusions are
+per-revision evidence. They are valid only when the provider run is bound to the exact
+pull-request or release candidate SHA.
 
 ## Rule summary
 
 | Rule family | Current state | Evidence or gap |
 | --- | --- | --- |
-| MCP architecture boundaries | implemented | `config.py`, `manifests.py`, `kernel.py`, `clients/`, `server.py` and unit tests |
-| Identity and target binding | implemented for supported local transports | request-scoped HTTP principal, stable target-identity approvals, authorization-before-connect, and no fallback are covered; real SSH host-key identity evidence remains open |
-| Manifest completeness | implemented locally | startup coverage validation and manifest tests; mapping to the newer canonical AI Skills schema remains migration work |
-| Retry and workflow safety | implemented classification / reconciliation still operational work | adapters perform one request attempt; only explicit transient reads are retryable; mutation timeout/disconnect/qualifying 5xx becomes `AMBIGUOUS_OUTCOME`; real postcondition reconciliation remains deferred |
-| Transport and lifecycle | implemented | stdio and authenticated loopback Streamable HTTP with official-client tests |
-| Deadlines and concurrency | implemented locally | timeout, cancellation, output, rate-limit, and keyed-lock controls |
-| Structured responses | implemented | native structured tool results and protocol tool errors; exact wheel is exercised by the official client |
-| Server-side authorization | single-operator profile | stdio process identity and request-scoped bearer-derived HTTP identity feed hidden approvals bound to normalized arguments and stable target identity; resource-granular multi-tenant authorization remains out of scope |
-| Observability and operations | partial | request metadata and target status exist; SLO, metrics backend, durable audit, and recovery drill absent |
-| Exact artifact | implemented in CI | the installed exact wheel is exercised over real stdio and Streamable HTTP with listing/read/failure/write-boundary checks; the exact container receives a deeper stdio official-client smoke; the reviewed container deployment profile is stdio-only; release promotes the tested quarantined digest without executing candidate code in the privileged publisher |
-| AFDS documentation | migration pending | current pinned validator governs authored docs; AFDS v2 migration waits for a green replacement authority and valid migration assessment |
-| AGENTS.md | implemented structurally | routes, modes, boundaries, commands, and exact revision pin; factual drift remains reviewable |
-| CI/CD | substantially implemented | SHA-pinned actions, digest-pinned base image, audited pip, release ancestry check, source-free digest promotion, and exact-artifact gates; complete hashed dependency locks remain open |
+| MCP architecture boundaries | implemented | `config.py`, `manifests.py`, `kernel.py`, `clients/`, `server.py`, and tests |
+| Identity and target binding | implemented structurally | HTTP request principal, mikr.us identity, SSH verified peer fingerprint, selector authorization, and no fallback; real host-key rotation evidence remains deployment work |
+| Manifest completeness | implemented | canonical projections, supported/active split, inactive reasons, startup registration coverage, and pinned-schema validation in CI |
+| Retry and workflow safety | implemented classification | adapters perform one request attempt; explicit transient reads may retry; mutations never auto-retry; real mutation postcondition reconciliation remains operational evidence |
+| Transport and lifecycle | implemented | stdio and authenticated loopback Streamable HTTP with shared kernel and capability-aware health |
+| Deadlines and concurrency | implemented | capability/request/server deadline separation, cancellation, output bounds, rate limit, and keyed locks |
+| Structured responses | implemented | structured results, MCP tool errors, provenance metadata, retry guidance, and final-envelope size enforcement |
+| Server-side authorization | single-operator profile | hidden approvals bind normalized arguments and resolved target identity; multi-tenant resource policy remains out of scope |
+| Filesystem write boundary | implemented structurally | component no-follow dir-fd traversal and atomic replacement; real filesystem race evidence remains required |
+| Exact artifact | implemented structurally | exact wheel is smoked over advertised transports; image verifies application-wheel SHA and is built from that wheelhouse |
+| AFDS documentation | implemented structurally | governed documents use AFDS schema v2 and the pinned authority validator |
+| CI/CD | migration in progress | SHA-pinned actions, digest-pinned base image, exact-artifact gates, and hashed lock generation; final committed 3.12-3.14 dev/runtime graphs require provider-generated lock artifacts |
 
-## Deferred evidence
+## Deferred external evidence
 
-The following acceptance evidence cannot be produced by mocks or self-review and is
-represented by explicit real-system/provider gaps:
+The following cannot be established by repository mocks or self-review:
 
-- SSH fingerprint enrollment and address-to-identity revalidation on a real target;
+- SSH fingerprint enrollment, rotation, and address-to-identity revalidation on real target classes;
 - one execution and postcondition reconciliation for every real mikr.us mutation;
-- remote filesystem symlink-swap and TOCTOU behavior;
-- exact wheel tests on macOS arm64 and Windows x64;
-- smoke of the published OCI digest on every advertised architecture;
-- complete platform-specific transitive dependency locks with hashes;
-- independent provider review required by the newer migration-assessment contract.
+- remote filesystem symlink-swap behavior on each production filesystem/backend combination;
+- published OCI digest smoke on every advertised platform;
+- independent provider review required for production acceptance;
+- deployment-specific audit sink, metrics/SLO definition, and recovery exercise.
 
-The current release advertises one Linux container platform until a complete
-multi-architecture promotion workflow and runtime evidence are available.
+The current container release profile advertises Linux/amd64 until a complete
+multi-architecture promotion and platform-smoke chain exists.
 
-## Open compliance gaps
+## Acceptance gate
 
-A production approval still requires:
+Production acceptance requires all of:
 
-1. complete platform-specific runtime and development lock graphs with hashes;
-2. provider execution of lint, formatting, typing, security, dependency, wheel,
-   official-client, and container jobs on the exact final SHA;
-3. retained JUnit, wheel digest, image digest, and independent review evidence;
-4. real SSH host-key identity evidence on production target classes;
-5. a deployment-specific audit sink, metrics/SLO definition, and recovery exercise;
-6. completion or an owned expiring waiver for every deferred real-system test;
-7. migration to a provider-green newer AI Skills authority, including its canonical
-   manifest, AFDS v2, atomic claims, and migration-assessment contracts.
+1. committed hashed runtime and development graphs for every declared supported Python lane;
+2. provider execution of quality, compatibility, lock, wheel, official-client, container, and security jobs on the exact final SHA;
+3. retained machine-readable evidence and artifact digests bound to that SHA;
+4. completion or an owned expiring waiver for every applicable real-system control;
+5. a schema-valid adoption assessment which does not fabricate provider or reviewer evidence;
+6. independent review after the final code/evidence revision.
 
-No local result, draft pull request, badge, or generated document should be described
-as final AI Skills adoption approval until these conditions are met.
+No local result, intermediate branch SHA, badge, or self-authored assessment is final AI
+Skills adoption approval.
