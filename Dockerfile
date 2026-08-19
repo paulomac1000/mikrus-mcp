@@ -8,10 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --system --gid 10001 appuser \
     && useradd --system --uid 10001 --gid appuser --home-dir /app --shell /usr/sbin/nologin appuser
 
+ARG APP_WHEEL_SHA256
 COPY wheelhouse/ /wheelhouse/
-RUN python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse mikrus-mcp==2.0.0 \
-    && python -m pip check \
-    && rm -rf /wheelhouse
+RUN set -eu; \
+    test -n "$APP_WHEEL_SHA256"; \
+    wheel="$(find /wheelhouse -maxdepth 1 -name 'mikrus_mcp-2.0.0-*.whl' -print -quit)"; \
+    test -n "$wheel"; \
+    printf '%s  %s\n' "$APP_WHEEL_SHA256" "$wheel" | sha256sum --check -; \
+    python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse "$wheel"; \
+    python -m pip check; \
+    rm -rf /wheelhouse
 
 USER 10001:10001
 STOPSIGNAL SIGINT
