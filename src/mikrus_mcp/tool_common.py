@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict, cast
@@ -16,10 +17,11 @@ from mikrus_mcp.kernel import CallerContext, InvocationKernel
 
 
 class ToolResult(TypedDict):
-    """Protocol-visible successful tool result with a concrete output schema."""
+    """Protocol-visible successful tool result with provenance metadata."""
 
     success: Literal[True]
     data: JsonValue
+    _meta: JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +59,17 @@ def _require_success(result: dict[str, Any]) -> ToolResult:
         return {
             "success": True,
             "data": cast(JsonValue, result.get("data")),
+            "_meta": cast(JsonValue, result.get("_meta") or {}),
         }
     error = result.get("error") or {}
-    code = str(error.get("code", "ERROR"))
-    message = str(error.get("message", "operation failed"))
-    raise ToolError(f"{code}: {message}")
+    payload = {
+        "success": False,
+        "error": error,
+        "_meta": result.get("_meta") or {},
+    }
+    raise ToolError(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
 
 
 async def _invoke(
