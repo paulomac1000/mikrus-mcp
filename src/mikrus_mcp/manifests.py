@@ -234,13 +234,9 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_network_info": _read("get_network_info", "sensitive"),
     "get_process_tree": _read("get_process_tree", "sensitive"),
     "list_docker_containers": _read("list_docker_containers", "sensitive"),
-    "get_docker_logs": _read(
-        "get_docker_logs", "sensitive", resource_argument="container"
-    ),
+    "get_docker_logs": _read("get_docker_logs", "sensitive", resource_argument="container"),
     "get_docker_stats": _read("get_docker_stats"),
-    "get_journal_logs": _read(
-        "get_journal_logs", "sensitive", resource_argument="unit"
-    ),
+    "get_journal_logs": _read("get_journal_logs", "sensitive", resource_argument="unit"),
     "find_system_errors": _read("find_system_errors", "sensitive"),
     "search_journal_logs": _read("search_journal_logs", "sensitive"),
     "list_configured_servers": _read(
