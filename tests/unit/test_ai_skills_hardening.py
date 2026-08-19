@@ -57,9 +57,7 @@ async def test_ssh_identity_binds_verified_host_key(monkeypatch: pytest.MonkeyPa
     config = TargetConfig("prod", "ssh", host="server.example", user="deploy", port=2222)
     client = SshClient(config)
     await client.open()
-    assert client.stable_identity == (
-        "ssh:deploy@server.example:2222#host-key=SHA256:test-peer"
-    )
+    assert client.stable_identity == "ssh:deploy@server.example:2222#host-key=SHA256:test-peer"
     await client.close()
 
 
@@ -125,9 +123,7 @@ def test_atomic_remote_write_rejects_symlink_components(tmp_path: Path) -> None:
         outside.write_text("outside", encoding="utf-8")
         target.unlink()
         target.symlink_to(outside)
-        rejected = _run_remote(
-            _remote_atomic_write_command(str(target), "blocked"), check=False
-        )
+        rejected = _run_remote(_remote_atomic_write_command(str(target), "blocked"), check=False)
         assert rejected.returncode != 0
         assert outside.read_text(encoding="utf-8") == "outside"
 
@@ -209,7 +205,8 @@ async def test_approval_uses_resolved_ssh_identity_not_selector_identity() -> No
     async def invoke(identity: str) -> dict[str, Any]:
         client = _ResolvedMutationClient(target)
         registry = TargetRegistry(
-            {"prod": target}, factory=lambda _: client  # type: ignore[arg-type]
+            {"prod": target},
+            factory=lambda _: client,  # type: ignore[arg-type]
         )
         approvals = ApprovalRegistry()
         approvals.issue_for_test("write_file", "principal", identity, "/tmp/a", digest)
