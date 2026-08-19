@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a platform-exact hash lock from one already resolved wheelhouse."""
+"""Render and verify a platform-exact hash lock from a resolved wheelhouse."""
 
 from __future__ import annotations
 
@@ -34,6 +34,17 @@ def render_lock(wheelhouse: Path, *, python_version: str, source: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def verify_committed_lock(output: Path, rendered: str) -> None:
+    """Fail closed when a committed lock with the output basename has drifted."""
+    committed = Path(output.name)
+    if not committed.exists():
+        return
+    if not committed.is_file() or committed.is_symlink():
+        raise ValueError(f"committed platform lock is not a regular file: {committed}")
+    if committed.read_text(encoding="utf-8") != rendered:
+        raise ValueError(f"committed platform lock differs from provider resolution: {committed}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheelhouse", required=True, type=Path)
@@ -41,14 +52,13 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    args.output.write_text(
-        render_lock(
-            args.wheelhouse,
-            python_version=args.python_version,
-            source=args.source,
-        ),
-        encoding="utf-8",
+    rendered = render_lock(
+        args.wheelhouse,
+        python_version=args.python_version,
+        source=args.source,
     )
+    verify_committed_lock(args.output, rendered)
+    args.output.write_text(rendered, encoding="utf-8")
     return 0
 
 
