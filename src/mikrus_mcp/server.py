@@ -67,7 +67,7 @@ def build_server(
     async def readiness() -> str:
         return json.dumps(
             {
-                "ready": True,
+                **kernel.health(),
                 "transport": settings.transport,
                 "configured_targets": len(settings.targets),
                 "active_capabilities": len(kernel.active_names),
