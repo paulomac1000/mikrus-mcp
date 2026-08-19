@@ -6,6 +6,9 @@ type: reference
 status: evolving
 rigor: informative
 owners: [repository-maintainers]
+verification:
+  kind: review
+  value: Compare each finding with the exact pinned ai-skills contract revision and its regression tests before treating the finding as resolved.
 ---
 # AI Skills upstream review
 
