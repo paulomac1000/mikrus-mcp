@@ -19,7 +19,16 @@ GOVERNED = [
     ROOT / "docs/compliance-status.md",
     ROOT / "docs/ai-skills-review.md",
 ]
-REQUIRED = {"description", "doc_id", "type", "status", "rigor", "owners", "verification"}
+REQUIRED = {
+    "afds_schema_version",
+    "description",
+    "doc_id",
+    "type",
+    "status",
+    "rigor",
+    "owners",
+    "verification",
+}
 STALE = (
     "run_sse_async",
     "MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED",
@@ -70,6 +79,13 @@ def main() -> int:
         missing = sorted(REQUIRED - set(values))
         if missing:
             findings.append(f"{path.relative_to(ROOT)}: missing {', '.join(missing)}")
+        if values.get("afds_schema_version") != 2:
+            findings.append(f"{path.relative_to(ROOT)}: afds_schema_version must equal 2")
+        verification = values.get("verification")
+        if not isinstance(verification, dict) or set(verification) != {"kind", "value"}:
+            findings.append(
+                f"{path.relative_to(ROOT)}: verification must be a typed AFDS v2 mapping"
+            )
         doc_id = values.get("doc_id")
         if not isinstance(doc_id, str) or doc_id in identifiers:
             findings.append(f"{path.relative_to(ROOT)}: invalid or duplicate doc_id")
@@ -94,7 +110,7 @@ def main() -> int:
     if findings:
         print("\n".join(findings), file=sys.stderr)
         return 1
-    print(f"Validated {len(GOVERNED)} governed documents and repository contracts")
+    print(f"Validated {len(GOVERNED)} governed AFDS v2 documents and repository contracts")
     return 0
 
 
