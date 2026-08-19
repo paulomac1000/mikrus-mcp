@@ -1,9 +1,20 @@
 schema_version: 1
 repository: paulomac1000/ai-skills
-revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
-release: 1.2.0
+revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
 skills:
-  afds-doc-writer: 1.2.0
-  agents-md-architect: 1.2.0
-  ci-cd-architect: 1.2.0
-  mcp-server-architect: 1.2.0
+  afds-doc-writer:
+    version: 1.2.0
+    revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
+    normative_entrypoint: skills/afds-doc-writer/STANDARD.md
+  agents-md-architect:
+    version: 1.2.0
+    revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
+    normative_entrypoint: skills/agents-md-architect/STANDARD.md
+  ci-cd-architect:
+    version: 1.2.0
+    revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
+    normative_entrypoint: skills/ci-cd-architect/STANDARD.md
+  mcp-server-architect:
+    version: 1.2.0
+    revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
+    normative_entrypoint: skills/mcp-server-architect/STANDARD.md
