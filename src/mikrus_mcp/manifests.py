@@ -133,7 +133,7 @@ def _read(
     name: str,
     confidentiality: Confidentiality = "internal",
     *,
-    timeout_ms: int = 10_000,
+    timeout_ms: int = 30_000,
     target_required: bool = True,
     resource_argument: str | None = None,
 ) -> CapabilityManifest:
