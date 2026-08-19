@@ -117,10 +117,12 @@ async def test_write_requires_operator_gate_and_one_time_approval(target: Target
     approvals = ApprovalRegistry()
     disabled = make_settings(target, write_enabled=False)
     caller = CallerContext("principal", disabled.allowed_scopes)
-    denied = await InvocationKernel(disabled, registry=registry, approvals=approvals).invoke(
+    disabled_kernel = InvocationKernel(disabled, registry=registry, approvals=approvals)
+    assert "write_file" not in disabled_kernel.active_names
+    denied = await disabled_kernel.invoke(
         "write_file", {"path": "/tmp/a", "content": "x"}, caller
     )
-    assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert denied["error"]["code"] == "NOT_FOUND"
     assert not client.calls
 
     enabled = make_settings(target, write_enabled=True)
@@ -311,7 +313,10 @@ async def test_approval_is_not_consumed_while_waiting_for_lock(
 
 @pytest.mark.asyncio
 async def test_mikrus_target_type_is_rejected_before_connection() -> None:
-    target = TargetConfig("ssh", "ssh", host="server.example")
+    mikrus = TargetConfig(
+        "prod", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+    )
+    ssh = TargetConfig("ssh", "ssh", host="server.example")
     factory_calls = 0
 
     def factory(config: TargetConfig) -> MockMikrusClient:
@@ -320,14 +325,14 @@ async def test_mikrus_target_type_is_rejected_before_connection() -> None:
         return MockMikrusClient(config)
 
     settings = Settings(
-        {"ssh": target},
-        "ssh",
+        {"prod": mikrus, "ssh": ssh},
+        "prod",
         allowed_scopes=frozenset({"tool:*", "target:*"}),
     )
-    registry = TargetRegistry({"ssh": target}, factory=factory)  # type: ignore[arg-type]
+    registry = TargetRegistry(dict(settings.targets), factory=factory)  # type: ignore[arg-type]
     result = await InvocationKernel(settings, registry=registry).invoke(
         "get_server_info",
-        {},
+        {"server": "ssh"},
         CallerContext("principal", settings.allowed_scopes),
     )
     assert result["error"]["code"] == "VALIDATION_FAILED"
