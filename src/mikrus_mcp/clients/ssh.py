@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import shlex
 from typing import Any
 
-from mikrus_mcp.clients.common import _remote_read_prefix, _remote_write_prefix
+from mikrus_mcp.clients.common import _remote_atomic_write_command, _remote_read_prefix
 from mikrus_mcp.clients.mikrus import MikrusClient
 from mikrus_mcp.config import TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
@@ -50,8 +49,10 @@ class SshClient:
         return self._connection is not None and not self._connection.is_closed()
 
     async def open(self) -> None:
-        if self._connection is not None:
+        if self._connection is not None and not self._connection.is_closed():
             return
+        if self._connection is not None:
+            self._connection = None
         import asyncssh
 
         options: dict[str, Any] = {
@@ -73,10 +74,33 @@ class SshClient:
                 options["known_hosts"] = asyncssh.read_known_hosts(
                     str(self.config.known_hosts_file)
                 )
-            # Omission intentionally uses AsyncSSH's default known_hosts policy.
         else:
             options["known_hosts"] = None
-        self._connection = await asyncssh.connect(**options)
+        connection = await asyncssh.connect(**options)
+        try:
+            if self.config.verify_host_key:
+                host_key = connection.get_server_host_key()
+                if host_key is None:
+                    raise AppError(
+                        ErrorCode.AUTHORIZATION,
+                        "SSH server did not expose the verified host key",
+                    )
+                fingerprint = host_key.get_fingerprint("sha256")
+                if not isinstance(fingerprint, str) or not fingerprint.startswith("SHA256:"):
+                    raise AppError(
+                        ErrorCode.AUTHORIZATION,
+                        "SSH server host-key fingerprint is unavailable",
+                    )
+                self.stable_identity = f"{self.config.stable_identity}#host-key={fingerprint}"
+            else:
+                self.stable_identity = f"{self.config.stable_identity}#host-key=UNVERIFIED"
+        except Exception:
+            connection.close()
+            wait_closed = getattr(connection, "wait_closed", None)
+            if wait_closed is not None:
+                await wait_closed()
+            raise
+        self._connection = connection
 
     async def close(self) -> None:
         if self._connection is not None:
@@ -142,7 +166,6 @@ class SshClient:
     async def _run_sudo(self, command: str, *, timeout: float | None = None) -> dict[str, Any]:
         if not self.config.sudo_password:
             return await self._run(command, timeout=timeout)
-        # The password is written to stdin, never interpolated into the process command.
         if self._connection is None:
             raise AppError(ErrorCode.UNAVAILABLE, "SSH client is not open")
         process = await self._connection.create_process(
@@ -151,9 +174,6 @@ class SshClient:
         process.stdin.write((self.config.sudo_password + "\n").encode("utf-8"))
         await process.stdin.drain()
         process.stdin.write_eof()
-        # Reuse bounded stream collection through a temporary command-compatible wrapper.
-        # AsyncSSH does not expose a way to inject an existing process into run(), so this
-        # path performs the same bounded collection inline.
         total = 0
         lock = asyncio.Lock()
 
@@ -199,18 +219,7 @@ class SshClient:
         )
 
     async def write_file(self, path: str, content: str) -> Any:
-        validate_content_size(content)
-        encoded = base64.b64encode(content.encode()).decode()
-        command = (
-            "set -eu; "
-            + _remote_write_prefix(path)
-            + "umask 077; "
-            + 'tmp=$(mktemp --tmpdir="$resolved_parent" ".${leaf}.mcp.XXXXXX"); '
-            + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-            + f'printf %s {shlex.quote(encoded)} | base64 -d > "$tmp"; '
-            + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
-            + "trap - EXIT HUP INT TERM; echo WRITE_OK"
-        )
+        command = _remote_atomic_write_command(path, content)
         return await self._run(command, timeout=EXEC_HTTP_TIMEOUT, mutation=True)
 
     async def get_service_status(self, name: str) -> Any:
