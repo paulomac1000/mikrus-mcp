@@ -29,8 +29,8 @@ def render_lock(wheelhouse: Path, *, python_version: str, source: str) -> str:
         "",
     ]
     for canonical in sorted(records):
-        name, version, digest = records[canonical]
-        lines.append(f"{name}=={version} --hash=sha256:{digest}")
+        display_name, display_version, digest = records[canonical]
+        lines.append(f"{display_name}=={display_version} --hash=sha256:{digest}")
     return "\n".join(lines) + "\n"
 
 
