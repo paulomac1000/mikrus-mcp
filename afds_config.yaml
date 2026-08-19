@@ -1,5 +1,5 @@
-schema_version: 1
-source_revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+schema_version: 2
+source_revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
 governed_documents:
   - AGENTS.md
   - SECURITY.md
@@ -10,3 +10,4 @@ governed_documents:
 validator:
   repository: paulomac1000/ai-skills
   path: skills/afds-doc-writer/validate.py
+  minimum_document_schema: 2
