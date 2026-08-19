@@ -15,6 +15,7 @@ concurrency:
 
 env:
   PIP_VERSION: "26.1.2"
+  AI_SKILLS_REVISION: "2b04b30f4d3883437dd1738ceaaae61567b0c564"
 
 jobs:
   quality:
@@ -49,9 +50,41 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: paulomac1000/ai-skills
-          ref: 661ff01a5e70d58d6c94a12545b24647e52063ed
+          ref: ${{ env.AI_SKILLS_REVISION }}
           path: .trusted-ai-skills
           persist-credentials: false
+      - name: Validate immutable AI Skills consumer lock
+        run: >-
+          python .trusted-ai-skills/contracts/validate_skills_lock.py
+          ai-skills.lock.yaml --skills-root .trusted-ai-skills
+      - name: Validate canonical capability projections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          from jsonschema import Draft202012Validator
+          from mikrus_mcp.manifests import MANIFESTS
+
+          contracts = Path(".trusted-ai-skills/contracts")
+          sys.path.insert(0, str(contracts))
+          from validate_capability_manifest import _semantic_findings
+
+          schema = json.loads((contracts / "capability-manifest.schema.json").read_text())
+          Draft202012Validator.check_schema(schema)
+          validator = Draft202012Validator(schema)
+          findings = []
+          for name, manifest in sorted(MANIFESTS.items()):
+              projection = manifest.as_dict()
+              for error in validator.iter_errors(projection):
+                  findings.append(f"{name}: {error.message}")
+              findings.extend(f"{name}: {item}" for item in _semantic_findings(projection))
+          if findings:
+              raise SystemExit("\n".join(findings))
+          print(f"validated {len(MANIFESTS)} canonical capability manifests")
+          PY
       - name: Validate governed documentation with pinned AFDS
         shell: bash
         run: |
@@ -112,6 +145,52 @@ jobs:
           python -m pip check
           python scripts/core_gate.py
 
+  lock-evidence:
+    name: Hashed locks (linux-x64-py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile exact hashed runtime and development graphs
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
+          lock_id="linux-x64-py${PYTHON_VERSION//./}"
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="requirements-runtime-$lock_id.lock" \
+            requirements-runtime.in
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="requirements-dev-$lock_id.lock" \
+            requirements-dev.in
+          mkdir lock-output
+          cp "requirements-runtime-$lock_id.lock" "requirements-dev-$lock_id.lock" lock-output/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: lock-output/
+          if-no-files-found: error
+          retention-days: 7
+
   exact-wheel:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -125,10 +204,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-runtime.in
-      - name: Build exact application wheel and dependency wheelhouse
+          cache-dependency-path: requirements-runtime-linux-x64-py312.lock
+      - name: Build exact application wheel and locked dependency wheelhouse
         shell: bash
         run: |
           set -euo pipefail
@@ -136,8 +213,11 @@ jobs:
             "setuptools==83.0.0" "wheel==0.47.0"
           python -m build --wheel --no-isolation
           mkdir -p wheelhouse
-          python -m pip wheel --wheel-dir wheelhouse \
-            "mcp==2.0.0" "httpx==0.28.1" "asyncssh==2.24.0" "uvicorn==0.51.0"
+          python -m pip download \
+            --only-binary=:all: \
+            --require-hashes \
+            --dest wheelhouse \
+            -r requirements-runtime-linux-x64-py312.lock
           cp dist/mikrus_mcp-*.whl wheelhouse/
       - name: Smoke exact wheel through real advertised transports
         shell: bash
@@ -188,11 +268,14 @@ jobs:
           set -euo pipefail
           test "$(cat commit-sha.txt)" = "${{ github.event.pull_request.head.sha || github.sha }}"
           sha256sum --check wheel-digests.txt
-      - name: Build image once from the exact wheelhouse
+      - name: Build image once from the exact verified wheel
         shell: bash
         run: |
           set -euo pipefail
+          app_wheel="$(find wheelhouse -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)"
+          app_sha="$(sha256sum "$app_wheel" | cut -d' ' -f1)"
           docker buildx build --load --platform linux/amd64 \
+            --build-arg "APP_WHEEL_SHA256=$app_sha" \
             --tag "mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}" .
       - name: Smoke MCP invocation and export the exact image
         shell: bash
