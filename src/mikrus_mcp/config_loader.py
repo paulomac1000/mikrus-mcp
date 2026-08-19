@@ -130,7 +130,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         principal=env.get("MCP_PRINCIPAL", principal_default).strip(),
         allowed_scopes=scopes,
         write_enabled=_boolean(env, "MCP_WRITE_ENABLED", False),
-        default_deadline_ms=_integer(env, "MCP_DEFAULT_DEADLINE_MS", 10_000, 100, 120_000),
+        default_deadline_ms=_integer(env, "MCP_DEFAULT_DEADLINE_MS", 120_000, 100, 120_000),
+        server_max_deadline_ms=_integer(
+            env, "MCP_SERVER_MAX_DEADLINE_MS", 120_000, 100, 120_000
+        ),
         max_request_body_bytes=_integer(
             env, "MCP_MAX_REQUEST_BODY_BYTES", 1_048_576, 1_024, 16_777_216
         ),
