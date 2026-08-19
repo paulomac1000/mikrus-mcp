@@ -6,8 +6,9 @@ import asyncio
 import base64
 import shlex
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 
+from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.validators import validate_content_size, validate_path
 
 _CACHEABLE_ENDPOINTS = frozenset({"/info", "/stats", "/serwery", "/porty"})
@@ -112,20 +113,18 @@ def _remote_atomic_write_command(path: str, content: str) -> str:
 
 
 class RateLimiter:
-    """Serialize reservations against a credential-scoped requests-per-minute quota."""
+    """Reserve credential-scoped request slots without consuming operation deadlines."""
 
     def __init__(
         self,
         requests_per_minute: int = 5,
         *,
         clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if requests_per_minute <= 0:
             raise ValueError("requests_per_minute must be positive")
         self._interval = 60.0 / requests_per_minute
         self._clock = clock
-        self._sleep = sleep
         self._next_slot = 0.0
         self._lock = asyncio.Lock()
 
@@ -133,7 +132,10 @@ class RateLimiter:
         async with self._lock:
             now = self._clock()
             delay = max(0.0, self._next_slot - now)
-            if delay:
-                await self._sleep(delay)
-                now = self._clock()
-            self._next_slot = max(now, self._next_slot) + self._interval
+            if delay > 0:
+                raise AppError(
+                    ErrorCode.RATE_LIMITED,
+                    "local credential rate limit requires a later request slot",
+                    retry_after_seconds=min(60.0, delay),
+                )
+            self._next_slot = now + self._interval
