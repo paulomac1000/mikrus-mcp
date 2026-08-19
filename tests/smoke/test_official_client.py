@@ -46,7 +46,7 @@ async def test_official_client_lists_schema_and_calls_tool() -> None:
         listed = await client.list_tools()
         names = {tool.name for tool in listed.tools}
         assert "get_server_info" in names
-        assert "write_file" in names
+        assert "write_file" not in names
         assert "execute_command" not in names
         result = await client.call_tool("get_server_info", {})
         assert result.is_error is not True
