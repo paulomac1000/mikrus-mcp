@@ -44,7 +44,13 @@ class TargetRegistry:
         async with self._locks[target]:
             existing = self._clients.get(target)
             if existing is not None:
-                return existing
+                connected = getattr(existing, "is_connected", True)
+                if connected:
+                    return existing
+                try:
+                    await existing.close()
+                finally:
+                    self._clients.pop(target, None)
             client = self._factory(config)
             try:
                 await client.open()
@@ -55,7 +61,13 @@ class TargetRegistry:
                     f"target '{target}' is unavailable",
                     retryable=True,
                 ) from exc
-            if client.stable_identity != config.stable_identity:
+            expected_identity = config.stable_identity
+            if config.type == "ssh":
+                suffix = "#host-key=SHA256:" if config.verify_host_key else "#host-key=UNVERIFIED"
+                identity_matches = client.stable_identity.startswith(expected_identity + suffix)
+            else:
+                identity_matches = client.stable_identity == expected_identity
+            if not identity_matches:
                 await client.close()
                 raise AppError(
                     ErrorCode.AUTHORIZATION,
@@ -64,6 +76,12 @@ class TargetRegistry:
             self._clients[target] = client
             self._failures.pop(target, None)
             return client
+
+    def resolved_identity(self, target: str) -> str | None:
+        client = self._clients.get(target)
+        if client is None or not getattr(client, "is_connected", True):
+            return None
+        return client.stable_identity
 
     def status(self, default_target: str) -> dict[str, Any]:
         targets: list[dict[str, object]] = []
@@ -78,7 +96,8 @@ class TargetRegistry:
                 {
                     "name": name,
                     "type": config.type,
-                    "stable_identity": config.stable_identity,
+                    "configured_identity": config.stable_identity,
+                    "resolved_identity": self.resolved_identity(name),
                     "status": state,
                     "is_default": name == default_target,
                 }
