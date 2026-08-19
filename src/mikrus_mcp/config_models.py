@@ -122,7 +122,8 @@ class Settings:
     principal: str = field(default_factory=_default_stdio_principal)
     allowed_scopes: frozenset[str] = frozenset({"tool:*", "target:*"})
     write_enabled: bool = False
-    default_deadline_ms: int = 10_000
+    default_deadline_ms: int = 120_000
+    server_max_deadline_ms: int = 120_000
     max_request_body_bytes: int = 1_048_576
     max_result_bytes: int = 1_000_000
     approval_file: Path | None = None
@@ -149,6 +150,8 @@ class Settings:
             raise ValueError("principal must be non-empty")
         if not 100 <= self.default_deadline_ms <= 120_000:
             raise ValueError("default deadline must be between 100 and 120000 ms")
+        if not 100 <= self.server_max_deadline_ms <= 120_000:
+            raise ValueError("server maximum deadline must be between 100 and 120000 ms")
         if not 1_024 <= self.max_request_body_bytes <= 16_777_216:
             raise ValueError("request body limit must be between 1024 and 16777216 bytes")
         if not 1_024 <= self.max_result_bytes <= 16_777_216:
@@ -162,5 +165,10 @@ class Settings:
                 raise ValueError(
                     f"target '{target.name}' disables SSH host verification without "
                     "MCP_ALLOW_INSECURE_SSH=1"
+                )
+            if target.type == "ssh" and not target.verify_host_key and self.write_enabled:
+                raise ValueError(
+                    f"target '{target.name}' cannot be used for writes without "
+                    "SSH host verification"
                 )
         return self
