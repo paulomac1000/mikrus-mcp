@@ -67,9 +67,7 @@ def _require_success(result: dict[str, Any]) -> ToolResult:
         "error": error,
         "_meta": result.get("_meta") or {},
     }
-    raise ToolError(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    )
+    raise ToolError(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
 async def _invoke(
