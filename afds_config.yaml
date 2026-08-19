@@ -1,5 +1,5 @@
 schema_version: 2
-source_revision: 2b04b30f4d3883437dd1738ceaaae61567b0c564
+source_revision: fdb46268454bf08258e39e604e0ab7f764b54c7a
 governed_documents:
   - AGENTS.md
   - SECURITY.md
