@@ -15,7 +15,7 @@ concurrency:
 
 env:
   PIP_VERSION: "26.1.2"
-  AI_SKILLS_REVISION: "2b04b30f4d3883437dd1738ceaaae61567b0c564"
+  AI_SKILLS_REVISION: "fdb46268454bf08258e39e604e0ab7f764b54c7a"
 
 jobs:
   quality:
