@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Literal
 
 from mikrus_mcp.config import Settings
@@ -11,6 +11,24 @@ SideEffects = Literal["read", "write", "destructive"]
 Confidentiality = Literal["public", "internal", "personal", "sensitive", "credential"]
 RetryCondition = Literal["rate-limit", "transient-upstream", "timeout"]
 ConcurrencyScope = Literal["none", "target", "target-capability", "target-resource"]
+
+PROTOCOL_REVISIONS = ("2026-07-28", "2025-11-25")
+DEFAULT_CAPABILITY_RESPONSE_BYTES = 1_000_000
+MIKRUS_ONLY = frozenset(
+    {
+        "get_server_info",
+        "list_servers",
+        "get_server_stats",
+        "restart_server",
+        "get_logs",
+        "get_log_by_id",
+        "boost_server",
+        "get_db_info",
+        "get_ports",
+        "get_cloud",
+        "assign_domain",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,21 +52,81 @@ class CapabilityManifest:
     target_binding: str
     target_required: bool = True
     resource_argument: str | None = None
-
-    def as_dict(self) -> dict[str, object]:
-        value = asdict(self)
-        value["risk"] = self.risk
-        return value
+    max_response_bytes: int = DEFAULT_CAPABILITY_RESPONSE_BYTES
 
     @property
     def risk(self) -> str:
-        if self.confidentiality in {"sensitive", "credential"} and self.side_effects == "read":
-            return "SENSITIVE"
-        return {
-            "read": "READ",
-            "write": "WRITE",
-            "destructive": "DESTRUCTIVE",
-        }[self.side_effects]
+        if self.side_effects in {"write", "destructive"}:
+            return "high"
+        if self.confidentiality in {"sensitive", "credential"}:
+            return "medium"
+        return "low"
+
+    def as_dict(
+        self,
+        *,
+        active_state: Literal["active", "inactive", "deprecated"] = "active",
+        inactive_reason: str | None = None,
+    ) -> dict[str, object]:
+        concurrency_scope = (
+            "global"
+            if not self.target_required
+            else "resource"
+            if self.resource_argument and self.side_effects != "read"
+            else "target"
+        )
+        concurrency = {
+            "scope": concurrency_scope,
+            "limit": 8 if self.side_effects == "read" else 1,
+            "queue_limit": 16 if self.side_effects == "read" else 4,
+        }
+        extensions: dict[str, object] = {
+            "application_version": self.version,
+            "confidentiality": self.confidentiality,
+            "cost": self.cost,
+            "retry_conditions": list(self.retry_conditions),
+            "target_binding": self.target_binding,
+            "target_required": self.target_required,
+            "timeout_ms": self.timeout_ms,
+        }
+        if inactive_reason is not None:
+            extensions["inactive_reason"] = inactive_reason
+        result: dict[str, object] = {
+            "schema_version": 1,
+            "id": self.name,
+            "name": self.name.replace("_", " ").capitalize(),
+            "description": f"Application-owned {self.name.replace('_', ' ')} capability.",
+            "operation_kind": self.side_effects,
+            "risk": self.risk,
+            "determinism": "environment-dependent",
+            "latency": "bounded-long" if self.timeout_ms > 10_000 else "interactive",
+            "impact": "none" if self.side_effects == "read" else "external",
+            "active_state": active_state,
+            "retryable": self.retryable if active_state == "active" else False,
+            "idempotent": self.idempotent,
+            "reversible": self.reversible,
+            "requires_confirmation": self.requires_approval,
+            "idempotency_key_required": False,
+            "authorization_scopes": list(self.required_scopes),
+            "concurrency": concurrency,
+            "max_response_bytes": self.max_response_bytes,
+            "protocol_revisions": list(PROTOCOL_REVISIONS),
+            "extensions": extensions,
+        }
+        if self.requires_approval:
+            result["approval"] = {
+                "enforcement": "server-side",
+                "record_required": True,
+                "record_ttl_seconds": 3600,
+                "binds": [
+                    "principal",
+                    "capability",
+                    "target",
+                    "arguments-digest",
+                    "expires-at",
+                ],
+            }
+        return result
 
 
 def _read(
@@ -66,7 +144,7 @@ def _read(
         confidentiality=confidentiality,
         operational_impact="none",
         cost="cheap",
-        reversible=True,
+        reversible=False,
         idempotent=True,
         idempotency_mechanism="natural read",
         retryable=True,
@@ -76,7 +154,7 @@ def _read(
         timeout_ms=timeout_ms,
         requires_approval=False,
         required_scopes=(f"tool:{name}",),
-        target_binding="configured immutable target identity",
+        target_binding="configured target resolved to a verified backend identity",
         target_required=target_required,
         resource_argument=resource_argument,
     )
@@ -107,7 +185,7 @@ def _mutation(
         timeout_ms=timeout_ms,
         requires_approval=True,
         required_scopes=(f"tool:{name}", "write:server"),
-        target_binding="configured immutable target identity plus approval-bound resource",
+        target_binding="verified backend identity plus approval-bound resource",
         resource_argument=resource_argument,
     )
 
@@ -130,13 +208,19 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "write_file": _mutation("write_file", resource_argument="path"),
     "get_service_status": _read("get_service_status", resource_argument="name"),
     "change_service_state": _mutation(
-        "change_service_state", destructive=True, impact="outage", resource_argument="name"
+        "change_service_state",
+        destructive=True,
+        impact="outage",
+        resource_argument="name",
     ),
     "analyze_disk": _read("analyze_disk", timeout_ms=30_000, resource_argument="path"),
     "check_port": _read("check_port", resource_argument="port"),
     "list_processes": _read("list_processes", "sensitive"),
     "terminate_process": _mutation(
-        "terminate_process", destructive=True, impact="outage", resource_argument="target"
+        "terminate_process",
+        destructive=True,
+        impact="outage",
+        resource_argument="target",
     ),
     "update_system": _mutation(
         "update_system", destructive=True, impact="outage", timeout_ms=120_000
@@ -150,9 +234,13 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_network_info": _read("get_network_info", "sensitive"),
     "get_process_tree": _read("get_process_tree", "sensitive"),
     "list_docker_containers": _read("list_docker_containers", "sensitive"),
-    "get_docker_logs": _read("get_docker_logs", "sensitive", resource_argument="container"),
+    "get_docker_logs": _read(
+        "get_docker_logs", "sensitive", resource_argument="container"
+    ),
     "get_docker_stats": _read("get_docker_stats"),
-    "get_journal_logs": _read("get_journal_logs", "sensitive", resource_argument="unit"),
+    "get_journal_logs": _read(
+        "get_journal_logs", "sensitive", resource_argument="unit"
+    ),
     "find_system_errors": _read("find_system_errors", "sensitive"),
     "search_journal_logs": _read("search_journal_logs", "sensitive"),
     "list_configured_servers": _read(
@@ -164,9 +252,19 @@ MANIFESTS: dict[str, CapabilityManifest] = {
 }
 
 
+def inactive_reason(name: str, settings: Settings) -> str | None:
+    manifest = MANIFESTS[name]
+    if name in MIKRUS_ONLY and not any(
+        target.type == "mikrus" for target in settings.targets.values()
+    ):
+        return "requires at least one configured mikr.us target"
+    if manifest.side_effects != "read" and not settings.write_enabled:
+        return "write operations are disabled by process policy"
+    return None
+
+
 def active_names(settings: Settings) -> set[str]:
-    del settings
-    return set(MANIFESTS)
+    return {name for name in MANIFESTS if inactive_reason(name, settings) is None}
 
 
 def validate_manifests(registered_names: set[str], settings: Settings) -> None:
