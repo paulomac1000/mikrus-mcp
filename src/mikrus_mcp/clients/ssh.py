@@ -20,7 +20,6 @@ from mikrus_mcp.tools.constants import (
 from mikrus_mcp.validators import (
     ValidationError,
     validate_container_name,
-    validate_content_size,
     validate_hours_param,
     validate_lines_param,
     validate_port,
