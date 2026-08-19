@@ -7,7 +7,7 @@ status: evolving
 rigor: informative
 owners: [repository-maintainers]
 verification:
-  kind: review
+  kind: manual-review
   value: Compare each finding with the exact pinned ai-skills contract revision and its regression tests before treating the finding as resolved.
 ---
 # AI Skills upstream review
@@ -55,33 +55,25 @@ The generator now checks the lexical destination path components for symlink/rep
 objects before resolving the path. Resolution can no longer erase the evidence that an
 untrusted destination parent was reached through a link.
 
-## Remaining upstream defect
+### Reviewerless structural assessments
 
-### Structural request-changes assessment still requires reviewer evidence
+The adoption-assessment schema now allows `request-changes` and `rejected` structural
+assessments to omit `decision.reviewer`. Reviewer evidence remains mandatory for
+`approve`, and a reviewer object supplied for another decision is still validated. The
+template and validator follow the same rule, so an adopter can record blocking gaps
+without fabricating a provider review ID or reviewer identity.
 
-The current adoption-assessment schema requires `decision.reviewer` for every decision,
-including a pre-review `request-changes` structural assessment. The validator likewise
-validates reviewer identity unconditionally. This creates the wrong evidence incentive:
-an adopter which has found blocking gaps but has not yet received a provider review must
-either omit the machine-readable assessment or fabricate a review ID and reviewer
-identity.
-
-The contract should require `decision.reviewer` only when a reviewer-backed decision is
-actually claimed, and must require it for `approve`. A reviewer object supplied for
-`request-changes` or `rejected` should still be validated normally. The default template
-for structural `request-changes` should omit reviewer coordinates rather than contain
-placeholder provider evidence.
-
-This is an upstream contract correction, not a reason for `mikrus-mcp` to fabricate
-acceptance evidence. Until the authority includes that correction, the adopting
-repository can record its structural state in prose and tests but must not label a
-reviewer-less document as schema-valid adoption acceptance.
+This correction makes a machine-readable pre-review assessment possible, but it does not
+turn self-produced structural evidence into independent acceptance. A final approval
+still requires provider-backed evidence and a reviewer bound to the exact assessed
+revision.
 
 ## Consumer-side requirements retained here
 
 Even after the upstream contract repairs, this repository must independently prove its
-own implementation. In particular, canonical manifests do not establish correct runtime
-activation; schema-valid identity fields do not prove real SSH host-key behavior; a
-filesystem primitive still needs race evidence on deployed filesystems; hashed lock
-contracts still require committed graphs for every declared lane; and provider-green CI
-does not substitute for independent production review.
+own implementation. Canonical manifests do not establish correct runtime activation;
+schema-valid identity fields do not prove real SSH host-key behavior; a filesystem
+primitive still needs race evidence on deployed filesystems; compact hashed lock graphs
+must remain bound to the exact declared runtime lane and be installed with
+`--require-hashes`; and provider-green CI does not substitute for independent production
+review.
