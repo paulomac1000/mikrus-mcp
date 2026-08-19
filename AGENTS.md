@@ -1,11 +1,14 @@
 ---
+afds_schema_version: 2
 description: Repository-wide operating contract for agents changing the hardened mikrus-mcp server
 doc_id: guide.agent-contribution
 type: guide
 status: active
 rigor: operational
 owners: [repository-maintainers]
-verification: Run `.venv/bin/python scripts/core_gate.py`, then `.venv/bin/python scripts/ci.py` in the locked development environment and verify provider CI on the exact final revision.
+verification:
+  kind: command
+  value: Run `.venv/bin/python scripts/core_gate.py`, then `.venv/bin/python scripts/ci.py` in the locked development environment and verify provider CI on the exact final revision.
 ---
 # Repository instructions for agents
 
@@ -103,8 +106,10 @@ or PR comments.
 Stdio reserves stdout for MCP protocol traffic. Diagnostics go to stderr. Streamable
 HTTP remains loopback-only until a separately reviewed remote-auth profile exists.
 Writes are disabled by default and require a one-time server-side approval bound to
-the principal, capability, target, and resource. Approval identifiers remain outside
-MCP schemas; issue records only through the trusted local operator workflow.
+the principal, capability, target, and resource. For SSH mutations, the trusted
+approval workflow first connects using host-key verification and binds the approval to
+the verified peer fingerprint. Approval identifiers remain outside MCP schemas; issue
+records only through the trusted local operator workflow.
 
 Do not weaken, delete, skip, or rewrite assertions solely to obtain a green result.
 When a check needs infrastructure unavailable to the current agent, add a narrowly
