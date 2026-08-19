@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import re
 import shlex
@@ -16,8 +15,8 @@ from mikrus_mcp.clients.common import (
     RateLimiter,
     _CACHEABLE_ENDPOINTS,
     _CACHE_TTL_SECONDS,
+    _remote_atomic_write_command,
     _remote_read_prefix,
-    _remote_write_prefix,
 )
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.tools.constants import (
@@ -30,7 +29,6 @@ from mikrus_mcp.tools.constants import (
 from mikrus_mcp.validators import (
     ValidationError,
     validate_container_name,
-    validate_content_size,
     validate_domain,
     validate_hours_param,
     validate_lines_param,
@@ -239,7 +237,6 @@ class MikrusClient:
         return await self._request("/amfetamina", mutation=True)
 
     async def get_db_info(self) -> Any:
-        # Credential responses deliberately bypass the process cache.
         return await self._request("/db")
 
     async def get_ports(self) -> Any:
@@ -272,20 +269,7 @@ class MikrusClient:
         )
 
     async def write_file(self, path: str, content: str) -> Any:
-        validate_content_size(content)
-        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        quoted_data = shlex.quote(encoded)
-        command = (
-            "set -eu; "
-            + _remote_write_prefix(path)
-            + "umask 077; "
-            + 'tmp=$(mktemp --tmpdir="$resolved_parent" ".${leaf}.mcp.XXXXXX"); '
-            + "trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; "
-            + f'printf %s {quoted_data} | base64 -d > "$tmp"; '
-            + 'chmod 600 "$tmp"; mv -fT -- "$tmp" "$target"; '
-            + "trap - EXIT HUP INT TERM; echo WRITE_OK"
-        )
-        return await self._exec_mutation(command)
+        return await self._exec_mutation(_remote_atomic_write_command(path, content))
 
     async def get_service_status(self, name: str) -> Any:
         service = shlex.quote(validate_service_name(name))
