@@ -49,6 +49,12 @@ class FakeProcess:
         self.terminated = True
 
 
+class FakeHostKey:
+    def get_fingerprint(self, algorithm: str = "sha256") -> str:
+        assert algorithm == "sha256"
+        return "SHA256:test-host-key"
+
+
 class FakeConnection:
     def __init__(self, process: FakeProcess) -> None:
         self.process = process
@@ -57,6 +63,9 @@ class FakeConnection:
 
     def is_closed(self) -> bool:
         return self.closed
+
+    def get_server_host_key(self) -> FakeHostKey:
+        return FakeHostKey()
 
     async def create_process(self, command: str, **kwargs: Any) -> FakeProcess:
         self.commands.append((command, kwargs))
@@ -81,7 +90,9 @@ def ssh_target(**overrides: Any) -> TargetConfig:
 
 
 @pytest.mark.asyncio
-async def test_open_uses_default_known_hosts_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_open_uses_default_known_hosts_policy_and_binds_peer_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observed: dict[str, Any] = {}
     connection = FakeConnection(FakeProcess([b"ok"]))
 
@@ -95,6 +106,7 @@ async def test_open_uses_default_known_hosts_policy(monkeypatch: pytest.MonkeyPa
     await client.open()
     assert "known_hosts" not in observed
     assert observed["host"] == "server.example"
+    assert client.stable_identity == "ssh:root@server.example:22#host-key=SHA256:test-host-key"
     await client.close()
 
 
@@ -116,6 +128,7 @@ async def test_insecure_mode_is_explicit_in_asyncssh_options(
     client = SshClient(ssh_target(verify_host_key=False))
     await client.open()
     assert observed["known_hosts"] is None
+    assert client.stable_identity.endswith("#host-key=UNVERIFIED")
 
 
 @pytest.mark.asyncio
@@ -146,7 +159,7 @@ async def test_sudo_password_is_written_to_stdin_not_command() -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_commands_revalidate_canonical_remote_paths() -> None:
+async def test_file_commands_use_nofollow_atomic_remote_write() -> None:
     read_process = FakeProcess([b"text"])
     read_connection = FakeConnection(read_process)
     read_client = SshClient(ssh_target())
@@ -163,15 +176,14 @@ async def test_file_commands_revalidate_canonical_remote_paths() -> None:
     write_client._connection = write_connection
     await write_client.write_file("/tmp/example.txt", "content")
     write_command = write_connection.commands[0][0]
-    assert "resolved_parent=$(realpath -e" in write_command
-    assert "/var/www|/var/www/*" in write_command
-    assert 'test ! -L "$target"' in write_command
-    assert 'mktemp --tmpdir="$resolved_parent"' in write_command
-    assert 'mv -fT -- "$tmp" "$target"' in write_command
-    assert ".mcp.$$" not in write_command
+    assert "python3 -c" in write_command
+    assert "O_NOFOLLOW" in write_command
+    assert "src_dir_fd=parent_fd" in write_command
+    assert "realpath" not in write_command
+    assert "mv -fT" not in write_command
 
 
-def test_ssh_identity_and_timeout_are_derived_from_target_config() -> None:
+def test_ssh_selector_identity_and_timeout_are_derived_from_target_config() -> None:
     target = ssh_target(user="deploy", port=2222, connect_timeout_seconds=17)
     client = SshClient(target)
     assert client.stable_identity == "ssh:deploy@server.example:2222"
