@@ -119,9 +119,7 @@ async def test_write_requires_operator_gate_and_one_time_approval(target: Target
     caller = CallerContext("principal", disabled.allowed_scopes)
     disabled_kernel = InvocationKernel(disabled, registry=registry, approvals=approvals)
     assert "write_file" not in disabled_kernel.active_names
-    denied = await disabled_kernel.invoke(
-        "write_file", {"path": "/tmp/a", "content": "x"}, caller
-    )
+    denied = await disabled_kernel.invoke("write_file", {"path": "/tmp/a", "content": "x"}, caller)
     assert denied["error"]["code"] == "NOT_FOUND"
     assert not client.calls
 
