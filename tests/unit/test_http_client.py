@@ -32,6 +32,32 @@ async def test_http_request_binds_credentials_and_target() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_rate_limit_returns_retry_guidance_without_waiting() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"password": "value"}, request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "key",
+        "srv",
+        requests_per_minute=5,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        await client.get_db_info()
+        with pytest.raises(AppError) as caught:
+            await client.get_db_info()
+    assert caught.value.code is ErrorCode.RATE_LIMITED
+    assert caught.value.retry_after_seconds is not None
+    assert 0 < caught.value.retry_after_seconds <= 12
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_adapter_performs_one_attempt_for_reads_and_mutations() -> None:
     read_calls = 0
 
