@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import stat
@@ -13,11 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from mikrus_mcp.approvals import (  # noqa: E402
-    ApprovalRegistry,
-    normalized_arguments_digest,
-)
-from mikrus_mcp.config import load_settings  # noqa: E402
+from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest  # noqa: E402
+from mikrus_mcp.config import Settings, load_settings  # noqa: E402
+from mikrus_mcp.targets import TargetRegistry  # noqa: E402
 
 
 def _initialize(path: Path) -> None:
@@ -42,7 +41,10 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument(
         "--server",
         required=True,
-        help="Configured server alias; the approval is persisted against its stable identity",
+        help=(
+            "Configured server alias. SSH approvals resolve the currently verified "
+            "host-key fingerprint before the approval is persisted."
+        ),
     )
     value.add_argument("--resource", required=True)
     value.add_argument(
@@ -52,6 +54,22 @@ def parser() -> argparse.ArgumentParser:
     )
     value.add_argument("--ttl-seconds", type=float, default=60.0)
     return value
+
+
+async def _resolved_target_identity(settings: Settings, server: str) -> str:
+    targets = settings.targets
+    try:
+        target = targets[server]
+    except KeyError as exc:
+        raise SystemExit(f"unknown configured server: {server}") from exc
+    if target.type != "ssh":
+        return target.stable_identity
+    registry = TargetRegistry(dict(targets))
+    try:
+        client = await registry.get(server)
+        return client.stable_identity
+    finally:
+        await registry.close()
 
 
 def main() -> int:
@@ -67,10 +85,7 @@ def main() -> int:
     arguments_digest = normalized_arguments_digest(operation_arguments)
 
     settings = load_settings()
-    try:
-        target_identity = settings.targets[args.server].stable_identity
-    except KeyError as exc:
-        raise SystemExit(f"unknown configured server: {args.server}") from exc
+    target_identity = asyncio.run(_resolved_target_identity(settings, args.server))
 
     path = args.file.absolute()
     _initialize(path)
