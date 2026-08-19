@@ -91,7 +91,8 @@ jobs:
           set -euo pipefail
           mapfile -t governed < <(python scripts/check_docs.py --print-governed)
           test "${#governed[@]}" -gt 0
-          python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
+          python .trusted-ai-skills/skills/afds-doc-writer/validate.py \
+            --minimum-document-schema 2 "${governed[@]}"
       - name: Audit pull-request workflow with pinned policy authority
         shell: bash
         run: |
@@ -162,7 +163,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
-      - name: Compile exact hashed runtime and development graphs
+      - name: Compile exact hashed runtime and development graphs from clean outputs
         shell: bash
         env:
           PYTHON_VERSION: ${{ matrix.python }}
@@ -170,20 +171,19 @@ jobs:
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
           lock_id="linux-x64-py${PYTHON_VERSION//./}"
+          mkdir lock-output
           python -m piptools compile \
             --allow-unsafe \
             --generate-hashes \
             --strip-extras \
-            --output-file="requirements-runtime-$lock_id.lock" \
+            --output-file="lock-output/requirements-runtime-$lock_id.lock" \
             requirements-runtime.in
           python -m piptools compile \
             --allow-unsafe \
             --generate-hashes \
             --strip-extras \
-            --output-file="requirements-dev-$lock_id.lock" \
+            --output-file="lock-output/requirements-dev-$lock_id.lock" \
             requirements-dev.in
-          mkdir lock-output
-          cp "requirements-runtime-$lock_id.lock" "requirements-dev-$lock_id.lock" lock-output/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
