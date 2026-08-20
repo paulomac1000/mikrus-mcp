@@ -1,0 +1,255 @@
+schema_version: 1
+verification_mode: structural-attestation
+assessment_id: paulomac1000/mikrus-mcp@486928e0a3706debdbbad596544e7968b2cf0a29:mcp-server-architect@1.2.0:fdb46268454bf08258e39e604e0ab7f764b54c7a
+generated_at: "2026-08-20T18:30:00Z"
+prepared_by: [{"provider":"github","login":"paulomac1000","id":9095484}]
+repository: {"name":"paulomac1000/mikrus-mcp","revision":"486928e0a3706debdbbad596544e7968b2cf0a29","source_branch":"agent/ai-skills-compliance-refactor"}
+skill: {"name":"mcp-server-architect","version":"1.2.0","maturity":"stable"}
+scope:
+  included: ["Single-repository MCP server adoption at target level L2.","Authority paulomac1000/ai-skills revision fdb46268454bf08258e39e604e0ab7f764b54c7a.","Current stdio and loopback authenticated Streamable HTTP transports.","Mikr.us and SSH target adapters, server-side mutation approval, filesystem confinement, canonical manifests, hashed Linux x64 Python locks, exact-wheel and Linux amd64 container evidence.","L3-grade claims are limited to controls with concrete evidence such as canonical manifests, hashed locks and exact-artifact construction and smoke."]
+  excluded: ["Public internet exposure and multi-tenant operation.","Browser automation and persistent browser profiles.","Background task APIs and MCP-produced public artifact lifecycle.","Multi-architecture container support beyond Linux amd64."]
+  exclusion_rationale: ["The current server is a single-operator internal administration service with loopback HTTP or stdio.","The capability catalog contains no browser or durable background-task surface.","Build artifacts are release evidence, not public artifacts emitted by MCP operations.","Linux amd64 is the only currently advertised container release platform; multi-architecture publication requires separate evidence."]
+compatibility_claims: {"combinations":[{"operating_system":"linux","architecture":"x64","runtime":"python","version":"3.12","lane":"docker-artifact"}]}
+applicability:
+- rule_id: mcp.architecture.boundaries
+  status: applicable
+  rationale: "One transport-independent invocation kernel owns policy, target binding, execution and response handling; MCP registration delegates into that boundary."
+  implementation: [{"path":"src/mikrus_mcp/kernel.py","symbol":"class InvocationKernel"},{"path":"tests/unit/test_kernel.py","symbol":"test_authorization_happens_before_network_resolution"}]
+  verification: &v1
+  - command: "python -m pytest tests/unit/test_kernel.py -q"
+    evidence: &exact {"provider":"github-actions","repository":"paulomac1000/mikrus-mcp","run_id":32284076259,"job_id":96500223479,"check_run_id":96500223479,"revision":"486928e0a3706debdbbad596544e7968b2cf0a29","workflow_id":268550197,"workflow_path":".github/workflows/ci.yml","workflow_name":"CI","event":"pull_request","job_name":"exact-wheel","lane":"exact-wheel","artifact_id":9376955439,"artifact_name":"exact-wheel-32284076259","provider_digest":"sha256:1c8f26519feae87691b7d562dd80168a2968899556606422b8a834ef3ab8777d","report_path":"structural-attestation.json","report_digest":"sha256:757768d8f1eedee05bf27bf71ad73bc0dccedf310f0911bcb47de66c1b720e0c"}
+    result: passed
+  waiver_id: null
+- rule_id: mcp.sdk.compatibility-isolation
+  status: applicable
+  rationale: "Official MCP SDK usage is confined to the composition and transport layer, while domain policy remains SDK-independent."
+  implementation: [{"path":"src/mikrus_mcp/server.py","symbol":"MCPServer"},{"path":"tests/smoke/test_official_client.py","symbol":"test_official_client_lists_schema_and_calls_tool"}]
+  verification: &v2
+  - command: "python -m pytest tests/smoke/test_official_client.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.configuration.lifecycle
+  status: applicable
+  rationale: "Settings are loaded, validated and frozen before target clients and the kernel are constructed."
+  implementation: [{"path":"src/mikrus_mcp/config_loader.py","symbol":"def load_settings"},{"path":"tests/unit/test_config.py","symbol":"test_single_mikrus_configuration_is_frozen"}]
+  verification: &v3
+  - command: "python -m pytest tests/unit/test_config.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.identity.target-binding
+  status: applicable
+  rationale: "Selector authorization precedes network resolution and mutations bind the resolved stable backend identity; SSH adds the verified host-key fingerprint."
+  implementation: [{"path":"src/mikrus_mcp/targets.py","symbol":"class TargetRegistry"},{"path":"tests/unit/test_ai_skills_hardening.py","symbol":"test_approval_uses_resolved_ssh_identity_not_selector_identity"}]
+  verification: &v4
+  - command: "python -m pytest tests/unit/test_ai_skills_hardening.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.components.public-contract
+  status: applicable
+  rationale: "Registered tools expose structured official-SDK schemas and application-owned capability metadata with stable identifiers."
+  implementation: [{"path":"src/mikrus_mcp/server.py","symbol":"structured_output=True"},{"path":"tests/smoke/test_official_client.py","symbol":"test_official_client_lists_schema_and_calls_tool"}]
+  verification: *v2
+  waiver_id: null
+- rule_id: mcp.discovery.progressive
+  status: not-applicable
+  rationale: "This is a bounded single-server catalog, not a large-catalog or gateway profile; stable supported and active catalogs fit in one bounded discovery response."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.manifest.complete
+  status: applicable
+  rationale: "Every supported capability is owned by the canonical MANIFESTS table and registration is fail-closed against the active manifest set."
+  implementation: [{"path":"src/mikrus_mcp/manifests.py","symbol":"def validate_manifests"},{"path":"tests/unit/test_ai_skills_hardening.py","symbol":"test_capability_projection_uses_canonical_contract_fields"}]
+  verification: *v4
+  waiver_id: null
+- rule_id: mcp.retry.fail-closed
+  status: applicable
+  rationale: "Reads retry only classified transient failures under manifest policy; mutations are single-attempt and timeout after execution becomes an ambiguous outcome requiring reconciliation."
+  implementation: [{"path":"src/mikrus_mcp/kernel.py","symbol":"_execute_with_policy_retry"},{"path":"tests/unit/test_kernel.py","symbol":"test_manifest_controls_read_retry_but_mutation_is_single_attempt"}]
+  verification: *v1
+  waiver_id: null
+- rule_id: mcp.transport.supported
+  status: applicable
+  rationale: "The server advertises only stdio and Streamable HTTP and both are exercised with the official MCP client."
+  implementation: [{"path":"src/mikrus_mcp/server.py","symbol":"if settings.transport == \"stdio\""},{"path":"tests/smoke/test_official_transports.py","symbol":"test_official_client_over_stdio_subprocess"}]
+  verification: &v5
+  - command: "python -m pytest tests/smoke/test_official_transports.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.transport.remote-hardening
+  status: applicable
+  rationale: "Streamable HTTP is stateless, literal-loopback bound, Host and Origin checked, bearer authenticated and request-body bounded."
+  implementation: [{"path":"src/mikrus_mcp/http.py","symbol":"class LoopbackOriginMiddleware"},{"path":"tests/unit/test_http_boundary.py","symbol":"test_bearer_auth_rejects_before_application_and_binds_request_identity"}]
+  verification: &v6
+  - command: "python -m pytest tests/unit/test_http_boundary.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.deadline.concurrency
+  status: applicable
+  rationale: "The invocation kernel enforces bounded request and capability deadlines, cancellation propagation and operation locking."
+  implementation: [{"path":"src/mikrus_mcp/kernel.py","symbol":"asyncio.timeout"},{"path":"tests/unit/test_kernel.py","symbol":"test_cancellation_is_not_swallowed"}]
+  verification: *v1
+  waiver_id: null
+- rule_id: mcp.response.structured
+  status: applicable
+  rationale: "Application envelopes are structured, sanitized, size bounded and preserve request, target, provenance and retry metadata."
+  implementation: [{"path":"src/mikrus_mcp/kernel.py","symbol":"sanitize_data"},{"path":"tests/unit/test_ai_skills_hardening.py","symbol":"test_public_success_and_error_preserve_metadata_and_retry_guidance"}]
+  verification: *v4
+  waiver_id: null
+- rule_id: mcp.authorization.server-side
+  status: applicable
+  rationale: "Operator write enablement and opaque one-time approvals are enforced server-side and bound to principal, capability, resolved target, resource and normalized arguments."
+  implementation: [{"path":"src/mikrus_mcp/approvals.py","symbol":"class ApprovalRegistry"},{"path":"tests/unit/test_kernel.py","symbol":"test_write_requires_operator_gate_and_one_time_approval"}]
+  verification: *v1
+  waiver_id: null
+- rule_id: mcp.filesystem.containment
+  status: applicable
+  rationale: "Remote writes traverse directories with no-follow descriptors, constrain safe roots and atomically commit only regular non-symlink targets."
+  implementation: [{"path":"src/mikrus_mcp/clients/common.py","symbol":"def _remote_atomic_write_command"},{"path":"tests/unit/test_ai_skills_hardening.py","symbol":"test_atomic_remote_write_rejects_symlink_components"}]
+  verification: *v4
+  waiver_id: null
+- rule_id: mcp.artifact.ownership
+  status: not-applicable
+  rationale: "The MCP application does not expose generated screenshots, reports, backups, exports or other public artifact capabilities; CI build artifacts are deployment evidence rather than server-owned public artifacts."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.task.supervision
+  status: not-applicable
+  rationale: "The public capability set contains no background-task API and no operation returns a durable task identity; requests complete within the invocation lifecycle."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.browser.profile-isolation
+  status: not-applicable
+  rationale: "The server has no browser automation, persistent browser profiles, interactive browser authentication or browser credential-store surface."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.backends.identity
+  status: applicable
+  rationale: "Mikr.us and SSH targets retain configured names and stable identities; an unavailable default target never falls back to another backend."
+  implementation: [{"path":"src/mikrus_mcp/targets.py","symbol":"resolved target identity changed"},{"path":"tests/unit/test_kernel.py","symbol":"test_default_target_failure_does_not_fallback"}]
+  verification: *v1
+  waiver_id: null
+- rule_id: mcp.embedded.host-ownership
+  status: not-applicable
+  rationale: "The assessed deployment is a standalone MCP process and is not embedded inside another application host or shared dependency container."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.authorization.resource-isolation
+  status: not-applicable
+  rationale: "The selected maturity is L2 single-operator internal use, not the L4 hardened multi-tenant profile that requires tenant and per-resource isolation across principals."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.abuse.controls
+  status: not-applicable
+  rationale: "The selected profile is loopback-bound single-operator internal use, not public or multi-tenant L4 exposure; public quotas and tenant abuse controls are outside this architecture."
+  implementation: []
+  verification: []
+  waiver_id: null
+- rule_id: mcp.operations.observable
+  status: deferred
+  rationale: "Request correlation, structured metadata, health and failure logging exist, but deployment-specific audit sinks, metrics and SLO evidence are not yet retained as production evidence."
+  implementation: []
+  verification: []
+  waiver_id: waiver-operations-observable-2026q4
+- rule_id: mcp.health.readiness
+  status: applicable
+  rationale: "Startup, liveness, readiness, dependency state and capability degradation are exposed as separate health dimensions."
+  implementation: [{"path":"src/mikrus_mcp/kernel.py","symbol":"def health"},{"path":"src/mikrus_mcp/server.py","symbol":"health://ready"}]
+  verification: &v7
+  - command: "python -m pytest tests/unit/test_server_registration.py -q"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.operations.recovery-drills
+  status: deferred
+  rationale: "Full dependency-failure, saturation and bad-release recovery drills are L3 operational evidence. They remain tracked because selected manifest and artifact controls already have L3-grade structural evidence, but the repository-wide target remains L2."
+  implementation: []
+  verification: []
+  waiver_id: waiver-recovery-drills-2026q4
+- rule_id: mcp.artifact.exact
+  status: applicable
+  rationale: "The provider exact-wheel job builds once, installs that exact wheel without editable source, smokes both advertised transports, and the container job builds Linux amd64 from the verified wheel bundle."
+  implementation: [{"path":"scripts/artifact_smoke.py","symbol":"Exact wheel transport smoke passed"},{"path":"tests/smoke/test_official_transports.py","symbol":"test_official_client_over_authenticated_streamable_http"}]
+  verification: &v8
+  - command: "python -m pytest tests/smoke/test_official_transports.py -q"
+    evidence: &container
+      <<: *exact
+      job_id: 96500223868
+      check_run_id: 96500223868
+      job_name: "container"
+      lane: "docker-artifact"
+      artifact_id: 9376985768
+      artifact_name: "release-bundle-486928e0a3706debdbbad596544e7968b2cf0a29"
+      provider_digest: "sha256:8b11b75434d7c68929ea218b0b04fea221d526fe390268610310fb60f6a4ea36"
+    result: passed
+  waiver_id: null
+- rule_id: mcp.migration.accounted
+  status: applicable
+  rationale: "The migration document records breaking behavior, validation, rollback and residual deployment evidence; this assessment accounts for all catalog rules and acceptance gaps."
+  implementation: [{"path":"MIGRATION.md","symbol":"## Rollback"}]
+  verification: &v9
+  - command: "python scripts/core_gate.py"
+    evidence: *exact
+    result: passed
+  waiver_id: null
+- rule_id: mcp.verification.layered
+  status: applicable
+  rationale: "Credential-free unit and smoke layers plus official-client transport tests are composed by the repository core gate; exact artifact smoke remains a distinct provider layer."
+  implementation: [{"path":"scripts/core_gate.py","symbol":"def main"},{"path":"tests/smoke/test_official_transports.py","symbol":"test_official_client_over_authenticated_streamable_http"}]
+  verification: *v9
+  waiver_id: null
+behavior: {"preserved":["Named server-administration reads and targeted administration workflows remain available through the official MCP SDK.","Configured target identifiers remain explicit and stable across discovery and invocation.","Both stdio and HTTP clients receive structured operation results and controlled errors."],"intentionally_changed":["Legacy two-endpoint HTTP plus SSE and the unauthenticated REST bridge are superseded by stateless loopback Streamable HTTP with bearer authentication.","Default-target failure no longer falls back to another target.","SSH mutation approval binds the verified host-key fingerprint in addition to the configured selector.","Mutations require operator write enablement, authorization scopes and one-time server-side approval.","Mixed-risk legacy service and process operations are split into read and mutation capabilities; general-purpose raw command execution is not exposed.","Remote writes use component-aware no-follow directory traversal and atomic commit."],"removed_legacy":["Deprecated HTTP plus SSE transport.","Unauthenticated REST bridge.","Automatic target fallback.","Model-visible approval token inputs.","General-purpose execute_command capability."]}
+waivers: [{"waiver_id":"waiver-operations-observable-2026q4","rule_id":"mcp.operations.observable","owner":"repository-maintainers","rationale":"Deployment-specific audit sink, metrics retention and SLO evidence are not yet available for this structural L2 assessment.","compensating_controls":["Request identifiers, target identity, duration, result category and dependency health remain in structured application metadata and logs.","Loopback HTTP or stdio plus server-side authorization limits exposure while deployment observability is completed.","Production approval remains blocked until provider-backed deployment evidence is retained."],"expires_at":"2026-11-30"},{"waiver_id":"waiver-recovery-drills-2026q4","rule_id":"mcp.operations.recovery-drills","owner":"repository-maintainers","rationale":"Repository-wide L3 recovery-drill evidence is intentionally outside the current L2 acceptance target but is retained as a tracked production-readiness gap.","compensating_controls":["Rollback disables writes first and restores a previously immutable wheel or image digest.","Exact-wheel and Linux amd64 container build-and-smoke evidence exercises deployable artifacts before promotion.","Production acceptance remains blocked until dependency-failure, saturation and bad-release recovery exercises are recorded."],"expires_at":"2026-11-30"}]
+artifact_verification:
+  exact_revision: 486928e0a3706debdbbad596544e7968b2cf0a29
+  artifacts:
+  - kind: "platform-exact-runtime-lock"
+    identity: "requirements-runtime-linux-x64-py312.lock@486928e0a3706debdbbad596544e7968b2cf0a29"
+    path: "requirements-runtime-linux-x64-py312.lock"
+    digest: "sha256:57ab94e16eda37ac5e2174f4b22e2de4cf924508e4aed5a0334009f256b2b390"
+    commands: ["python -c \"from pathlib import Path; p=Path('requirements-runtime-linux-x64-py312.lock'); text=p.read_text(); assert '--hash=sha256:' in text and 'mcp==2.0.0' in text\""]
+    evidence: &lock
+      <<: *exact
+      job_id: 96500252565
+      check_run_id: 96500252565
+      job_name: "Platform locks (linux-x64-py3.12)"
+      lane: "platform-locks"
+      artifact_id: 9376968402
+      artifact_name: "platform-locks-python-3.12-486928e0a3706debdbbad596544e7968b2cf0a29"
+      provider_digest: "sha256:8b034be2b2b79a9f5fd61261aad7d9099869def00199db509c0072f6bfe8ea82"
+    result: passed
+compatibility_results:
+- operating_system: linux
+  architecture: x64
+  runtime: python
+  version: "3.12"
+  lane: docker-artifact
+  command: "python scripts/container_smoke.py --image mikrus-mcp:486928e0a3706debdbbad596544e7968b2cf0a29"
+  evidence: *container
+  result: passed
+extensions:
+  mcp:
+    target_level: L2
+    profiles: ["single-repository","migration","remote-http","multi-backend","filesystem","packaged","container"]
+    advertised_transports: ["stdio","streamable_http"]
+    official_client_commands: ["python -m pytest tests/smoke/test_official_transports.py -q"]
+    transport_results:
+      stdio: &transport_ok
+        capability_listing: &check_ok {result: passed, evidence: *exact}
+        representative_read: *check_ok
+        failure_path: *check_ok
+        write_boundary: *check_ok
+      streamable_http: *transport_ok
+rollback: {"trigger_conditions":["Authentication, target-binding, approval, manifest, transport or exact-artifact invariants fail on the deployed revision.","A mutation returns an ambiguous outcome without a verified postcondition.","Readiness degrades for the mandatory target or the deployed artifact diverges from the retained digest."],"procedure":["Disable writes before any rollback action.","Stop the 2.0 process and restore the previous immutable wheel or image digest with the previous client configuration.","Re-run the credential-free gate and official-client smoke before restoring administration traffic."],"data_recovery":["Do not automatically retry an ambiguous mutation; inspect and reconcile the stable target state first.","Restore operator approval records only from a trusted owner-controlled source and reissue approvals against the current resolved target identity.","Preserve logs, provider artifact digests and target state needed to explain the failed revision."]}
+residual_risks: [{"risk":"Real SSH host-key enrollment, rotation and address-to-identity revalidation have not yet been retained as deployment evidence.","owner":"deployment-operator","mitigation":"Execute the real-system SSH identity revalidation against each production target class before provider-backed acceptance.","blocking":true},{"risk":"Each real Mikr.us mutation still needs one controlled execution with postcondition reconciliation, including ambiguous-outcome handling.","owner":"deployment-operator","mitigation":"Run mutations once on disposable or controlled targets, record the postcondition, and forbid automatic retry until reconciliation succeeds.","blocking":true},{"risk":"Remote filesystem symlink-swap resistance is structurally tested but still needs evidence on each deployed filesystem and backend combination.","owner":"deployment-operator","mitigation":"Exercise the real-system remote filesystem race scenario before enabling production file mutations.","blocking":true},{"risk":"Published multi-architecture OCI digest smoke is not available; the current release claim is limited to Linux amd64.","owner":"release-maintainers","mitigation":"Keep the advertised release platform at Linux amd64 until one promoted digest is smoked independently on amd64 and arm64.","blocking":false},{"risk":"Provider-backed evidence reports and an independent review bound to the exact assessed revision remain open.","owner":"repository-maintainers","mitigation":"Re-emit evidence reports from the provider on the final revision and obtain independent approval before changing the decision to approve.","blocking":true}]
+decision: {"status":"request-changes","rationale":"Structural attestation is complete for the L2 single-repository profile at revision 486928e0a3706debdbbad596544e7968b2cf0a29 under authority fdb46268454bf08258e39e604e0ab7f764b54c7a. Provider-backed evidence report verification, real-system deployment evidence and independent approval remain open, so no reviewer or acceptance authority is asserted."}

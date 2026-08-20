@@ -15,14 +15,14 @@ verification:
 ## Assessment boundary
 
 This repository pins AI Skills `1.2.0` to immutable revision
-`2b04b30f4d3883437dd1738ceaaae61567b0c564`. The revision is a post-1.2.0 hardening
-candidate and is used as the current contract authority for this migration. Its exact
-head does not yet have complete provider-green upstream evidence, so this repository
-does not infer upstream release acceptance from the pin.
+`fdb46268454bf08258e39e604e0ab7f764b54c7a`. The revision is the current contract
+authority for this migration and matches `ai-skills.lock.yaml`.
 
-This document is a diagnostic self-assessment. Provider CI on the exact adopting
-revision and independent review are separate evidence. No reviewer, review ID, provider
-run, artifact digest, or real-system result may be invented to make an assessment pass.
+`migration-assessment.yaml` is now the machine-readable structural attestation for the
+assessed revision. Structural validation records complete rule coverage without claiming
+provider-backed acceptance. Provider CI on the exact final revision and independent
+review are separate evidence. No reviewer, review ID, provider run, artifact digest, or
+real-system result may be invented to make an assessment pass.
 
 ## Implemented contract changes
 
@@ -106,8 +106,8 @@ Production acceptance requires all of:
 2. provider execution of quality, compatibility, lock, wheel, official-client, container, and security jobs on the exact final SHA;
 3. retained machine-readable evidence and artifact digests bound to that SHA;
 4. completion or an owned expiring waiver for every applicable real-system control;
-5. a schema-valid adoption assessment which does not fabricate provider or reviewer evidence;
-6. independent review after the final code/evidence revision.
+5. the committed `migration-assessment.yaml` remains schema-valid in structural-attestation mode; this structural assessment requirement is now satisfied;
+6. provider-backed validation and independent review after the final code/evidence revision.
 
 No local result, intermediate branch SHA, badge, or self-authored assessment is final AI
 Skills adoption approval.
