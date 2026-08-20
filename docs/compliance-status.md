@@ -36,6 +36,15 @@ assessment, atomic report, and freshness contract pass together in run `32428268
 Every later evidence-only descendant must pass the same gates; no document treats its own
 commit hash as approval evidence.
 
+The freshness gate was then adapted for squash merges: content identity is enforced by the
+evidence-only delta rather than commit ancestry, and a missing assessed object after a
+squash produces an explicit rebind instruction. Adaptation commit
+`2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb` had green ordinary CI (`32429827273`) and
+Semgrep (`32429827143`); its adoption run `32429827138` was intentionally red at the
+freshness step only, because the gate script itself changed after the preceding assessment.
+The binding above therefore moves to that revision as an evidence-only change, and the
+resulting descendant must pass the full adoption workflow including freshness before merge.
+
 The assessed implementation SHA had green ordinary CI (`32427847300`) and Semgrep
 (`32427847467`). The evidence-only validation point above also had green ordinary CI
 (`32428268010`) and Semgrep (`32428268131`). These runs establish provider evidence for
