@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 _request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mikrus_mcp_request_id", default=None
 )
+# The longest mutation adapter timeout is 65 seconds. Do not consume a one-time
+# approval or enter a side-effecting adapter when less budget remains: otherwise
+# the outer kernel timeout could preempt phase-aware pre/post-dispatch classification.
+_MUTATION_CLASSIFICATION_BUDGET_MS = 65_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,19 +170,26 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             )
             if not 100 <= requested_deadline <= self.settings.server_max_deadline_ms:
                 raise AppError(ErrorCode.VALIDATION, "request deadline is outside server policy")
-            if manifest.side_effects != "read" and requested_deadline < manifest.timeout_ms:
-                raise AppError(
-                    ErrorCode.VALIDATION,
-                    "mutation deadline must be at least the capability timeout so the adapter "
-                    "can classify pre-dispatch failures separately from ambiguous outcomes",
-                )
             timeout_seconds = (
                 min(manifest.timeout_ms, requested_deadline, self.settings.server_max_deadline_ms)
                 / 1000
             )
+            loop = asyncio.get_running_loop()
+            expires_at = loop.time() + timeout_seconds
 
             async def execute_once_locked() -> Any:
                 nonlocal mutation_execution_started
+                if (
+                    manifest.side_effects != "read"
+                    and manifest.timeout_ms >= _MUTATION_CLASSIFICATION_BUDGET_MS
+                ):
+                    remaining_ms = max(0, int((expires_at - loop.time()) * 1000))
+                    if remaining_ms < _MUTATION_CLASSIFICATION_BUDGET_MS:
+                        raise AppError(
+                            ErrorCode.TIMEOUT,
+                            "insufficient operation deadline remains to start the mutation safely; "
+                            "the approval was not consumed",
+                        )
                 if manifest.requires_approval and not self.approvals.consume_matching(
                     manifest.name,
                     caller.principal,
