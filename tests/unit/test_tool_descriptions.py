@@ -8,7 +8,6 @@ import pytest
 
 from mikrus_mcp import tool_mikrus, tool_system
 
-
 MIKRUS_CASES = [
     ("describe_mikrus_capabilities", {}),
     ("list_configured_servers", {}),

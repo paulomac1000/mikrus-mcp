@@ -9,7 +9,6 @@ import pytest
 from mikrus_mcp.client import MikrusClient
 from mikrus_mcp.errors import AppError, ErrorCode
 
-
 INFO_RESPONSE: dict[str, object] = {
     "server_id": "abc123",
     "imie_id": "abc123",
