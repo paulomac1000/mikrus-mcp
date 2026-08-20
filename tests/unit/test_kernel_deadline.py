@@ -87,7 +87,7 @@ async def test_mutation_deadline_after_execution_start_is_ambiguous() -> None:
 
 
 @pytest.mark.asyncio
-async def test_too_short_mutation_deadline_is_rejected_before_consuming_approval() -> None:
+async def test_too_short_mutation_deadline_times_out_before_consuming_approval() -> None:
     target = TargetConfig(
         "prod",
         "mikrus",
@@ -127,7 +127,7 @@ async def test_too_short_mutation_deadline_is_rejected_before_consuming_approval
     )
 
     assert not client.started.is_set()
-    assert result["error"]["code"] == "VALIDATION_FAILED"
+    assert result["error"]["code"] == "TIMEOUT"
     assert approvals.has_matching(
         "write_file",
         "principal",
