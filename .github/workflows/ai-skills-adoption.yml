@@ -18,7 +18,7 @@ env:
 jobs:
   structural-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -62,3 +62,34 @@ jobs:
           --catalog .trusted-ai-skills/contracts/atomic-claim-catalog.yaml
           --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml
           --repository-root .trusted-ai-skills
+      - name: Execute atomic-claim evidence tests
+        run: >-
+          python -m pytest -q
+          tests/unit/test_config.py
+          tests/unit/test_identity_boundaries.py
+          tests/unit/test_manifests.py
+          tests/unit/test_kernel.py
+          tests/unit/test_kernel_deadline.py
+          tests/unit/test_ai_skills_hardening.py
+          tests/unit/test_mikrus_adapter.py
+          tests/unit/test_server_registration.py
+          tests/smoke/test_official_transports.py
+      - name: Validate consumer atomic-claim report
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f atomic-claims.yaml
+          rm -rf .atomic-validation-root
+          mkdir -p .atomic-validation-root/tests
+          cp -R .trusted-ai-skills/skills .atomic-validation-root/skills
+          cp .trusted-ai-skills/tests/test_atomic_claim_contract.py \
+            .atomic-validation-root/tests/test_atomic_claim_contract.py
+          cp -R src .atomic-validation-root/src
+          cp -R tests/unit .atomic-validation-root/tests/unit
+          cp -R tests/smoke .atomic-validation-root/tests/smoke
+          python .trusted-ai-skills/contracts/validate_atomic_claims.py \
+            atomic-claims.yaml \
+            --catalog .trusted-ai-skills/contracts/atomic-claim-catalog.yaml \
+            --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml \
+            --schema .trusted-ai-skills/contracts/atomic-claim-report.schema.json \
+            --repository-root .atomic-validation-root
