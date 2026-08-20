@@ -30,12 +30,14 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev-linux-x64-py312.lock
-      - name: Install exact development graph
+      - name: Install exact development graph and application wheel
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION"
           python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
           python -m pip check
       - name: Checkout immutable AI Skills authority
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
