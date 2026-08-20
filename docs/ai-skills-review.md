@@ -16,16 +16,17 @@ verification:
 
 This repository pins the post-1.2.0 hardening authority at
 `fdb46268454bf08258e39e604e0ab7f764b54c7a`. The pin is intentional: a newer upstream
-hardening candidate exists, but this consumer does not repin merely because a branch is
-newer. A replacement authority must first have coherent contracts and provider evidence
-suitable for a controlled migration.
+hardening candidate exists at `agent/transfer-contract-hardening`, but this consumer does
+not repin merely because a branch is newer. The candidate currently resolves to
+`ce00849418d95c577971e8618560e1928979797e`, whose provider CI is failing, so it is not an
+acceptable replacement authority for this migration yet.
 
 The consumer implementation and adoption tooling are assessed at
 `7cf17f934483469b281a1f30d7ceb1f16ba4e92b`. Provider CI and Semgrep are green on that
 revision. The `AI Skills adoption` source run validates the pinned authority and emits a
-machine-bound structural report before the later evidence-only commit updates the
-assessment. `scripts/check_evidence_freshness.py` rejects any implementation drift after
-the assessed revision.
+machine-bound structural report before later evidence-only commits update the assessment.
+`scripts/check_evidence_freshness.py` rejects any implementation drift after the assessed
+revision.
 
 ## Resolved upstream findings
 
