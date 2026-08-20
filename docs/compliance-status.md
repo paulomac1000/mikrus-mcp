@@ -21,23 +21,24 @@ while its own provider evidence is not green.
 
 The implementation and adoption tooling are assessed at immutable revision
 `7cf17f934483469b281a1f30d7ceb1f16ba4e92b`. `migration-assessment.yaml` and
-`atomic-claims.yaml` both bind that revision. Later commits may update only those evidence
-files and these governed status/review documents. `scripts/check_evidence_freshness.py`
-fails closed if any implementation, test, workflow, lock, packaging, or runtime file
-changes after the assessed revision.
+`atomic-claims.yaml` both bind that revision. The current branch HEAD is an evidence-only
+descendant. `scripts/check_evidence_freshness.py` fails closed if any implementation,
+test, workflow, lock, packaging, or runtime file changes after the assessed revision.
 
 The GitHub Actions `AI Skills adoption` source run `32427847331` on the assessed revision
 validated the immutable skill lock, the migration assessment, the atomic authority, the
 consumer atomic report, and 69 targeted evidence tests, then emitted the real
 `structural-attestation.json` artifact. Its final freshness step was intentionally red on
 that source revision because the committed evidence still pointed to the preceding
-assessment while provider evidence was being collected. The evidence-only descendant is
-required to rerun the same workflow with freshness green before this structural state is
-considered current.
+assessment while provider evidence was being collected. Final evidence-only HEAD
+`49eaf78a22bf32b8d0cb435f669cc499fba61861` reran the same gate as run `32428268008`,
+including `Reject stale adoption evidence`, and completed successfully.
 
-The ordinary CI run `32427847300` and Semgrep run `32427847467` are green on the exact
-assessed revision. This is provider evidence for code quality and structural controls; it
-is not independent production acceptance.
+The ordinary CI run `32428268010`, Semgrep run `32428268131`, and AI Skills adoption run
+`32428268008` are green on the final evidence-only HEAD. The assessed implementation SHA
+itself also had green ordinary CI (`32427847300`) and Semgrep (`32427847467`). This is
+provider evidence for code quality and structural controls; it is not independent
+production acceptance.
 
 ## Implemented contract changes
 
@@ -99,13 +100,13 @@ for the revision recorded by the corresponding evidence object.
 ## Pinned-contract limitation
 
 The pinned `fdb462...` atomic catalog currently makes the `mcp.artifact.multiarch-exact`
-child control applicable to a generic `container` atomic profile as well as to a
-multi-architecture profile. This repository intentionally advertises Linux/amd64 only.
-`atomic-claims.yaml` therefore does not invent multi-architecture evidence or select the
-container atomic profile. Linux/amd64 container evidence remains recorded separately in
-repository CI and migration documentation. A future authority may correct that
-applicability distinction; until then this is an explicit upstream-contract limitation,
-not a consumer-side multi-architecture claim.
+child control applicable when the generic atomic profile contains `container`, not only
+when a deployment actually claims multi-architecture publication. This repository
+intentionally advertises Linux/amd64 only. `atomic-claims.yaml` therefore does not invent
+multi-architecture evidence or select the container atomic profile. Linux/amd64 container
+evidence remains recorded separately in repository CI and migration documentation. A
+future authority may correct that applicability distinction; until then this is an
+explicit upstream-contract limitation, not a consumer-side multi-architecture claim.
 
 ## Deferred external evidence
 
@@ -123,9 +124,10 @@ is not claimed.
 
 ## Acceptance gate
 
-For the structural L2 migration state, the committed assessment and atomic report must
-remain bound to `7cf17f934483469b281a1f30d7ceb1f16ba4e92b`, the final evidence-only descendant
-must pass the freshness gate, and all provider workflows must remain green.
+The structural L2 migration evidence is current for assessed code/tooling revision
+`7cf17f934483469b281a1f30d7ceb1f16ba4e92b` and evidence-only HEAD
+`49eaf78a22bf32b8d0cb435f669cc499fba61861`: the pinned assessment validator, atomic
+validator, freshness gate, ordinary CI and security scan are green.
 
 Production acceptance additionally requires completion or an owned, expiring waiver for
 applicable real-system and operational controls, retained deployment artifact evidence,
