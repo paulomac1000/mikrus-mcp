@@ -2,7 +2,7 @@
 
 All notable changes to mikrus-mcp are recorded here.
 
-## [2.0.0] - 2026-08-06
+## [2.0.0] - 2026-08-20
 
 ### Breaking
 
@@ -34,10 +34,32 @@ All notable changes to mikrus-mcp are recorded here.
   CI wheelhouse and image archive without rebuilding.
 - Canonical-parent file writes using unpredictable `mktemp` files and atomic `mv -T`
   replacement instead of predictable process-ID temporary paths.
+- Canonical capability manifests projected onto the AI Skills
+  `capability-manifest` contract and validated at startup and in CI.
+- Governed documents migrated to AFDS document schema 2 with typed verification,
+  validated by the pinned authority's AFDS validator.
+- An AI Skills consumer skills lock (per-skill versions, revisions, normative
+  entrypoints) pinned to the hardened authority revision and validated in CI.
+- Platform-exact hashed dependency locks for Linux x64 Python 3.12/3.13/3.14 with a
+  lock renderer, CI lock-evidence jobs, and drift failure on committed locks.
+- A structural migration assessment (`migration-assessment.yaml`) validated by the
+  pinned authority without fabricated reviewer or provider evidence.
+- Separate request and server deadlines with an explicit server deadline cap, and
+  fail-fast credential throttling that returns retry guidance without consuming
+  operation deadlines.
+- SSH mutation approvals bound to the verified host-key peer identity in addition to
+  the configured selector.
+- No-follow descriptor-based directory traversal for remote writes with atomic commit
+  and symlink-swap resistance.
+- A real-system live instance test suite (skippable without credentials) and
+  mikr.us fixtures matching real API response shapes, with full tool-surface and
+  adapter execution coverage.
 
 ### Deferred
 
-- Complete platform-specific hashed dependency locks and provider-backed adoption approval.
+- Provider-backed adoption approval, real-system deployment evidence (SSH host-key
+  rotation, controlled mutation reconciliation), and multi-architecture container
+  publication beyond Linux amd64.
 - Real SSH identity enrollment, mikr.us mutation reconciliation, remote filesystem race
   testing, and multi-architecture published-image evidence.
 
