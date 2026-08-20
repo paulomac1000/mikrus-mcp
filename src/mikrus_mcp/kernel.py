@@ -166,6 +166,12 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             )
             if not 100 <= requested_deadline <= self.settings.server_max_deadline_ms:
                 raise AppError(ErrorCode.VALIDATION, "request deadline is outside server policy")
+            if manifest.side_effects != "read" and requested_deadline < manifest.timeout_ms:
+                raise AppError(
+                    ErrorCode.VALIDATION,
+                    "mutation deadline must be at least the capability timeout so the adapter "
+                    "can classify pre-dispatch failures separately from ambiguous outcomes",
+                )
             timeout_seconds = (
                 min(manifest.timeout_ms, requested_deadline, self.settings.server_max_deadline_ms)
                 / 1000
