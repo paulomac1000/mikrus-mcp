@@ -21,24 +21,25 @@ while its own provider evidence is not green.
 
 The implementation and adoption tooling are assessed at immutable revision
 `7cf17f934483469b281a1f30d7ceb1f16ba4e92b`. `migration-assessment.yaml` and
-`atomic-claims.yaml` both bind that revision. The current branch HEAD is an evidence-only
-descendant. `scripts/check_evidence_freshness.py` fails closed if any implementation,
-test, workflow, lock, packaging, or runtime file changes after the assessed revision.
+`atomic-claims.yaml` both bind that revision. Branch commits after it are allowed to touch
+only the explicitly governed evidence/status files. `scripts/check_evidence_freshness.py`
+fails closed if any implementation, test, workflow, lock, packaging, or runtime file
+changes after the assessed revision.
 
 The GitHub Actions `AI Skills adoption` source run `32427847331` on the assessed revision
-validated the immutable skill lock, the migration assessment, the atomic authority, the
-consumer atomic report, and 69 targeted evidence tests, then emitted the real
-`structural-attestation.json` artifact. Its final freshness step was intentionally red on
-that source revision because the committed evidence still pointed to the preceding
-assessment while provider evidence was being collected. Final evidence-only HEAD
-`49eaf78a22bf32b8d0cb435f669cc499fba61861` reran the same gate as run `32428268008`,
-including `Reject stale adoption evidence`, and completed successfully.
+validated the immutable skill lock, migration assessment, atomic authority, consumer
+atomic report, and 69 targeted evidence tests, then emitted the real
+`structural-attestation.json` artifact. Its freshness step was intentionally red while the
+committed evidence still pointed to the preceding assessment. Evidence-only descendant
+`49eaf78a22bf32b8d0cb435f669cc499fba61861` subsequently demonstrated that the rebound
+assessment, atomic report, and freshness contract pass together in run `32428268008`.
+Every later evidence-only descendant must pass the same gates; no document treats its own
+commit hash as approval evidence.
 
-The ordinary CI run `32428268010`, Semgrep run `32428268131`, and AI Skills adoption run
-`32428268008` are green on the final evidence-only HEAD. The assessed implementation SHA
-itself also had green ordinary CI (`32427847300`) and Semgrep (`32427847467`). This is
-provider evidence for code quality and structural controls; it is not independent
-production acceptance.
+The assessed implementation SHA had green ordinary CI (`32427847300`) and Semgrep
+(`32427847467`). The evidence-only validation point above also had green ordinary CI
+(`32428268010`) and Semgrep (`32428268131`). These runs establish provider evidence for
+code quality and structural controls; they are not independent production acceptance.
 
 ## Implemented contract changes
 
@@ -124,10 +125,11 @@ is not claimed.
 
 ## Acceptance gate
 
-The structural L2 migration evidence is current for assessed code/tooling revision
-`7cf17f934483469b281a1f30d7ceb1f16ba4e92b` and evidence-only HEAD
-`49eaf78a22bf32b8d0cb435f669cc499fba61861`: the pinned assessment validator, atomic
-validator, freshness gate, ordinary CI and security scan are green.
+Structural L2 migration evidence is valid only while the assessed code/tooling revision
+remains `7cf17f934483469b281a1f30d7ceb1f16ba4e92b`, all later changes are limited to the
+evidence/status allowlist, and the pinned assessment validator, atomic validator,
+freshness gate, ordinary CI, and security scan are green on the candidate evidence-only
+HEAD.
 
 Production acceptance additionally requires completion or an owned, expiring waiver for
 applicable real-system and operational controls, retained deployment artifact evidence,
