@@ -33,7 +33,17 @@ class MockClient:
         return None
 
     async def get_server_info(self) -> dict[str, object]:
-        return {"server_id": "srv", "source": "http-mock"}
+        return {
+            "server_id": "abc123",
+            "imie_id": "abc123",
+            "server_name": None,
+            "expires": "2027-02-13 00:00:00",
+            "expires_storage": None,
+            "param_ram": "1024",
+            "param_disk": "15",
+            "lastlog_panel": "2026-07-08 00:21:18",
+            "mikrus_pro": "nie",
+        }
 
     async def write_file(self, path: str, content: str) -> dict[str, object]:
         self.writes.append((path, content))
@@ -130,7 +140,7 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
                     structured: dict[str, Any] = read_result.structured_content.get(
                         "result", read_result.structured_content
                     )
-                    assert structured["data"]["source"] == "http-mock"
+                    assert structured["data"]["param_ram"] == "1024"
                     write_result = await session.call_tool("write_file", arguments=write_arguments)
                     assert write_result.is_error is not True
                     assert mock.writes == [("/tmp/a", "x")]

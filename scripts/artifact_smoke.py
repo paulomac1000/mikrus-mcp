@@ -60,7 +60,19 @@ class FakeMikrusUpstream:
             if content_length:
                 await reader.readexactly(content_length)
             if path == "/info":
-                body = json.dumps({"server_id": "artifact-srv", "status": "ok"}).encode()
+                body = json.dumps(
+                    {
+                        "server_id": "abc123",
+                        "imie_id": "abc123",
+                        "server_name": None,
+                        "expires": "2027-02-13 00:00:00",
+                        "expires_storage": None,
+                        "param_ram": "1024",
+                        "param_disk": "15",
+                        "lastlog_panel": "2026-07-08 00:21:18",
+                        "mikrus_pro": "nie",
+                    }
+                ).encode()
                 status = b"200 OK"
             else:
                 body = json.dumps({"error": "unexpected fake upstream path"}).encode()

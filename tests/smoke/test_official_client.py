@@ -24,7 +24,17 @@ class MockClient:
         return None
 
     async def get_server_info(self) -> dict[str, object]:
-        return {"server_id": "srv", "source": "mock"}
+        return {
+            "server_id": "abc123",
+            "imie_id": "abc123",
+            "server_name": None,
+            "expires": "2027-02-13 00:00:00",
+            "expires_storage": None,
+            "param_ram": "1024",
+            "param_disk": "15",
+            "lastlog_panel": "2026-07-08 00:21:18",
+            "mikrus_pro": "nie",
+        }
 
 
 @pytest.mark.asyncio
@@ -55,4 +65,4 @@ async def test_official_client_lists_schema_and_calls_tool() -> None:
             "result", result.structured_content
         )
         assert structured["success"] is True
-        assert structured["data"]["source"] == "mock"
+        assert structured["data"]["param_disk"] == "15"

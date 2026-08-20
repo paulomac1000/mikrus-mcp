@@ -19,7 +19,17 @@ class MockClient:
         return None
 
     async def get_server_info(self) -> dict[str, object]:
-        return {"server_id": "srv", "status": "mocked"}
+        return {
+            "server_id": "abc123",
+            "imie_id": "abc123",
+            "server_name": None,
+            "expires": "2027-02-13 00:00:00",
+            "expires_storage": None,
+            "param_ram": "1024",
+            "param_disk": "15",
+            "lastlog_panel": "2026-07-08 00:21:18",
+            "mikrus_pro": "nie",
+        }
 
 
 @pytest.mark.asyncio
@@ -40,7 +50,8 @@ async def test_application_kernel_invokes_mocked_backend_and_zero_io_catalog() -
     caller = CallerContext("principal", settings.allowed_scopes)
 
     result = await kernel.invoke("get_server_info", {}, caller)
-    assert result["data"] == {"server_id": "srv", "status": "mocked"}
+    assert result["data"]["param_ram"] == "1024"
+    assert result["data"]["mikrus_pro"] == "nie"
 
     capabilities = await kernel.invoke("describe_mikrus_capabilities", {}, caller)
     assert capabilities["data"]["supported_transports"] == ["stdio", "streamable-http"]

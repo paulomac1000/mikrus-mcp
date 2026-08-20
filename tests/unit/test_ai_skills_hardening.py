@@ -240,8 +240,18 @@ async def test_response_limit_counts_application_envelope_metadata() -> None:
         async def close(self) -> None:
             return None
 
-        async def get_server_info(self) -> dict[str, str]:
-            return {"value": "x"}
+        async def get_server_info(self) -> dict[str, object]:
+            return {
+                "server_id": "abc123",
+                "imie_id": "abc123",
+                "server_name": None,
+                "expires": "2027-02-13 00:00:00",
+                "expires_storage": None,
+                "param_ram": "1024",
+                "param_disk": "15",
+                "lastlog_panel": "2026-07-08 00:21:18",
+                "mikrus_pro": "nie",
+            }
 
     target = TargetConfig(
         "srv", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"

@@ -10,13 +10,34 @@ from mikrus_mcp.client import MikrusClient
 from mikrus_mcp.errors import AppError, ErrorCode
 
 
+INFO_RESPONSE: dict[str, object] = {
+    "server_id": "abc123",
+    "imie_id": "abc123",
+    "server_name": None,
+    "expires": "2027-02-13 00:00:00",
+    "expires_storage": None,
+    "param_ram": "1024",
+    "param_disk": "15",
+    "lastlog_panel": "2026-07-08 00:21:18",
+    "mikrus_pro": "nie",
+}
+
+DB_RESPONSE = {
+    "db_user": "abc123",
+    "db_host": "db.mikr.us",
+    "db_port": "3306",
+    "db_name": "abc123",
+    "password": "redacted-secret",
+}
+
+
 @pytest.mark.asyncio
 async def test_http_request_binds_credentials_and_target() -> None:
     observed: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         observed.append(request)
-        return httpx.Response(200, json={"server_id": "srv"}, request=request)
+        return httpx.Response(200, json=INFO_RESPONSE, request=request)
 
     client = MikrusClient(
         "https://api.mikr.us",
@@ -27,7 +48,7 @@ async def test_http_request_binds_credentials_and_target() -> None:
     )
     async with client:
         result = await client.get_server_info()
-    assert result["server_id"] == "srv"
+    assert result["param_ram"] == "1024"
     assert observed[0].headers["authorization"] == "Bearer key"
     assert b"srv=srv" in observed[0].content and b"key=key" in observed[0].content
 
@@ -39,7 +60,7 @@ async def test_local_rate_limit_returns_retry_guidance_without_waiting() -> None
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json={"password": "value"}, request=request)
+        return httpx.Response(200, json=DB_RESPONSE, request=request)
 
     client = MikrusClient(
         "https://api.mikr.us",
@@ -110,7 +131,11 @@ async def test_credentials_endpoint_is_not_cached() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json={"password": str(calls)}, request=request)
+        return httpx.Response(
+            200,
+            json={**DB_RESPONSE, "password": f"redacted-secret-{calls}"},
+            request=request,
+        )
 
     client = MikrusClient(
         "https://api.mikr.us",

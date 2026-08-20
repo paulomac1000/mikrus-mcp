@@ -12,6 +12,30 @@ from mikrus_mcp.kernel import ApprovalRegistry, CallerContext, InvocationKernel,
 from mikrus_mcp.manifests import MANIFESTS
 
 
+def mikrus_info_payload() -> dict[str, object]:
+    return {
+        "server_id": "abc123",
+        "imie_id": "abc123",
+        "server_name": None,
+        "expires": "2027-02-13 00:00:00",
+        "expires_storage": None,
+        "param_ram": "1024",
+        "param_disk": "15",
+        "lastlog_panel": "2026-07-08 00:21:18",
+        "mikrus_pro": "nie",
+    }
+
+
+def mikrus_db_payload() -> dict[str, object]:
+    return {
+        "db_user": "abc123",
+        "db_host": "db.mikr.us",
+        "db_port": "3306",
+        "db_name": "abc123",
+        "password": "redacted-secret",
+    }
+
+
 class MockMikrusClient:
     def __init__(self, config: TargetConfig, *, fail_open: bool = False) -> None:
         self.config = config
@@ -31,7 +55,11 @@ class MockMikrusClient:
 
     async def get_server_info(self) -> dict[str, object]:
         self.calls.append(("get_server_info", ()))
-        return {"server_id": self.config.server_id, "password": "must-redact"}
+        return mikrus_info_payload()
+
+    async def get_db_info(self) -> dict[str, object]:
+        self.calls.append(("get_db_info", ()))
+        return mikrus_db_payload()
 
     async def write_file(self, path: str, content: str) -> dict[str, object]:
         self.calls.append(("write_file", (path, content)))
@@ -103,7 +131,7 @@ async def test_read_result_is_field_sanitized(target: TargetConfig) -> None:
     registry = TargetRegistry({"prod": target}, factory=lambda _: client)  # type: ignore[arg-type]
     settings = make_settings(target)
     result = await InvocationKernel(settings, registry=registry).invoke(
-        "get_server_info", {}, CallerContext("principal", settings.allowed_scopes)
+        "get_db_info", {}, CallerContext("principal", settings.allowed_scopes)
     )
     assert result["success"] is True
     assert result["data"]["password"] == "<REDACTED>"
@@ -167,7 +195,7 @@ async def test_cancellation_is_not_swallowed(target: TargetConfig) -> None:
     class SlowClient(MockMikrusClient):
         async def get_server_info(self) -> dict[str, object]:
             await asyncio.sleep(60)
-            return {}
+            return mikrus_info_payload()
 
     settings = make_settings(target, default_deadline_ms=120_000)
     registry = TargetRegistry(
@@ -226,7 +254,7 @@ async def test_manifest_controls_read_retry_but_mutation_is_single_attempt(
                     "retry later",
                     retry_after_seconds=0,
                 )
-            return {"server_id": "srv"}
+            return mikrus_info_payload()
 
         async def write_file(self, path: str, content: str) -> dict[str, object]:
             self.write_attempts += 1
@@ -385,7 +413,7 @@ async def test_kernel_retries_only_explicit_transient_upstream_errors(target: Ta
             self.attempts += 1
             if self.attempts == 1:
                 raise AppError(self.code, "classified failure")
-            return {"server_id": "srv"}
+            return mikrus_info_payload()
 
     settings = make_settings(target)
     caller = CallerContext("principal", settings.allowed_scopes)
