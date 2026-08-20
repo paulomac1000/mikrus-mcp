@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -120,6 +121,9 @@ async def test_credentials_endpoint_is_not_cached() -> None:
     )
     async with client:
         await client.get_db_info()
+        # The sleep must exceed one rate-limiter slot (60s / 100_000 rpm), or the
+        # credential limiter legitimately throttles the second call (observed flake).
+        await asyncio.sleep(60.0 / 100_000 + 0.001)
         await client.get_db_info()
     assert calls == 2
 
