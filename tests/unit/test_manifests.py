@@ -20,6 +20,7 @@ def test_every_mutation_is_conservative() -> None:
             assert manifest.idempotent is False
             assert manifest.requires_approval is True
             assert manifest.concurrent_safe is False
+            assert manifest.timeout_ms >= 65_000
 
 
 def test_sensitive_reads_declare_confidentiality() -> None:
