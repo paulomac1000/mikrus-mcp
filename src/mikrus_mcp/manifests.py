@@ -14,6 +14,11 @@ ConcurrencyScope = Literal["none", "target", "target-capability", "target-resour
 
 PROTOCOL_REVISIONS = ("2026-07-28", "2025-11-25")
 DEFAULT_CAPABILITY_RESPONSE_BYTES = 1_000_000
+# Mutation adapters use bounded timeouts up to 65 seconds for phase-aware
+# classification. Keep the default capability budget above that adapter bound so
+# the outer kernel deadline cannot preempt the adapter before it can distinguish
+# a pre-dispatch failure from an ambiguous post-dispatch outcome.
+DEFAULT_MUTATION_TIMEOUT_MS = 70_000
 MIKRUS_ONLY = frozenset(
     {
         "get_server_info",
@@ -165,7 +170,7 @@ def _mutation(
     *,
     destructive: bool = False,
     impact: str = "persistent",
-    timeout_ms: int = 30_000,
+    timeout_ms: int = DEFAULT_MUTATION_TIMEOUT_MS,
     resource_argument: str | None = None,
 ) -> CapabilityManifest:
     return CapabilityManifest(
