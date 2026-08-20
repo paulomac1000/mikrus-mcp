@@ -160,7 +160,11 @@ async def _real_client() -> Any:
     """Create and open a MikrusClient against the real API."""
     from mikrus_mcp.clients.mikrus import MikrusClient  # noqa: E402
 
-    client = MikrusClient("https://api.mikr.us", _MIKRUS_API_KEY, _MIKRUS_SERVER_NAME)
+    # High rpm keeps the live burst test inside the credential limiter's design
+    # envelope (default 5/min fail-fasts a second call within 12 seconds).
+    client = MikrusClient(
+        "https://api.mikr.us", _MIKRUS_API_KEY, _MIKRUS_SERVER_NAME, requests_per_minute=10_000
+    )
     await client.open()
     return client
 
