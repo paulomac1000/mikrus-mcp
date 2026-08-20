@@ -1,8 +1,8 @@
 schema_version: 1
-report_id: mikrus-mcp-mcp-server-architect-6fe60a5
+report_id: mikrus-mcp-mcp-server-architect-7cf17f9
 repository:
   name: paulomac1000/mikrus-mcp
-  revision: 6fe60a545b8739e251675abe4300574d0a0d085c
+  revision: 7cf17f934483469b281a1f30d7ceb1f16ba4e92b
 skill: mcp-server-architect
 context:
   target_level: L2
@@ -136,4 +136,4 @@ checks:
     evidence_paths: [src/mikrus_mcp/kernel.py, tests/unit/test_server_registration.py]
 residual_risks:
   - The pinned fdb462 atomic catalog applies mcp.artifact.multiarch-exact to any container profile, while this repository intentionally advertises Linux/amd64 only. Container exact-artifact evidence remains in migration-assessment.yaml; the container profile is omitted from this atomic context rather than fabricating multi-architecture review evidence.
-  - This report is structural evidence for repository revision 6fe60a545b8739e251675abe4300574d0a0d085c. It is not independent production approval.
+  - This report is structural evidence for repository revision 7cf17f934483469b281a1f30d7ceb1f16ba4e92b. It is not independent production approval.
