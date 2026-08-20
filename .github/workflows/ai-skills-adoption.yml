@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -93,3 +93,5 @@ jobs:
             --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml \
             --schema .trusted-ai-skills/contracts/atomic-claim-report.schema.json \
             --repository-root .atomic-validation-root
+      - name: Reject stale adoption evidence
+        run: python scripts/check_evidence_freshness.py
