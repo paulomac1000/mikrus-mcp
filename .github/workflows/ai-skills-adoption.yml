@@ -95,5 +95,61 @@ jobs:
             --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml \
             --schema .trusted-ai-skills/contracts/atomic-claim-report.schema.json \
             --repository-root .atomic-validation-root
+      - name: Write machine-bound structural evidence
+        shell: bash
+        env:
+          EVIDENCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVIDENCE_RUN_ID: ${{ github.run_id }}
+          EVIDENCE_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("mikrus_mcp-*.whl"))
+          wheel_digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          report = {
+              "schema_version": 1,
+              "provider": "github-actions",
+              "repository": "paulomac1000/mikrus-mcp",
+              "revision": os.environ["EVIDENCE_REVISION"],
+              "run_id": int(os.environ["EVIDENCE_RUN_ID"]),
+              "workflow_id": 338973609,
+              "workflow_path": ".github/workflows/ai-skills-adoption.yml",
+              "workflow_name": "AI Skills adoption",
+              "event": os.environ["EVIDENCE_EVENT"],
+              "job_name": "structural-contract",
+              "lane": "python-compatibility",
+              "authority_revision": os.environ["AI_SKILLS_REVISION"],
+              "application_wheel": wheel.name,
+              "application_wheel_sha256": f"sha256:{wheel_digest}",
+              "result": "passed",
+          }
+          encoded = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode()
+          Path("structural-attestation.json").write_bytes(encoded)
+          report_digest = hashlib.sha256(encoded).hexdigest()
+          Path("evidence-sha256.txt").write_text(
+              f"sha256:{report_digest}  structural-attestation.json\n"
+              f"sha256:{wheel_digest}  {wheel.as_posix()}\n",
+              encoding="utf-8",
+          )
+          print(f"REPORT_SHA256=sha256:{report_digest}")
+          print(f"WHEEL_SHA256=sha256:{wheel_digest}")
+          PY
+      - name: Upload machine-bound structural evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ai-skills-structural-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            structural-attestation.json
+            evidence-sha256.txt
+            dist/*.whl
+            atomic-claims.yaml
+            migration-assessment.yaml
+          if-no-files-found: error
+          retention-days: 30
       - name: Reject stale adoption evidence
         run: python scripts/check_evidence_freshness.py
