@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fail closed when AI Skills evidence is stale relative to the reviewed code revision."""
+"""Fail closed when AI Skills evidence is stale relative to the reviewed code revision.
+
+Content identity is enforced by the evidence-only delta, not by commit ancestry, so
+squash merges are supported: after a squash the bound revision may leave the merged
+history, and the evidence must then be rebound to the merged commit.
+"""
 
 from __future__ import annotations
 
@@ -70,14 +75,17 @@ def main() -> int:
         )
 
     head = _git("rev-parse", "HEAD")
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", assessment_revision, head],
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{assessment_revision}^{{commit}}"],
         cwd=ROOT,
         check=False,
     )
-    if ancestor.returncode != 0:
+    if present.returncode != 0:
         raise SystemExit(
-            f"assessed revision {assessment_revision} is not an ancestor of HEAD {head}"
+            f"assessed revision {assessment_revision} is not present in this checkout. "
+            "This is expected after a squash merge: rebind repository.revision in "
+            "migration-assessment.yaml and atomic-claims.yaml to the merged commit "
+            "and commit the change as evidence-only."
         )
 
     allowed = set(DEFAULT_ALLOWED_EVIDENCE_PATHS)
