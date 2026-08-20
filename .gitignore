@@ -15,3 +15,7 @@ wheelhouse/
 evidence/
 *-junit.xml
 *.approval.json
+
+# tooling sidecar data
+*.py,cover
+.omo/
