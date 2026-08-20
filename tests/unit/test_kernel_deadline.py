@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.kernel import CallerContext, InvocationKernel
+from mikrus_mcp.manifests import MANIFESTS
 from mikrus_mcp.targets import TargetRegistry
 
 
@@ -42,7 +44,62 @@ async def test_mutation_deadline_after_execution_start_is_ambiguous() -> None:
         {"prod": target},
         "prod",
         write_enabled=True,
-        default_deadline_ms=100,
+        default_deadline_ms=120_000,
+        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+    )
+    client = SlowMutationClient(target)
+    registry = TargetRegistry(
+        {"prod": target},
+        factory=lambda _: client,  # type: ignore[arg-type]
+    )
+    approvals = ApprovalRegistry()
+    arguments: dict[str, Any] = {"path": "/tmp/a", "content": "x"}
+    digest = normalized_arguments_digest(arguments)
+    approvals.issue_for_test(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        digest,
+    )
+    kernel = InvocationKernel(settings, registry=registry, approvals=approvals)
+    original = MANIFESTS["write_file"]
+    MANIFESTS["write_file"] = replace(original, timeout_ms=100)
+    try:
+        result = await kernel.invoke(
+            "write_file",
+            arguments,
+            CallerContext("principal", settings.allowed_scopes),
+        )
+    finally:
+        MANIFESTS["write_file"] = original
+
+    assert client.started.is_set()
+    assert result["error"]["code"] == "AMBIGUOUS_OUTCOME"
+    assert result["error"]["retryable"] is False
+    assert not approvals.has_matching(
+        "write_file",
+        "principal",
+        target.stable_identity,
+        "/tmp/a",
+        digest,
+    )
+
+
+@pytest.mark.asyncio
+async def test_too_short_mutation_deadline_is_rejected_before_consuming_approval() -> None:
+    target = TargetConfig(
+        "prod",
+        "mikrus",
+        api_url="https://api.mikr.us",
+        api_key="k",
+        server_id="srv",
+    )
+    settings = Settings(
+        {"prod": target},
+        "prod",
+        write_enabled=True,
+        default_deadline_ms=120_000,
         allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
     )
     client = SlowMutationClient(target)
@@ -66,12 +123,12 @@ async def test_mutation_deadline_after_execution_start_is_ambiguous() -> None:
         "write_file",
         arguments,
         CallerContext("principal", settings.allowed_scopes),
+        deadline_ms=100,
     )
 
-    assert client.started.is_set()
-    assert result["error"]["code"] == "AMBIGUOUS_OUTCOME"
-    assert result["error"]["retryable"] is False
-    assert not approvals.has_matching(
+    assert not client.started.is_set()
+    assert result["error"]["code"] == "VALIDATION_FAILED"
+    assert approvals.has_matching(
         "write_file",
         "principal",
         target.stable_identity,
