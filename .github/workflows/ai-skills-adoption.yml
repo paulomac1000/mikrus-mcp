@@ -1,0 +1,64 @@
+name: AI Skills adoption
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-skills-adoption-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_VERSION: "26.1.2"
+  AI_SKILLS_REVISION: "fdb46268454bf08258e39e604e0ab7f764b54c7a"
+
+jobs:
+  structural-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-linux-x64-py312.lock
+      - name: Install exact development graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
+          python -m pip check
+      - name: Checkout immutable AI Skills authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: paulomac1000/ai-skills
+          ref: ${{ env.AI_SKILLS_REVISION }}
+          path: .trusted-ai-skills
+          persist-credentials: false
+      - name: Validate immutable skill lock
+        run: >-
+          python .trusted-ai-skills/contracts/validate_skills_lock.py
+          ai-skills.lock.yaml --skills-root .trusted-ai-skills
+      - name: Validate migration assessment structurally
+        run: >-
+          python .trusted-ai-skills/contracts/validate_adoption.py
+          migration-assessment.yaml
+          --catalog .trusted-ai-skills/contracts/rule-catalog.yaml
+          --schema .trusted-ai-skills/contracts/adoption-assessment.schema.json
+          --skills-root .trusted-ai-skills/skills
+          --repository-root .
+      - name: Validate atomic child-control authority
+        run: >-
+          python .trusted-ai-skills/contracts/validate_atomic_claims.py
+          --catalog .trusted-ai-skills/contracts/atomic-claim-catalog.yaml
+          --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml
+          --repository-root .trusted-ai-skills
