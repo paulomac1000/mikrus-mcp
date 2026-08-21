@@ -85,7 +85,9 @@ class CapabilityManifest:
         extensions: dict[str, object] = {
             "application_version": self.version,
             "confidentiality": self.confidentiality,
+            "operational_impact": self.operational_impact,
             "cost": self.cost,
+            "idempotency_mechanism": self.idempotency_mechanism,
             "retry_conditions": list(self.retry_conditions),
             "target_binding": self.target_binding,
             "target_required": self.target_required,
