@@ -130,7 +130,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         token = _request_id.set(request_id)
         started = time.monotonic()
         target = self.settings.default_target
-        target_identity = "<none>"
+        target_identity: str | None = None
         mutation_execution_started = False
         manifest: CapabilityManifest | None = None
         target_config: TargetConfig | None = None
@@ -141,27 +141,31 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             normalized = self._validate_arguments(name, arguments, manifest)
             target = str(normalized.get("server") or self.settings.default_target)
             self._authorize_selector(caller, manifest, target)
+            self._authorize_data_classification(caller, manifest)
             self._authorize_mutation(manifest)
-            target_config = None
+            arguments_digest = normalized_arguments_digest(normalized)
+            resource = self._resource(manifest, normalized)
+            prepared_client: Client | None = None
             if manifest.target_required:
                 target_config = self.registry.config(target)
-                self._authorize_resolved_target(caller, manifest, target, target_config)
-                target_identity = target_config.stable_identity
                 if name in self._MIKRUS_ONLY and target_config.type != "mikrus":
                     raise AppError(
                         ErrorCode.VALIDATION,
                         f"target '{target}' is not a mikr.us target",
                     )
-            arguments_digest = normalized_arguments_digest(normalized)
-            resource = self._resource(manifest, normalized)
-            prepared_client: Client | None = None
-            if manifest.target_required and manifest.requires_approval:
                 prepared_client = await self.registry.get(target)
                 target_identity = prepared_client.stable_identity
+                self._authorize_resolved_target(
+                    caller,
+                    manifest,
+                    target_config,
+                    target_identity,
+                    resource,
+                )
             if manifest.requires_approval and not self.approvals.has_matching(
                 manifest.name,
                 caller.principal,
-                target_identity,
+                target_identity or "<none>",
                 resource,
                 arguments_digest,
             ):
@@ -185,6 +189,13 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
 
             async def execute_once_locked() -> Any:
                 nonlocal mutation_execution_started
+                if manifest.target_required:
+                    current_identity = self.registry.resolved_identity(target)
+                    if current_identity is None or current_identity != target_identity:
+                        raise AppError(
+                            ErrorCode.AUTHORIZATION,
+                            "resolved target identity changed before execution",
+                        )
                 if (
                     manifest.side_effects != "read"
                     and manifest.timeout_ms >= _MUTATION_CLASSIFICATION_BUDGET_MS
@@ -199,7 +210,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 if manifest.requires_approval and not self.approvals.consume_matching(
                     manifest.name,
                     caller.principal,
-                    target_identity,
+                    target_identity or "<none>",
                     resource,
                     arguments_digest,
                 ):
