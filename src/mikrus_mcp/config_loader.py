@@ -116,7 +116,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     principal_default = (
         "http-request-bound" if transport == "streamable-http" else _default_stdio_principal()
     )
-    scope_raw = env.get("MCP_ALLOWED_SCOPES", "tool:*,target:*")
+    scope_raw = env.get(
+        "MCP_ALLOWED_SCOPES",
+        "tool:*,target:*,target-id:*,resource:*,data:*",
+    )
     scopes = frozenset(value.strip() for value in scope_raw.split(",") if value.strip())
     default_target = (
         env.get("MCP_DEFAULT_SERVER") or env.get("MIKRUS_DEFAULT_SERVER") or next(iter(parsed))
