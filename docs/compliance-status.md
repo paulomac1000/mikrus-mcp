@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: cc912671e3ebc9ab6f7f7c2d070ae8ba4e1309e0
+assessed_revision: debb74828a1d24286baba39247e2ce5484f3dac4
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
@@ -28,14 +28,15 @@ contracts from an upstream hardening branch (skills-lock validator, canonical ca
 schema, atomic child controls, AFDS document schema 2) were removed from authoritative
 gates; where retained locally they are explicitly non-authoritative.
 
-`assessed_revision` in this document's frontmatter names the last revision whose
-provider evidence is complete: ordinary CI `32512120142` and Semgrep `32512120159` are
-green on that revision, and the adoption run on it validated every gate except freshness,
-which was intentionally red because the dependency-refresh batch itself changed
-implementation inputs. The evidence-only rebind above is the descendant that must pass
-the full workflow. `scripts/check_evidence_freshness.py` fails closed when
-any non-evidence file changes after that revision, and instructs the rebind procedure
-after a squash merge. No document treats its own commit hash as approval evidence.
+`assessed_revision` in this document's frontmatter names the exact 2.0 release-candidate
+code and workflow revision immediately before evidence-only release documentation updates.
+Any descendant used for the release may differ only in the evidence paths allowed by
+`scripts/check_evidence_freshness.py`; any implementation, dependency, configuration, or
+workflow change requires a new assessment binding. Provider run IDs and artifact IDs are
+not treated as timeless approval: release publication independently requires a successful
+ordinary CI run and the exact non-expired release bundle for the tagged SHA. No document
+treats its own commit hash, a badge, or self-authored evidence as independent production
+approval.
 
 ## Implemented contract changes
 
@@ -118,7 +119,7 @@ for the revision recorded by the corresponding evidence object.
 | mcp.response.structured | implemented | provenance-parity errors, retry guidance, sanitization, envelope bounds |
 | mcp.authorization.server-side | single-operator profile | hidden approvals bind principal, capability, target identity, resource and normalized arguments |
 | mcp.operations.observable | incomplete | health dimensions exist; deployment audit/metrics/SLO and recovery drills remain |
-| mcp.artifact.exact | implemented structurally | exact wheel and Linux/amd64 image build/smoke gates green on assessed revision |
+| mcp.artifact.exact | implemented structurally | exact wheel and Linux/amd64 image build/smoke gates must be green for the tagged revision |
 | mcp.migration.accounted | implemented | `MIGRATION.md`, rollback, residual risks, and this document |
 | mcp.verification.layered | implemented | layered gates composed by `scripts/ci.py` plus provider lanes |
 
