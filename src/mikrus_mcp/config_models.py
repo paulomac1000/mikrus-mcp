@@ -120,7 +120,9 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     principal: str = field(default_factory=_default_stdio_principal)
-    allowed_scopes: frozenset[str] = frozenset({"tool:*", "target:*"})
+    allowed_scopes: frozenset[str] = frozenset(
+        {"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}
+    )
     write_enabled: bool = False
     default_deadline_ms: int = 120_000
     server_max_deadline_ms: int = 120_000
