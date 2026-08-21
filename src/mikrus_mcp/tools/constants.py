@@ -2,6 +2,8 @@
 
 from typing import Final
 
+from mikrus_mcp import __version__
+
 DEFAULT_HTTP_TIMEOUT: Final = 10.0
 EXEC_HTTP_TIMEOUT: Final = 65.0
 SSH_DEFAULT_TIMEOUT: Final = 30
@@ -17,5 +19,5 @@ SERVICE_ACTIONS: Final = frozenset(
 )
 READ_ONLY_SERVICE_ACTIONS: Final = frozenset({"status", "is-active", "is-enabled"})
 PROCESS_ACTIONS: Final = frozenset({"list", "kill"})
-TOOLS_VERSION: Final = "2.0.0"
-CAPABILITIES_SCHEMA_VERSION: Final = "2.0.0"
+TOOLS_VERSION: Final = __version__
+CAPABILITIES_SCHEMA_VERSION: Final = __version__

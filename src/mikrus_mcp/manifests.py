@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from mikrus_mcp import __version__
 from mikrus_mcp.config import Settings
 
 SideEffects = Literal["read", "write", "destructive"]
@@ -144,7 +145,7 @@ def _read(
 ) -> CapabilityManifest:
     return CapabilityManifest(
         name=name,
-        version="2.0.0",
+        version=__version__,
         side_effects="read",
         confidentiality=confidentiality,
         operational_impact="none",
@@ -175,7 +176,7 @@ def _mutation(
 ) -> CapabilityManifest:
     return CapabilityManifest(
         name=name,
-        version="2.0.0",
+        version=__version__,
         side_effects="destructive" if destructive else "write",
         confidentiality="internal",
         operational_impact=impact,

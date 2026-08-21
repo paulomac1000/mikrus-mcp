@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from mikrus_mcp import __version__
 from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings
@@ -230,7 +231,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     "capability": manifest.name,
                     "capability_version": manifest.version,
                     "source": "mikrus-mcp",
-                    "artifact": "mikrus-mcp==2.0.0",
+                    "artifact": f"mikrus-mcp=={__version__}",
                     "target": target if manifest.target_required else None,
                     "target_identity": target_identity if manifest.target_required else None,
                     "backend": target_config.type if target_config is not None else None,

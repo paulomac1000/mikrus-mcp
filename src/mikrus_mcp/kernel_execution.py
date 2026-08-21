@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
+from mikrus_mcp import __version__
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings
 from mikrus_mcp.errors import AppError, ErrorCode
@@ -30,8 +31,8 @@ class ExecutionMixin:
     ) -> Any:
         if name == "describe_mikrus_capabilities":
             return {
-                "schema_version": "2.0.0",
-                "server_version": "2.0.0",
+                "schema_version": __version__,
+                "server_version": __version__,
                 "supported_transports": ["stdio", "streamable-http"],
                 "supported": self.catalog(active_only=False),
                 "active": self.catalog(active_only=True),

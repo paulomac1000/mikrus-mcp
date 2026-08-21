@@ -12,6 +12,7 @@ from typing import Any
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 
+from mikrus_mcp import __version__
 from mikrus_mcp.approvals import ApprovalRegistry
 from mikrus_mcp.config import Settings, load_settings
 from mikrus_mcp.http import (
@@ -46,7 +47,7 @@ def build_server(
 
     server = MCPServer(
         "mikrus-mcp",
-        version="2.0.0",
+        version=__version__,
         instructions=(
             "Call list_configured_servers before selecting a target. Preserve the exact target "
             "identifier. Never retry a mutation. Mutations require operator enablement and a "
