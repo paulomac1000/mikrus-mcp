@@ -131,7 +131,7 @@ def _allowed_job_permissions(path: Path, job_name: str, events: set[str]) -> dic
     if path.name == "publish.yml" and job_name == "release":
         return {"contents": {"write", "none"}}
     if path.name == "release-v2-tag.yml" and job_name == "tag":
-        return {"contents": {"write", "none"}}
+        return {"actions": {"write", "none"}, "contents": {"write", "none"}}
     if path.name == "semgrep-scheduled.yml" and job_name == "semgrep":
         return {"contents": {"read", "none"}, "security-events": {"write", "none"}}
     return {"contents": {"read", "none"}}
