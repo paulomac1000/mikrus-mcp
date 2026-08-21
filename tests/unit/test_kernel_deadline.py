@@ -45,7 +45,9 @@ async def test_mutation_deadline_after_execution_start_is_ambiguous() -> None:
         "prod",
         write_enabled=True,
         default_deadline_ms=120_000,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     client = SlowMutationClient(target)
     registry = TargetRegistry(
@@ -100,7 +102,9 @@ async def test_too_short_mutation_deadline_times_out_before_consuming_approval()
         "prod",
         write_enabled=True,
         default_deadline_ms=120_000,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     client = SlowMutationClient(target)
     registry = TargetRegistry(
