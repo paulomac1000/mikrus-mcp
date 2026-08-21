@@ -27,7 +27,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Create v2.0.0 tag and dispatch publisher for current green master revision
+      - name: Ensure v2.0.0 tag and dispatch publisher
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,26 +39,38 @@ jobs:
             echo "Skipping stale CI revision $RELEASE_SHA; master is $current_master"
             exit 0
           fi
+
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           if [[ "$version" != "2.0.0" ]]; then
             echo "Skipping because project version is $version, expected 2.0.0"
             exit 0
           fi
           python scripts/check_evidence_freshness.py
+
           if gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/v2.0.0" >/dev/null 2>&1; then
             tagged_sha="$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/v2.0.0" --jq .object.sha)"
-            test "$tagged_sha" = "$RELEASE_SHA"
-            echo "Tag v2.0.0 already exists at $RELEASE_SHA"
+            git cat-file -e "$tagged_sha^{commit}"
+            git merge-base --is-ancestor "$tagged_sha" "$RELEASE_SHA" || {
+              echo "Existing v2.0.0 tag $tagged_sha is not an ancestor of current master $RELEASE_SHA" >&2
+              exit 1
+            }
+            git show "$tagged_sha:pyproject.toml" > /tmp/v2-pyproject.toml
+            tagged_version="$(python -c 'import tomllib; print(tomllib.load(open("/tmp/v2-pyproject.toml", "rb"))["project"]["version"])')"
+            test "$tagged_version" = "2.0.0"
+            echo "Using existing v2.0.0 tag at $tagged_sha"
           else
+            tagged_sha="$RELEASE_SHA"
             gh api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref='refs/tags/v2.0.0' \
-              -f sha="$RELEASE_SHA"
-            echo "Created v2.0.0 at $RELEASE_SHA"
+              -f sha="$tagged_sha"
+            echo "Created v2.0.0 at $tagged_sha"
           fi
+
           if gh release view v2.0.0 >/dev/null 2>&1; then
             echo "GitHub Release v2.0.0 already exists; publisher does not need redispatch"
             exit 0
           fi
+
           gh api --method POST "/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
             --input - <<'JSON'
           {"ref":"master","inputs":{"release_ref":"v2.0.0"}}
