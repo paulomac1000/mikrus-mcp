@@ -197,7 +197,9 @@ async def test_approval_uses_resolved_ssh_identity_not_selector_identity() -> No
         {"prod": target},
         "prod",
         write_enabled=True,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     arguments = {"path": "/tmp/a", "content": "x"}
     digest = normalized_arguments_digest(arguments)
@@ -266,7 +268,10 @@ async def test_response_limit_counts_application_envelope_metadata() -> None:
         result = await kernel.invoke(
             "get_server_info",
             {},
-            CallerContext("principal", frozenset({"tool:*", "target:*"})),
+            CallerContext(
+                "principal",
+                frozenset({"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}),
+            ),
         )
         assert result["success"] is False
         assert result["error"]["code"] == "UPSTREAM_FAILED"
