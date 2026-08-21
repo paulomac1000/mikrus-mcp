@@ -2,10 +2,9 @@
 """Fail closed when AI Skills evidence is stale relative to the reviewed code revision.
 
 The assessed revision is declared by ``assessed_revision`` in the
-``docs/compliance-status.md`` frontmatter. Content identity is enforced by an
-evidence-only delta rather than commit ancestry, so squash merges are supported:
-after a squash the bound revision may leave the merged history, and the evidence
-must then be rebound to the merged commit.
+``docs/compliance-status.md`` frontmatter. The bound revision must exist and be an
+ancestor of HEAD. After a squash merge it must therefore be rebound to provider
+evidence for the new squash commit before freshness can be claimed.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 BINDING_DOCUMENT = Path("docs/compliance-status.md")
 DEFAULT_ALLOWED_EVIDENCE_PATHS = frozenset(
     {
+        "migration-assessment.yaml",
         "docs/compliance-status.md",
         "docs/ai-skills-review.md",
         "CHANGELOG.md",
@@ -75,10 +75,22 @@ def main() -> int:
     if present.returncode != 0:
         raise SystemExit(
             f"assessed revision {assessment_revision} is not present in this checkout. "
-            "This is expected after a squash merge: update assessed_revision in "
-            f"{BINDING_DOCUMENT} to the merged commit and commit the change as "
-            "evidence-only."
+            "After a squash merge, run provider evidence for the new squash commit and "
+            f"rebind assessed_revision in {BINDING_DOCUMENT}."
         )
+
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", assessment_revision, head],
+        cwd=ROOT,
+        check=False,
+    )
+    if ancestor.returncode == 1:
+        raise SystemExit(
+            f"assessed revision {assessment_revision} exists but is not an ancestor of HEAD {head}; "
+            "rebind to an exact provider-tested ancestor before claiming freshness."
+        )
+    if ancestor.returncode != 0:
+        raise SystemExit("git merge-base --is-ancestor failed while checking evidence freshness")
 
     allowed = set(DEFAULT_ALLOWED_EVIDENCE_PATHS)
     allowed.update(args.allow_evidence_path)
