@@ -77,7 +77,9 @@ def make_settings(target: TargetConfig, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "targets": {"prod": target},
         "default_target": "prod",
-        "allowed_scopes": frozenset({"tool:*", "target:*", "write:server"}),
+        "allowed_scopes": frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     }
     values.update(overrides)
     return Settings(**values)
@@ -115,7 +117,9 @@ async def test_default_target_failure_does_not_fallback(target: TargetConfig) ->
     settings = Settings(
         {"prod": target, "backup": backup},
         "prod",
-        allowed_scopes=frozenset({"tool:*", "target:*"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}
+        ),
     )
     registry = TargetRegistry(dict(settings.targets), factory=factory)  # type: ignore[arg-type]
     result = await InvocationKernel(settings, registry=registry).invoke(
@@ -353,7 +357,9 @@ async def test_mikrus_target_type_is_rejected_before_connection() -> None:
     settings = Settings(
         {"prod": mikrus, "ssh": ssh},
         "prod",
-        allowed_scopes=frozenset({"tool:*", "target:*"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}
+        ),
     )
     registry = TargetRegistry(dict(settings.targets), factory=factory)  # type: ignore[arg-type]
     result = await InvocationKernel(settings, registry=registry).invoke(
