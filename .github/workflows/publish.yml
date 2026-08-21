@@ -29,8 +29,8 @@ jobs:
       sha: ${{ steps.revision.outputs.sha }}
       version: ${{ steps.revision.outputs.version }}
       release_tag: ${{ steps.revision.outputs.release_tag }}
-      quarantine_ref: ${{ steps.quarantine.outputs.ref }}
-      quarantine_digest: ${{ steps.quarantine.outputs.digest }}
+      artifact_id: ${{ steps.evidence.outputs.artifact_id }}
+      image_id: ${{ steps.candidate.outputs.image_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -130,46 +130,11 @@ jobs:
           loaded="$(docker load --input bundle/release/image.tar)"
           source_image="${loaded#Loaded image: }"
           test "$source_image" != "$loaded"
-          test "$(docker image inspect --format='{{.Id}}' "$source_image")" = \
-            "$(cat bundle/release/image-id.txt)"
+          image_id="$(docker image inspect --format='{{.Id}}' "$source_image")"
+          test "$image_id" = "$(cat bundle/release/image-id.txt)"
           docker run --rm --entrypoint python "$source_image" -c \
             "import os; from mikrus_mcp import __version__; assert __version__ == '$VERSION'; assert os.getuid() == 10001"
-          echo "image=$source_image" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
-        with:
-          registry: ${{ vars.QUARANTINE_REGISTRY }}
-          username: ${{ secrets.QUARANTINE_USERNAME }}
-          password: ${{ secrets.QUARANTINE_PASSWORD }}
-      - name: Push candidate only to isolated quarantine
-        id: quarantine
-        shell: bash
-        env:
-          LOCAL_IMAGE: ${{ steps.candidate.outputs.image }}
-          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
-          QUARANTINE_REGISTRY: ${{ vars.QUARANTINE_REGISTRY }}
-          QUARANTINE_REPOSITORY: ${{ vars.QUARANTINE_REPOSITORY }}
-        run: |
-          set -euo pipefail
-          test -n "$QUARANTINE_REGISTRY"
-          test -n "$QUARANTINE_REPOSITORY"
-          quarantine_ref="$QUARANTINE_REGISTRY/$QUARANTINE_REPOSITORY:sha-$RELEASE_SHA"
-          docker tag "$LOCAL_IMAGE" "$quarantine_ref"
-          docker push "$quarantine_ref"
-          digest="$(docker buildx imagetools inspect "$quarantine_ref" --format '{{.Manifest.Digest}}')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "ref=$quarantine_ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - name: Smoke exact quarantined digest
-        shell: bash
-        env:
-          QUARANTINE_REF: ${{ steps.quarantine.outputs.ref }}
-          QUARANTINE_DIGEST: ${{ steps.quarantine.outputs.digest }}
-        run: |
-          set -euo pipefail
-          python -m venv .container-smoke
-          .container-smoke/bin/python -m pip install --no-index --find-links=bundle/wheelhouse "mcp==2.0.0"
-          image="${QUARANTINE_REF%:*}@$QUARANTINE_DIGEST"
-          .container-smoke/bin/python scripts/container_smoke.py --image "$image"
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: validate-release
@@ -178,6 +143,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: none
+      actions: read
       packages: write
       id-token: write
       attestations: write
@@ -185,41 +151,56 @@ jobs:
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
-          registry: ${{ vars.QUARANTINE_REGISTRY }}
-          username: ${{ secrets.QUARANTINE_READ_USERNAME }}
-          password: ${{ secrets.QUARANTINE_READ_PASSWORD }}
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
-        with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Promote exact tested digest without loading candidate image
+      - name: Download exact validated CI artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.validate-release.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > release-bundle.zip
+          mkdir bundle
+          unzip -q release-bundle.zip -d bundle
+      - name: Promote exact tested image without executing candidate code
         id: promote
         shell: bash
         env:
-          QUARANTINE_REF: ${{ needs.validate-release.outputs.quarantine_ref }}
-          EXPECTED_DIGEST: ${{ needs.validate-release.outputs.quarantine_digest }}
           RELEASE_SHA: ${{ needs.validate-release.outputs.sha }}
+          EXPECTED_IMAGE_ID: ${{ needs.validate-release.outputs.image_id }}
           VERSION: ${{ needs.validate-release.outputs.version }}
           RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(cat bundle/release/commit-sha.txt)" = "$RELEASE_SHA"
+          (cd bundle && sha256sum --check release/bundle-sha256.txt)
+          loaded="$(docker load --input bundle/release/image.tar)"
+          source_image="${loaded#Loaded image: }"
+          test "$source_image" != "$loaded"
+          image_id="$(docker image inspect --format='{{.Id}}' "$source_image")"
+          test "$image_id" = "$EXPECTED_IMAGE_ID"
+          test "$image_id" = "$(cat bundle/release/image-id.txt)"
+
           repository="ghcr.io/${GITHUB_REPOSITORY,,}"
-          source_ref="${QUARANTINE_REF%:*}@$EXPECTED_DIGEST"
           immutable_ref="$repository:sha-$RELEASE_SHA"
-          docker buildx imagetools create --tag "$immutable_ref" "$source_ref"
-          promoted="$(docker buildx imagetools inspect "$immutable_ref" --format '{{.Manifest.Digest}}')"
-          test "$promoted" = "$EXPECTED_DIGEST"
+          docker tag "$source_image" "$immutable_ref"
+          docker push "$immutable_ref"
+          digest="$(docker buildx imagetools inspect "$immutable_ref" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
           if [[ -n "$RELEASE_TAG" ]]; then
             test "$RELEASE_TAG" = "v$VERSION"
             version_ref="$repository:$VERSION"
-            docker buildx imagetools create --tag "$version_ref" "$source_ref"
+            docker tag "$source_image" "$version_ref"
+            docker push "$version_ref"
             tagged="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
-            test "$tagged" = "$EXPECTED_DIGEST"
+            test "$tagged" = "$digest"
           fi
-          echo "digest=$EXPECTED_DIGEST" >> "$GITHUB_OUTPUT"
+
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "subject_name=$repository" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
