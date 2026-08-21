@@ -236,8 +236,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "pip==$PIP_VERSION" "build==1.5.1" \
-            "setuptools==83.0.0" "wheel==0.47.0"
+          python -m pip install "pip==$PIP_VERSION" "build==1.5.0" \
+            "setuptools==84.0.0" "wheel==0.48.0"
           python -m build --wheel --no-isolation
           mkdir -p wheelhouse
           python -m pip download \
