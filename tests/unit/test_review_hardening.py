@@ -1,8 +1,8 @@
 """Regression coverage for the audit hardening pass.
 
 Each test pins one invariant that the ai-skills@main authority requires: authorization
-ordering, readiness semantics, manifest/runtime parity, error provenance, and bounded
-retry backoff inside the operation deadline.
+ordering, resolved identity, readiness semantics, manifest/runtime parity, error provenance,
+and bounded retry backoff inside the operation deadline.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ class StubClient:
     def __init__(self, config: TargetConfig) -> None:
         self.stable_identity = config.stable_identity
         self.fail_reads = False
+        self.reads = 0
 
     async def open(self) -> None:
         return None
@@ -41,6 +42,7 @@ class StubClient:
         return None
 
     async def get_server_info(self) -> dict[str, object]:
+        self.reads += 1
         if self.fail_reads:
             raise AppError(ErrorCode.UPSTREAM, "upstream exploded")
         return INFO_PAYLOAD
@@ -55,7 +57,18 @@ def make_kernel(
     settings = Settings(
         {target.name: target},
         target.name,
-        allowed_scopes=scopes or frozenset({"tool:*", "target:*", "target:srv", "write:server"}),
+        allowed_scopes=scopes
+        or frozenset(
+            {
+                "tool:*",
+                "target:*",
+                "target-id:*",
+                "resource:*",
+                "data:*",
+                "target:srv",
+                "write:server",
+            }
+        ),
     )
     registry = TargetRegistry({target.name: target}, factory=lambda _: client)  # type: ignore[arg-type]
     return InvocationKernel(settings, registry=registry, approvals=ApprovalRegistry())
@@ -69,16 +82,67 @@ async def test_unauthorized_caller_cannot_probe_target_existence() -> None:
     kernel = make_kernel(
         target,
         StubClient(target),
-        scopes=frozenset({"tool:get_server_info"}),
+        scopes=frozenset({"tool:get_server_info", "data:internal"}),
     )
     caller = CallerContext("principal", kernel.settings.allowed_scopes)
     denied = await kernel.invoke("get_server_info", {"server": "hidden-target"}, caller)
     assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
     assert "unknown target" not in str(denied["error"]["message"])
 
-    insider = CallerContext("principal", frozenset({"tool:*", "target:*"}))
+    insider = CallerContext(
+        "principal",
+        frozenset({"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}),
+    )
     missing = await kernel.invoke("get_server_info", {"server": "hidden-target"}, insider)
     assert missing["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_resolved_target_identity_requires_post_resolution_authorization() -> None:
+    target = TargetConfig(
+        "prod", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+    )
+    client = StubClient(target)
+    kernel = make_kernel(
+        target,
+        client,
+        scopes=frozenset(
+            {
+                "tool:get_server_info",
+                "target:prod",
+                "target-id:mikrus:other",
+                "data:internal",
+            }
+        ),
+    )
+    result = await kernel.invoke(
+        "get_server_info",
+        {},
+        CallerContext("principal", kernel.settings.allowed_scopes),
+    )
+    assert result["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert client.reads == 0
+
+
+@pytest.mark.asyncio
+async def test_data_classification_is_authorized_before_target_resolution() -> None:
+    target = TargetConfig(
+        "prod", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+    )
+    client = StubClient(target)
+    kernel = make_kernel(
+        target,
+        client,
+        scopes=frozenset({"tool:get_server_info", "target:prod", "target-id:*"}),
+    )
+    result = await kernel.invoke(
+        "get_server_info",
+        {},
+        CallerContext("principal", kernel.settings.allowed_scopes),
+    )
+    assert result["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert client.reads == 0
+    assert kernel.registry.resolved_identity("prod") is None
 
 
 @pytest.mark.asyncio
@@ -127,6 +191,9 @@ def test_manifest_projection_matches_runtime_enforcement() -> None:
             assert concurrency["limit"] == 1
             assert concurrency["scope"] == manifest.concurrency_scope
         assert "queue_limit" not in concurrency
+        extensions = projection["extensions"]
+        assert extensions["operational_impact"] == manifest.operational_impact
+        assert extensions["idempotency_mechanism"] == manifest.idempotency_mechanism
         approval = projection.get("approval")
         if manifest.requires_approval:
             assert approval is not None
@@ -163,5 +230,6 @@ async def test_retry_backoff_cannot_outlive_the_operation_deadline() -> None:
         CallerContext("principal", kernel.settings.allowed_scopes),
         deadline_ms=1000,
     )
-    assert result["error"]["code"] == "TIMEOUT"
-    assert "retry backoff" in str(result["error"]["message"])
+    assert result["error"]["code"] == "RATE_LIMITED"
+    assert result["error"]["retryable"] is True
+    assert result["error"]["retry_after_seconds"] == 50.0
