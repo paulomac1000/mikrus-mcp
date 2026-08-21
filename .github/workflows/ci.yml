@@ -288,7 +288,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
       - name: Verify wheel bundle revision
         shell: bash
         run: |
