@@ -1,132 +1,332 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [master]
-  pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PIP_VERSION: "26.1.2"
+  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          python-version: "3.14"
-
-      - name: Install dependencies
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-linux-x64-py312.lock
+      - name: Build and install the exact wheel with development tools
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
+          python -m pip check
+      - name: Run complete quality gate
+        run: python scripts/ci.py
+      - name: Checkout immutable AI Skills authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: paulomac1000/ai-skills
+          ref: ${{ env.AI_SKILLS_REVISION }}
+          path: .trusted-ai-skills
+          persist-credentials: false
+      - name: Enforce manifest and runtime policy parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from mikrus_mcp.manifests import MANIFESTS, validate_manifests
+          from mikrus_mcp.config import Settings, TargetConfig
 
-      - name: Ruff check
-        run: ruff check src/ tests/
-
-      - name: Ruff format check
-        run: ruff format --check src/ tests/
-
-      - name: mypy
-        run: mypy src/mikrus_mcp/ --strict
-
-      - name: bandit
-        run: bandit -r src/mikrus_mcp/ -f json -o bandit-report.json -ll
-
-      - name: Upload bandit report
+          target = TargetConfig(
+              "probe", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+          )
+          settings = Settings(
+              {target.name: target},
+              target.name,
+              write_enabled=True,
+              allowed_scopes=frozenset(
+                  {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+              ),
+          )
+          validate_manifests(set(MANIFESTS), settings)
+          for name, manifest in sorted(MANIFESTS.items()):
+              projection = manifest.as_dict()
+              concurrency = projection["concurrency"]
+              assert concurrency["serialized"] == (not manifest.concurrent_safe), name
+              if not manifest.concurrent_safe:
+                  assert concurrency["limit"] == 1, name
+                  assert concurrency["scope"] == manifest.concurrency_scope, name
+              extensions = projection["extensions"]
+              assert extensions["operational_impact"] == manifest.operational_impact, name
+              assert extensions["idempotency_mechanism"] == manifest.idempotency_mechanism, name
+              approval = projection.get("approval")
+              if manifest.requires_approval:
+                  assert approval["record_ttl_seconds_max"] <= 300, name
+                  assert "resource" in approval["binds"], name
+          print(f"manifest/runtime parity verified for {len(MANIFESTS)} capabilities")
+          PY
+      - name: Validate governed documentation with pinned AFDS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t governed < <(python scripts/check_docs.py --print-governed)
+          test "${#governed[@]}" -gt 0
+          python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
+      - name: Audit pull-request workflow with pinned policy authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .policy-input/.github/workflows
+          cp .github/workflows/ci.yml .policy-input/.github/workflows/ci.yml
+          python .trusted-ai-skills/skills/ci-cd-architect/tools/check_github_actions_policy.py .policy-input
+      - name: Audit repository workflow privilege profiles
+        run: python scripts/check_workflows.py
+      - name: Upload quality diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: bandit-report
-          path: bandit-report.json
+          name: quality-diagnostics-${{ github.run_id }}
+          path: |
+            repository-junit.xml
+            coverage.xml
+          if-no-files-found: warn
+          retention-days: 30
 
-      - name: Validate documentation (CAFDS)
-        if: hashFiles('afds_config.yaml') != ''
-        run: |
-          curl -sS https://raw.githubusercontent.com/paulomac1000/ai-skills/main/skills/afds-doc-writer/docs_validate.py | python3 - \
-            --config afds_config.yaml --strict --baseline .afds-baseline.json ./
-
-  test:
-    runs-on: ubuntu-latest
-    needs: lint
+  compatibility:
+    name: Python compatibility (${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            lock: requirements-dev-linux-x64-py312.lock
+          - python: "3.13"
+            lock: requirements-dev-linux-x64-py313.lock
+          - python: "3.14"
+            lock: requirements-dev-linux-x64-py314.lock
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.14
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          python-version: "3.14"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run unit tests with coverage
-        run: |
-          pytest tests/unit/ -v --tb=short \
-            --cov=mikrus_mcp \
-            --cov-report=term-missing \
-            --cov-report=xml
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: ${{ matrix.lock }}
+      - name: Build exact wheel and run credential-free suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install --require-hashes -r "${{ matrix.lock }}"
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
+          python -m pip check
+          python scripts/core_gate.py
 
-  docker-smoke:
-    runs-on: ubuntu-latest
-    needs: test
+  lock-evidence:
+    name: Platform locks (linux-x64-py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          context: .
-          target: prod
-          push: false
-          load: true
-          tags: mikrus-mcp:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Smoke test — tool count
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile, download, bind and install exact platform artifacts
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
         run: |
-          docker run --rm mikrus-mcp:test python3 -c "
-          from mikrus_mcp.tools.constants import TOOL_MANIFESTS
-          tc = len(TOOL_MANIFESTS)
-          assert tc == 33, f'Expected 33 tools, got {tc}'
-          print('Tool count OK:', tc)
-          "
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
+          lock_id="linux-x64-py${PYTHON_VERSION//./}"
+          mkdir -p compiled lock-output runtime-wheelhouse dev-wheelhouse
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="compiled/runtime.lock" \
+            requirements-runtime.in
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="compiled/dev.lock" \
+            requirements-dev.in
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest runtime-wheelhouse -r compiled/runtime.lock
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest dev-wheelhouse -r compiled/dev.lock
+          python scripts/build_platform_lock.py \
+            --wheelhouse runtime-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-runtime.in \
+            --output "lock-output/requirements-runtime-$lock_id.lock"
+          python scripts/build_platform_lock.py \
+            --wheelhouse dev-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-dev.in \
+            --output "lock-output/requirements-dev-$lock_id.lock"
+          python -m venv .lock-runtime
+          python -m pip --python .lock-runtime/bin/python install \
+            --no-index --find-links=runtime-wheelhouse --only-binary=:all: --require-hashes \
+            -r "lock-output/requirements-runtime-$lock_id.lock"
+          .lock-runtime/bin/python -m pip check
+          python -m venv .lock-dev
+          python -m pip --python .lock-dev/bin/python install \
+            --no-index --find-links=dev-wheelhouse --only-binary=:all: --require-hashes \
+            -r "lock-output/requirements-dev-$lock_id.lock"
+          .lock-dev/bin/python -m pip check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: platform-locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: lock-output/
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Smoke test — REST API health + tools
+  exact-wheel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-runtime-linux-x64-py312.lock
+      - name: Build exact application wheel and locked dependency wheelhouse
+        shell: bash
         run: |
-          docker run -d --rm --network host \
-            -e MCP_REST_PORT=8301 \
-            -e MCP_PORT=8300 \
-            -e MIKRUS_API_KEY=test \
-            -e MIKRUS_SERVER_NAME=test \
-            -e MCP_UNSAFE_PUBLIC_ACCESS_CONFIRMED=1 \
-            --name test-srv mikrus-mcp:test
-          sleep 5
-          curl -fsS --retry 10 --retry-delay 2 \
-            http://127.0.0.1:8301/api/health || exit 1
-          TOOLS=$(curl -s http://127.0.0.1:8301/api/tools \
-            | python3 -c "import sys,json; print(len(json.load(sys.stdin)['data']))")
-          [ "$TOOLS" = "33" ] \
-            || (echo "FAIL: expected 33, got $TOOLS" && exit 1)
-          docker stop test-srv
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION" "build==1.5.1" \
+            "setuptools==83.0.0" "wheel==0.47.0"
+          python -m build --wheel --no-isolation
+          mkdir -p wheelhouse
+          python -m pip download \
+            --only-binary=:all: \
+            --require-hashes \
+            --dest wheelhouse \
+            -r requirements-runtime-linux-x64-py312.lock
+          cp dist/mikrus_mcp-*.whl wheelhouse/
+      - name: Smoke exact wheel through real advertised transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/artifact_smoke.py \
+            --wheel "$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
+            --wheelhouse wheelhouse
+      - name: Record wheel digests and source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum dist/*.whl wheelhouse/*.whl > wheel-digests.txt
+          printf '%s\n' "${{ github.event.pull_request.head.sha || github.sha }}" > commit-sha.txt
+      - name: Upload exact wheel and wheelhouse
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: exact-wheel-${{ github.run_id }}
+          path: |
+            dist/*.whl
+            wheelhouse/*.whl
+            wheel-digests.txt
+            commit-sha.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  container:
+    needs: exact-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: exact-wheel-${{ github.run_id }}
+          path: .
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+      - name: Verify wheel bundle revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat commit-sha.txt)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          sha256sum --check wheel-digests.txt
+      - name: Build image once from the exact verified wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_wheel="$(find wheelhouse -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)"
+          app_sha="$(sha256sum "$app_wheel" | cut -d' ' -f1)"
+          docker buildx build --load --platform linux/amd64 \
+            --build-arg "APP_WHEEL_SHA256=$app_sha" \
+            --tag "mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}" .
+      - name: Smoke MCP invocation and export the exact image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}"
+          docker run --rm --entrypoint python "$image" -c \
+            "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+          python -m venv .container-smoke
+          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "mcp==2.0.0"
+          .container-smoke/bin/python scripts/container_smoke.py --image "$image"
+          mkdir -p release
+          docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
+          docker save --output release/image.tar "$image"
+          cp commit-sha.txt release/commit-sha.txt
+          sha256sum release/image.tar dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
+      - name: Upload immutable release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-bundle-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            release/
+            dist/*.whl
+            wheelhouse/*.whl
+            wheel-digests.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,24 @@
+schema_version: 1
+repository: paulomac1000/ai-skills
+revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+skills:
+  afds-doc-writer:
+    version: 1.2.0
+    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    normative_entrypoint: skills/afds-doc-writer/STANDARD.md
+    content_digest: sha256:d2519eae2fd304b06610e41dfcb38eb2ce552f3b273a383c146e91cb94ff6af8
+  agents-md-architect:
+    version: 1.2.0
+    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    normative_entrypoint: skills/agents-md-architect/STANDARD.md
+    content_digest: sha256:22e4bac1e86dc524ff6a53f885ed34df90e36269384bfebc05c4bb08cf41e342
+  ci-cd-architect:
+    version: 1.2.0
+    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    normative_entrypoint: skills/ci-cd-architect/STANDARD.md
+    content_digest: sha256:c505ba83d9d4eadab0e4b28e568a8750c01f6282352cd256174197435a6e8920
+  mcp-server-architect:
+    version: 1.2.0
+    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    normative_entrypoint: skills/mcp-server-architect/STANDARD.md
+    content_digest: sha256:7028ab59a9b9c0b00658aac25c961137e3d2eb25d54386a34e0d96a85237c623

@@ -1,256 +1,176 @@
-"""Input validators for security and data integrity."""
+"""Deterministic application validation used before network or privileged I/O."""
 
-import logging
-import os
+from __future__ import annotations
+
 import re
+from pathlib import PurePosixPath
 from typing import Final
 
-logger = logging.getLogger(__name__)
-
-from mikrus_mcp.tools.constants import (  # noqa: E402
+from mikrus_mcp.tools.constants import (
     MAX_GREP_HOURS,
     MAX_TAIL_LINES,
     MAX_WRITE_SIZE,
     SERVICE_ACTIONS,
-    write_operations_enabled,
 )
 
 
 class ValidationError(ValueError):
-    """Raised when input validation fails."""
-
-    pass
+    """Input does not satisfy the local application contract."""
 
 
 class WriteOperationsDisabledError(ValidationError):
-    """Raised when a write/destructive tool is invoked while the write guard is off."""
-
-    pass
+    """Compatibility exception retained for callers of the old write gate."""
 
 
-def check_write_enabled() -> None:
-    """Enforce the server-level write guard before any write/destructive I/O.
-
-    Raises WriteOperationsDisabledError when ENABLE_WRITE_OPERATIONS is not set.
-    This is a server-level authorization gate (mcp-server-standards.md — Write
-    Guard, L2+), distinct from the per-tool ``requires_confirmation`` agent hint.
-    MUST be called before any I/O in every write, destructive, or command tool.
-    """
-    if not write_operations_enabled():
-        raise WriteOperationsDisabledError(
-            "Write operations are disabled on this MCP server. "
-            "Ask the administrator to set ENABLE_WRITE_OPERATIONS=1 to enable "
-            "write, destructive, and command-execution tools."
-        )
-
-
-# Shell metacharacters rejected in file paths. Validated parameters are
-# interpolated into single-quoted shell commands; these characters could break
-# out of the quoting and inject commands, so they are denied by default.
-SHELL_UNSAFE_CHARS: Final = frozenset("'\"`$;|&<>(){}[]*?!~\\\n\r\t")
-
-
-PATH_PATTERN: Final = re.compile(r"^[^\x00-\x1f\x7f]+$")
-SERVICE_NAME_PATTERN: Final = re.compile(r"^[a-zA-Z0-9_\-@.]+$")
-CONTAINER_NAME_PATTERN: Final = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
-DOMAIN_PATTERN: Final = re.compile(
-    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
-    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$|^-$"
+_PATH_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
+_SERVICE: Final = re.compile(r"^[A-Za-z0-9_@.-]{1,255}$")
+_CONTAINER: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_DOMAIN: Final = re.compile(
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
 )
-SEARCH_PATTERN: Final = re.compile(r"^[a-zA-Z0-9_\-./:@\s]+$")
-USERNAME_PATTERN: Final = re.compile(r"^[a-z_][a-z0-9_-]*$")
+_SEARCH: Final = re.compile(r"^[A-Za-z0-9_./:@\s-]{1,1000}$")
+_USERNAME: Final = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_PROCESS: Final = re.compile(r"^(?:[1-9][0-9]{0,9}|[A-Za-z0-9_-]{1,128})$")
 
-WRITE_FORBIDDEN_PATHS: Final = frozenset(
-    {
-        "/etc/passwd",
+_READ_DENIED: Final = tuple(
+    PurePosixPath(value)
+    for value in (
         "/etc/shadow",
         "/etc/gshadow",
-        "/etc/sudoers",
-        "/etc/sudoers.d",
-        "/root/.ssh/authorized_keys",
-        "/etc/ssh/sshd_config",
+        "/root/.ssh",
+        "/proc/kcore",
+    )
+)
+_WRITE_DENIED: Final = tuple(
+    PurePosixPath(value)
+    for value in (
+        "/etc",
         "/boot",
-        "/sys",
+        "/dev",
         "/proc",
-    }
+        "/root",
+        "/sys",
+    )
+)
+_WRITE_ROOTS: Final = tuple(
+    PurePosixPath(value)
+    for value in (
+        "/home",
+        "/opt",
+        "/srv",
+        "/tmp",
+        "/var/log",
+        "/var/www",
+    )
 )
 
-READ_FORBIDDEN_PATHS: Final = frozenset(
-    {
-        "/etc/shadow",
-        "/etc/gshadow",
-        "/root/.ssh/id_rsa",
-        "/root/.ssh/id_ed25519",
-        "/root/.ssh/id_ecdsa",
-    }
-)
 
-WRITE_ALLOWED_PREFIXES: Final = (
-    "/home",
-    "/var/www",
-    "/opt",
-    "/tmp",  # nosec B108
-    "/srv",
-    "/var/log",
-)
-
-DANGEROUS_PATTERNS: Final = [
-    re.compile(r"rm\s+(-[rfRF]+\s+)?/\s*$"),
-    re.compile(r"mkfs\."),
-    re.compile(r"dd\s+if="),
-    re.compile(r":\(\)\s*\{"),
-    re.compile(r">\s*/dev/sd"),
-    re.compile(r"chmod\s+777\s+/"),
-]
+def _within(path: PurePosixPath, parent: PurePosixPath) -> bool:
+    return path == parent or parent in path.parents
 
 
 def validate_path(path: str, *, for_write: bool = False) -> str:
-    """Validate and normalize a file path."""
-    if not path:
-        raise ValidationError("Path cannot be empty")
-    if not isinstance(path, str):
-        raise ValidationError(f"Path must be string, got {type(path)}")
-    if not PATH_PATTERN.match(path):
-        raise ValidationError(f"Path contains invalid characters: {path}")
-    if not path.startswith("/"):
-        raise ValidationError(f"Path must be absolute: {path}")
-
-    if ".." in path.split(os.sep):
-        raise ValidationError(f"Path traversal detected: {path}")
-
-    normalized = os.path.normpath(path)
-
-    forbidden = WRITE_FORBIDDEN_PATHS if for_write else READ_FORBIDDEN_PATHS
-    for fp in forbidden:
-        if normalized.startswith(fp):
-            raise ValidationError(f"Access to {fp} is forbidden")
-
-    if for_write:
-        if not any(normalized.startswith(prefix) for prefix in WRITE_ALLOWED_PREFIXES):
-            logger.warning(
-                "Writing to %s — outside typical application directories",
-                normalized,
-            )
-    return normalized
+    if not isinstance(path, str) or not path:
+        raise ValidationError("Path must be a non-empty string")
+    if not path.startswith("/") or _PATH_CONTROL.search(path):
+        raise ValidationError("Path must be an absolute POSIX path without control characters")
+    raw = PurePosixPath(path)
+    if any(part in {"..", "~"} for part in raw.parts):
+        raise ValidationError("Path traversal is not allowed")
+    normalized = PurePosixPath("/", *[part for part in raw.parts if part not in {"/", "."}])
+    denied = _WRITE_DENIED if for_write else _READ_DENIED
+    if any(_within(normalized, root) for root in denied):
+        raise ValidationError(f"Access to '{normalized}' is forbidden")
+    if for_write and not any(_within(normalized, root) for root in _WRITE_ROOTS):
+        raise ValidationError(f"Writes to '{normalized}' are outside the configured safe roots")
+    return str(normalized)
 
 
 def validate_port(port: str | int) -> int:
-    """Validate port number."""
     try:
-        port_num = int(port)
-    except (ValueError, TypeError) as exc:
-        raise ValidationError(f"Port must be a number, got: {port}") from exc
-    if not 1 <= port_num <= 65535:
-        raise ValidationError(f"Port must be 1-65535, got: {port_num}")
-    return port_num
+        value = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Port must be a number") from exc
+    if not 1 <= value <= 65_535:
+        raise ValidationError("Port must be 1-65535")
+    return value
 
 
 def validate_service_name(name: str) -> str:
-    """Validate systemd service name."""
-    if not name:
-        raise ValidationError("Service name cannot be empty")
-    if not SERVICE_NAME_PATTERN.match(name):
-        raise ValidationError(f"Invalid service name: {name}")
-    if len(name) > 255:
-        raise ValidationError(f"Service name too long: {name}")
+    if not isinstance(name, str) or not _SERVICE.fullmatch(name):
+        raise ValidationError("Invalid service name")
     return name
 
 
 def validate_service_action(action: str) -> str:
-    """Validate systemd service action."""
     if action not in SERVICE_ACTIONS:
-        raise ValidationError(f"Invalid action: {action}. Allowed: {sorted(SERVICE_ACTIONS)}")
+        raise ValidationError(f"Invalid action: {action}")
     return action
 
 
 def validate_container_name(name: str) -> str:
-    """Validate Docker container name."""
-    if not name:
-        raise ValidationError("Container name cannot be empty")
-    if not CONTAINER_NAME_PATTERN.match(name):
-        raise ValidationError(f"Invalid container name: {name}")
+    if not isinstance(name, str) or not _CONTAINER.fullmatch(name):
+        raise ValidationError("Invalid container name")
     return name
 
 
 def validate_domain(domain: str) -> str:
-    """Validate domain name or '-' for auto."""
     if domain == "-":
         return domain
-    if not DOMAIN_PATTERN.match(domain):
-        raise ValidationError(f"Invalid domain format: {domain}")
-    if len(domain) > 253:
-        raise ValidationError(f"Domain too long (max 253 chars): {domain}")
+    if not isinstance(domain, str) or len(domain) > 253 or not _DOMAIN.fullmatch(domain):
+        raise ValidationError("Invalid domain")
     return domain
 
 
 def validate_search_pattern(pattern: str) -> str:
-    """Validate search/grep pattern."""
-    if not pattern:
-        raise ValidationError("Search pattern cannot be empty")
-    if not SEARCH_PATTERN.match(pattern):
-        raise ValidationError(f"Invalid search pattern: {pattern}")
-    if len(pattern) > 1000:
-        raise ValidationError("Search pattern too long")
+    if not isinstance(pattern, str) or not _SEARCH.fullmatch(pattern):
+        raise ValidationError("Invalid search pattern")
     return pattern
 
 
 def validate_username(username: str) -> str:
-    """Validate Unix username."""
-    if not username:
-        raise ValidationError("Username cannot be empty")
-    if not USERNAME_PATTERN.match(username):
-        raise ValidationError(f"Invalid username: {username}")
-    if len(username) > 32:
-        raise ValidationError("Username too long")
+    if not isinstance(username, str) or not _USERNAME.fullmatch(username):
+        raise ValidationError("Invalid username")
     return username
 
 
+def validate_process_target(target: str) -> str:
+    if not isinstance(target, str) or not _PROCESS.fullmatch(target):
+        raise ValidationError("Invalid process target")
+    return target
+
+
 def validate_content_size(content: str, max_size: int = MAX_WRITE_SIZE) -> None:
-    """Validate content size for file writes."""
+    if not isinstance(content, str):
+        raise ValidationError("Content must be a string")
     size = len(content.encode("utf-8"))
     if size > max_size:
         raise ValidationError(f"Content too large: {size} bytes (max {max_size})")
 
 
-def check_dangerous_command(cmd: str) -> None:
-    """Check if command contains dangerous patterns."""
-    for pattern in DANGEROUS_PATTERNS:
-        if pattern.search(cmd):
-            raise ValidationError("Dangerous command pattern detected. This command is blocked.")
-
-
-def validate_command(cmd: str) -> str:
-    """Reject commands containing shell metacharacters (defense-in-depth).
-
-    Must be called BEFORE check_dangerous_command() — this acts as the
-    allowlist gate, while check_dangerous_command() handles the denylist
-    (mcp-server-standards.md — Command Execution Allowlist, L2+).
-    The returned command string is the validated input.
-    """
-    if not cmd or not isinstance(cmd, str):
-        raise ValidationError("Command cannot be empty")
-    unsafe = [c for c in cmd if c in SHELL_UNSAFE_CHARS]
-    if unsafe:
-        raise ValidationError(
-            f"Command contains unsafe characters: {unsafe}. "
-            "Use a simple command without shell metacharacters."
-        )
-    return cmd
-
-
 def validate_lines_param(lines: int | str, max_lines: int = MAX_TAIL_LINES) -> int:
-    """Validate and clamp 'lines' parameter."""
     try:
-        lines_int = int(lines)
-    except (ValueError, TypeError):
-        lines_int = 50
-    return max(1, min(lines_int, max_lines))
+        value = int(lines)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("lines must be an integer") from exc
+    if not 1 <= value <= max_lines:
+        raise ValidationError(f"lines must be between 1 and {max_lines}")
+    return value
 
 
 def validate_hours_param(hours: int | str, max_hours: int = MAX_GREP_HOURS) -> int:
-    """Validate and clamp 'hours' parameter."""
     try:
-        hours_int = int(hours)
-    except (ValueError, TypeError):
-        hours_int = 1
-    return max(1, min(hours_int, max_hours))
+        value = int(hours)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("hours must be an integer") from exc
+    if not 1 <= value <= max_hours:
+        raise ValidationError(f"hours must be between 1 and {max_hours}")
+    return value
+
+
+def check_write_enabled() -> None:
+    """Deprecated compatibility hook; write policy is enforced by InvocationKernel."""
+    raise WriteOperationsDisabledError(
+        "Direct write-gate calls are unsupported; invoke through InvocationKernel"
+    )

@@ -1,18 +1,13 @@
-# AFDS configuration for mikrus-mcp project
-# Overrides defaults from /var/apps/ai-skills/skills/afds-doc-writer/afds_config.yaml
-
-exempt_files:
-  - README.md
-  - CHANGELOG.md
+schema_version: 2
+source_revision: fdb46268454bf08258e39e604e0ab7f764b54c7a
+governed_documents:
   - AGENTS.md
-  - todo.md
-
-default_paths:
-  - AGENTS.md
-
-excluded_dirs:
-  - .pytest_cache
-  - __pycache__
-  - .git
-  - .venv
-  - venv
+  - SECURITY.md
+  - MIGRATION.md
+  - docs/architecture.md
+  - docs/compliance-status.md
+  - docs/ai-skills-review.md
+validator:
+  repository: paulomac1000/ai-skills
+  path: skills/afds-doc-writer/validate.py
+  minimum_document_schema: 2

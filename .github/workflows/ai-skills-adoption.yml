@@ -1,0 +1,124 @@
+name: AI Skills structural evidence
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-skills-structural-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_VERSION: "26.1.2"
+  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
+
+jobs:
+  structural-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev-linux-x64-py312.lock
+      - name: Install exact development graph and application wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "pip==$PIP_VERSION"
+          python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
+          python -m build --wheel --no-isolation
+          python -m pip install --no-deps dist/mikrus_mcp-*.whl
+          python -m pip check
+      - name: Checkout immutable AI Skills authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: paulomac1000/ai-skills
+          ref: ${{ env.AI_SKILLS_REVISION }}
+          path: .trusted-ai-skills
+          persist-credentials: false
+      - name: Execute structural evidence tests
+        run: >-
+          python -m pytest -q
+          tests/unit/test_config.py
+          tests/unit/test_identity_boundaries.py
+          tests/unit/test_manifests.py
+          tests/unit/test_kernel.py
+          tests/unit/test_kernel_deadline.py
+          tests/unit/test_ai_skills_hardening.py
+          tests/unit/test_mikrus_adapter.py
+          tests/unit/test_server_registration.py
+          tests/unit/test_review_hardening.py
+          tests/smoke/test_official_transports.py
+      - name: Validate governed documentation with pinned AFDS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t governed < <(python scripts/check_docs.py --print-governed)
+          test "${#governed[@]}" -gt 0
+          python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
+      - name: Write machine-bound structural evidence
+        shell: bash
+        env:
+          EVIDENCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVIDENCE_RUN_ID: ${{ github.run_id }}
+          EVIDENCE_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("mikrus_mcp-*.whl"))
+          wheel_digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          report = {
+              "schema_version": 1,
+              "provider": "github-actions",
+              "repository": "paulomac1000/mikrus-mcp",
+              "revision": os.environ["EVIDENCE_REVISION"],
+              "run_id": int(os.environ["EVIDENCE_RUN_ID"]),
+              "workflow_id": 338973609,
+              "workflow_path": ".github/workflows/ai-skills-adoption.yml",
+              "workflow_name": "AI Skills structural evidence",
+              "event": os.environ["EVIDENCE_EVENT"],
+              "job_name": "structural-contract",
+              "lane": "python-compatibility",
+              "authority_revision": os.environ["AI_SKILLS_REVISION"],
+              "application_wheel": wheel.name,
+              "application_wheel_sha256": f"sha256:{wheel_digest}",
+              "result": "passed",
+          }
+          encoded = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode()
+          Path("structural-attestation.json").write_bytes(encoded)
+          report_digest = hashlib.sha256(encoded).hexdigest()
+          Path("evidence-sha256.txt").write_text(
+              f"sha256:{report_digest}  structural-attestation.json\n"
+              f"sha256:{wheel_digest}  {wheel.as_posix()}\n",
+              encoding="utf-8",
+          )
+          print(f"REPORT_SHA256=sha256:{report_digest}")
+          print(f"WHEEL_SHA256=sha256:{wheel_digest}")
+          PY
+      - name: Upload machine-bound structural evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ai-skills-structural-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            structural-attestation.json
+            evidence-sha256.txt
+            dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+      - name: Reject stale structural evidence
+        run: python scripts/check_evidence_freshness.py
