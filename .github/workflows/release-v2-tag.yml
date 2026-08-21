@@ -1,0 +1,54 @@
+name: Tag v2.0.0 release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v2.0.0-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create v2.0.0 tag for current green master revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          current_master="$(gh api "/repos/$GITHUB_REPOSITORY/commits/master" --jq .sha)"
+          if [[ "$current_master" != "$RELEASE_SHA" ]]; then
+            echo "Skipping stale CI revision $RELEASE_SHA; master is $current_master"
+            exit 0
+          fi
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "$version" != "2.0.0" ]]; then
+            echo "Skipping because project version is $version, expected 2.0.0"
+            exit 0
+          fi
+          python scripts/check_evidence_freshness.py
+          if gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/v2.0.0" >/dev/null 2>&1; then
+            echo "Tag v2.0.0 already exists"
+            exit 0
+          fi
+          gh api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref='refs/tags/v2.0.0' \
+            -f sha="$RELEASE_SHA"
+          echo "Created v2.0.0 at $RELEASE_SHA"
