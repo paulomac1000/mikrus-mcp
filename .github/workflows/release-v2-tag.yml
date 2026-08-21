@@ -6,6 +6,7 @@ on:
     types: [completed]
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -26,7 +27,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Create v2.0.0 tag for current green master revision
+      - name: Create v2.0.0 tag and dispatch publisher for current green master revision
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,10 +46,21 @@ jobs:
           fi
           python scripts/check_evidence_freshness.py
           if gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/v2.0.0" >/dev/null 2>&1; then
-            echo "Tag v2.0.0 already exists"
+            tagged_sha="$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/tags/v2.0.0" --jq .object.sha)"
+            test "$tagged_sha" = "$RELEASE_SHA"
+            echo "Tag v2.0.0 already exists at $RELEASE_SHA"
+          else
+            gh api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref='refs/tags/v2.0.0' \
+              -f sha="$RELEASE_SHA"
+            echo "Created v2.0.0 at $RELEASE_SHA"
+          fi
+          if gh release view v2.0.0 >/dev/null 2>&1; then
+            echo "GitHub Release v2.0.0 already exists; publisher does not need redispatch"
             exit 0
           fi
-          gh api --method POST "/repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref='refs/tags/v2.0.0' \
-            -f sha="$RELEASE_SHA"
-          echo "Created v2.0.0 at $RELEASE_SHA"
+          gh api --method POST "/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
+            --input - <<'JSON'
+          {"ref":"master","inputs":{"release_ref":"v2.0.0"}}
+          JSON
+          echo "Dispatched publish.yml for v2.0.0"
