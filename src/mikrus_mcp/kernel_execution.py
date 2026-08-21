@@ -33,17 +33,17 @@ class ExecutionMixin:
     def _error_provenance(
         manifest: Any,
         target: str,
-        target_identity: str,
+        target_identity: str | None,
         target_config: Any,
     ) -> _ErrorProvenance:
-        """Expose provenance in errors only once the target was safely resolved."""
-        resolved = target_config is not None
+        """Expose only provenance that is safe at the reached authorization phase."""
+        configured = target_config is not None
         return {
             "capability": manifest.name if manifest is not None else None,
             "capability_version": manifest.version if manifest is not None else None,
-            "target": target if resolved else None,
-            "target_identity": target_identity if resolved else None,
-            "backend": target_config.type if resolved else None,
+            "target": target if configured else None,
+            "target_identity": target_identity,
+            "backend": target_config.type if configured else None,
         }
 
     async def _execute(
