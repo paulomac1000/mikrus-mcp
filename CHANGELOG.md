@@ -2,7 +2,7 @@
 
 All notable changes to mikrus-mcp are recorded here.
 
-## [2.0.0] - 2026-08-20
+## [2.0.0] - 2026-08-21
 
 ### Breaking
 
@@ -42,8 +42,6 @@ All notable changes to mikrus-mcp are recorded here.
   entrypoints) pinned to the hardened authority revision and validated in CI.
 - Platform-exact hashed dependency locks for Linux x64 Python 3.12/3.13/3.14 with a
   lock renderer, CI lock-evidence jobs, and drift failure on committed locks.
-- A structural migration assessment (`migration-assessment.yaml`) validated by the
-  pinned authority without fabricated reviewer or provider evidence.
 - Separate request and server deadlines with an explicit server deadline cap, and
   fail-fast credential throttling that returns retry guidance without consuming
   operation deadlines.
@@ -62,6 +60,8 @@ All notable changes to mikrus-mcp are recorded here.
   publication beyond Linux amd64.
 - Real SSH identity enrollment, mikr.us mutation reconciliation, remote filesystem race
   testing, and multi-architecture published-image evidence.
+- `migration-assessment.yaml` remains intentionally absent until an independent reviewer
+  can bind a schema-valid assessment to the exact reviewed revision.
 
 ## [1.1.1] - 2026-05-22
 
