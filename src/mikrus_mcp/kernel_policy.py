@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import weakref
 from collections.abc import Awaitable, Callable
@@ -75,25 +76,65 @@ class PolicyMixin:
                 ErrorCode.AUTHORIZATION,
                 "principal lacks required capability scope",
             )
-        if manifest.target_required and not (self._has_scope(caller.scopes, f"target:{target}")):
+        if manifest.target_required and not self._has_scope(caller.scopes, f"target:{target}"):
             raise AppError(ErrorCode.AUTHORIZATION, "principal is not authorized for target")
+
+    def _authorize_data_classification(
+        self,
+        caller: CallerContext,
+        manifest: CapabilityManifest,
+    ) -> None:
+        if manifest.confidentiality == "public":
+            return
+        if not self._has_scope(caller.scopes, f"data:{manifest.confidentiality}"):
+            raise AppError(
+                ErrorCode.AUTHORIZATION,
+                "principal is not authorized for the capability data classification",
+            )
+
+    @staticmethod
+    def _resource_scope(manifest: CapabilityManifest, resource: str) -> str | None:
+        if manifest.resource_argument is None:
+            return None
+        digest = hashlib.sha256(resource.encode("utf-8")).hexdigest()
+        return f"resource:{manifest.name}:sha256:{digest}"
 
     def _authorize_resolved_target(
         self,
         caller: CallerContext,
         manifest: CapabilityManifest,
-        target: str,
         target_config: Any,
+        resolved_identity: str,
+        resource: str,
     ) -> None:
-        """Second authorization phase against the resolved backend identity."""
-        if manifest.target_required and not (self._has_scope(caller.scopes, f"target:{target}")):
+        """Authorize the exact resolved backend identity and resource after resolution."""
+        expected_identity = target_config.stable_identity
+        if target_config.type == "ssh":
+            verified_prefix = expected_identity + "#host-key=SHA256:"
+            unverified = expected_identity + "#host-key=UNVERIFIED"
+            identity_valid = (
+                resolved_identity.startswith(verified_prefix)
+                if target_config.verify_host_key
+                else resolved_identity == unverified
+            )
+        else:
+            identity_valid = resolved_identity == expected_identity
+        if not identity_valid:
+            raise AppError(ErrorCode.AUTHORIZATION, "resolved target identity changed")
+
+        if not self._has_scope(caller.scopes, f"target-id:{resolved_identity}"):
             raise AppError(
                 ErrorCode.AUTHORIZATION,
-                "principal is not authorized for the resolved target",
+                "principal is not authorized for the resolved target identity",
+            )
+        resource_scope = self._resource_scope(manifest, resource)
+        if resource_scope is not None and not self._has_scope(caller.scopes, resource_scope):
+            raise AppError(
+                ErrorCode.AUTHORIZATION,
+                "principal is not authorized for the resolved resource",
             )
         if (
-            target_config is not None
-            and target_config.type == "ssh"
+            target_config.type == "ssh"
             and not target_config.verify_host_key
             and manifest.side_effects != "read"
         ):
@@ -324,10 +365,14 @@ class PolicyMixin:
                     remaining = expires_at - asyncio.get_running_loop().time()
                     if remaining <= delay:
                         raise AppError(
-                            ErrorCode.TIMEOUT,
-                            "retry backoff exceeds the remaining operation deadline",
-                            retryable=False,
-                            retry_after_seconds=delay,
+                            exc.code,
+                            exc.message,
+                            retryable=True,
+                            retry_after_seconds=(
+                                exc.retry_after_seconds
+                                if exc.retry_after_seconds is not None
+                                else delay
+                            ),
                         ) from exc
                 await self._sleep(delay)
         raise AssertionError("policy retry loop exhausted")
