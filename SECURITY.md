@@ -35,20 +35,31 @@ does not fall back to the process-global principal. Deployment behind a remote p
 unsupported until a separate profile defines TLS, audience validation, proxy-header
 trust, external principal extraction, per-resource authorization, and abuse controls.
 
-## Target identity
+## Authorization scopes and target identity
 
-Each configured target has a public selector alias and a stable backend identity. The
-kernel authorizes the caller and selector before target I/O. A missing, failed, or
-unavailable target returns an error; another target is never selected.
+Authorization is deliberately two-phase. The kernel first authenticates the caller and
+checks the capability (`tool:`), lexical target selector (`target:`), and manifest data
+classification (`data:`) before target configuration is inspected or network-backed
+resolution starts. After the backend is connected, the kernel authorizes the exact stable
+identity (`target-id:`) and, for capabilities with a resource argument, a deterministic
+resource scope (`resource:`) derived from capability name and the normalized resource.
+A missing, failed, unavailable, or unauthorized target never causes fallback to another
+target.
+
+The default single-operator profile explicitly grants `tool:*`, `target:*`, `target-id:*`,
+`resource:*`, and `data:*`. Operators overriding `MCP_ALLOWED_SCOPES` must grant the new
+resolved axes deliberately; an old `tool:*,target:*` override now fails closed rather than
+silently bypassing post-resolution authorization.
 
 For mikr.us, the stable identity is the configured server ID. For SSH, the configured
-selector identity (`user@host:port`) is not sufficient for a mutation. After AsyncSSH
-successfully verifies the host against its default `known_hosts` policy or an explicit
-regular `known_hosts` file, the client derives the stable identity from the selector plus
-the verified SHA-256 host-key fingerprint. The registry rejects an SSH client which does
-not expose that verified identity. The trusted approval CLI resolves the peer identity
-before persisting an SSH approval, and the kernel resolves it again before approval
-matching and consumption.
+selector identity (`user@host:port`) is not sufficient. After AsyncSSH successfully
+verifies the host against its default `known_hosts` policy or an explicit regular
+`known_hosts` file, the client derives the stable identity from the selector plus the
+verified SHA-256 host-key fingerprint. The kernel validates that resolved identity against
+the target configuration and requires matching `target-id:` authorization before any
+backend operation. The trusted approval CLI resolves the peer identity before persisting
+an SSH mutation approval, and the kernel resolves it again before approval matching and
+consumption.
 
 `MCP_ALLOW_INSECURE_SSH=1` is a development acknowledgement for read-only SSH use. An
 SSH target with host-key verification disabled cannot be used while writes are enabled.
@@ -58,19 +69,19 @@ SSH target with host-key verification disabled cannot be used while writes are e
 Every mutation is non-retryable and non-idempotent by default. It requires all of:
 
 1. an active capability manifest;
-2. caller capability and target scopes from the authenticated request or local stdio configuration;
+2. authenticated capability, selector, data-classification, resolved-target, and resource authorization;
 3. `MCP_WRITE_ENABLED=true`;
 4. a valid unexpired one-time approval loaded from a protected file;
 5. an exact binding to principal, capability, resolved stable target identity, resource, and normalized operation arguments;
 6. a deadline-bound target-resource lock.
 
-Local arguments and target existence are validated before protected I/O. For a target
-mutation the exact target is connected, the stable backend identity is resolved, and the
-matching approval is checked before it can be consumed. The one-time record is consumed
-inside the operation lock immediately before mutation execution. The model cannot create
-an approval. General-purpose raw command execution is not a public capability; privileged
-system actions are split into operation-specific tools with bounded schemas and
-validators.
+Local arguments and lexical selector authorization happen before protected target I/O.
+For a target mutation the exact target is connected, the stable backend identity and
+resource authorization are checked, and only then is the matching approval checked. The
+one-time record is consumed inside the operation lock immediately before mutation
+execution, after the cached resolved identity is revalidated. The model cannot create an
+approval. General-purpose raw command execution is not a public capability; privileged
+system actions are split into operation-specific tools with bounded schemas and validators.
 
 ## Filesystem and process execution
 
@@ -89,7 +100,9 @@ filesystem, hard-link, and platform semantics cannot be proven by local mocks al
 There is no public raw-command string boundary. Internal adapter commands use validated
 values, fixed operation-specific templates, explicit option separators where supported,
 and shell quoting for data values. SSH stdout and stderr share a byte limit and process
-deadline; cancellation terminates the owned process.
+deadline. Timeout, cancellation, and output-overflow paths terminate the owned process,
+wait for a bounded interval, escalate by closing the channel, and preserve the original
+operation classification rather than exposing cleanup failures.
 
 ## Data handling
 
@@ -102,24 +115,29 @@ destruction.
 Database credential retrieval is classified as credential data and bypasses the process
 cache. Raw upstream response bodies are not copied into public errors. Successful MCP
 results preserve request/capability/artifact/target provenance metadata. Error payloads
-preserve retryability and `retry_after_seconds` guidance. Response limits apply to the
-serialized application envelope, including metadata, rather than only to the data field.
+preserve the same provenance only after it has been established by the reached
+authorization/resolution phase; pre-resolution denials do not reveal backend details.
+Retryability and `retry_after_seconds` guidance remain structured. Response limits apply
+to the serialized application envelope, including metadata, rather than only to the data
+field.
 
 ## Failure behavior
 
 Validation, authentication, authorization, not-found, conflict, rate-limit, timeout,
 unavailable, transient-upstream, upstream-rejected, upstream-protocol, ambiguous-outcome,
 cancellation, and internal failures remain distinct. Only explicitly transient read
-failures are eligible for manifest-controlled retry. A mutation timeout, disconnect after
-request submission, or qualifying upstream 5xx is reported as `AMBIGUOUS_OUTCOME`; the
-caller must reconcile target state before any new mutation attempt. Cancellation is
-re-raised.
+failures are eligible for manifest-controlled retry. Retry delay must fit the remaining
+operation deadline; otherwise the original retryable error and guidance are returned. A
+mutation timeout, disconnect after request submission, or qualifying upstream 5xx is
+reported as `AMBIGUOUS_OUTCOME`; the caller must reconcile target state before any new
+mutation attempt. Cancellation is re-raised.
 
 Startup, liveness, readiness, target dependency state, and capability degradation are
-reported separately. Target connection is lazy. An unconnected target does not by itself
-make the process unready, while a recorded unavailable default target does. The supported
-catalog includes inactive capabilities with an explicit reason; public tool registration
-contains only the active catalog for the current configuration and write policy.
+reported separately. Target connection is lazy at startup, but the configured default is
+a mandatory readiness dependency: both `not_connected` and `unavailable` make readiness
+false. The supported catalog includes inactive capabilities with an explicit reason;
+public tool registration contains only the active catalog for the current configuration
+and write policy.
 
 ## Release trust boundary
 
@@ -133,8 +151,10 @@ operations and then attests that digest. Missing quarantine configuration or dig
 mismatch fails closed.
 
 The container build receives the SHA-256 digest of the application wheel from the verified
-CI bundle and checks the wheel bytes again before installation. Runtime dependency
-wheelhouses are produced from hashed lock files rather than from an unconstrained resolver.
+CI bundle and checks the wheel bytes again before installation. Runtime and development
+dependency graphs used by CI are selected from committed hashed platform locks rather than
+from an unconstrained resolver; regeneration lanes fail when a generated lock drifts from
+the committed copy.
 
 ## Reporting vulnerabilities
 
