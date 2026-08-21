@@ -42,8 +42,10 @@ class FakeProcess:
         self.stdin = FakeStdin()
         self.exit_status = 0
         self.terminated = False
+        self.wait_count = 0
 
     async def wait(self) -> None:
+        self.wait_count += 1
         return None
 
     def terminate(self) -> None:
@@ -144,6 +146,7 @@ async def test_process_output_is_bounded(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(AppError, match="size limit"):
         await client._run("uptime")
     assert process.terminated is True
+    assert process.wait_count >= 1
 
 
 @pytest.mark.asyncio
