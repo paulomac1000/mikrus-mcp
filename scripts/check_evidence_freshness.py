@@ -86,8 +86,9 @@ def main() -> int:
     )
     if ancestor.returncode == 1:
         raise SystemExit(
-            f"assessed revision {assessment_revision} exists but is not an ancestor of HEAD {head}; "
-            "rebind to an exact provider-tested ancestor before claiming freshness."
+            f"assessed revision {assessment_revision} exists but is not an ancestor "
+            f"of HEAD {head}; rebind to an exact provider-tested ancestor before "
+            "claiming freshness."
         )
     if ancestor.returncode != 0:
         raise SystemExit("git merge-base --is-ancestor failed while checking evidence freshness")
