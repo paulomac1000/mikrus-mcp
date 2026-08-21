@@ -31,16 +31,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-runtime.in
-            requirements-dev.in
+          cache-dependency-path: requirements-dev-linux-x64-py312.lock
       - name: Build and install the exact wheel with development tools
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION"
-          python -m pip install -r requirements-dev.in
+          python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
           python -m build --wheel --no-isolation
           python -m pip install --no-deps dist/mikrus_mcp-*.whl
           python -m pip check
@@ -68,7 +65,9 @@ jobs:
               {target.name: target},
               target.name,
               write_enabled=True,
-              allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+              allowed_scopes=frozenset(
+                  {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+              ),
           )
           validate_manifests(set(MANIFESTS), settings)
           for name, manifest in sorted(MANIFESTS.items()):
@@ -78,6 +77,9 @@ jobs:
               if not manifest.concurrent_safe:
                   assert concurrency["limit"] == 1, name
                   assert concurrency["scope"] == manifest.concurrency_scope, name
+              extensions = projection["extensions"]
+              assert extensions["operational_impact"] == manifest.operational_impact, name
+              assert extensions["idempotency_mechanism"] == manifest.idempotency_mechanism, name
               approval = projection.get("approval")
               if manifest.requires_approval:
                   assert approval["record_ttl_seconds_max"] <= 300, name
@@ -118,7 +120,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13", "3.14"]
+        include:
+          - python: "3.12"
+            lock: requirements-dev-linux-x64-py312.lock
+          - python: "3.13"
+            lock: requirements-dev-linux-x64-py313.lock
+          - python: "3.14"
+            lock: requirements-dev-linux-x64-py314.lock
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -129,16 +137,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements-runtime.in
-            requirements-dev.in
+          cache-dependency-path: ${{ matrix.lock }}
       - name: Build exact wheel and run credential-free suite
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION"
-          python -m pip install -r requirements-dev.in
+          python -m pip install --require-hashes -r "${{ matrix.lock }}"
           python -m build --wheel --no-isolation
           python -m pip install --no-deps dist/mikrus_mcp-*.whl
           python -m pip check
