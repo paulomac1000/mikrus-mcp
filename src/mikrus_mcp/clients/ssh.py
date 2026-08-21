@@ -116,17 +116,28 @@ class SshClient:
 
     @staticmethod
     async def _terminate_process(process: Any) -> None:
-        """Terminate, then escalate to close within bounded time so channels never leak."""
+        """Terminate and escalate without allowing cleanup failures to escape."""
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
-            terminate()
+            try:
+                terminate()
+            except Exception as exc:
+                logger.warning("SSH process terminate failed: %s", type(exc).__name__)
         try:
             await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
             return
         except asyncio.CancelledError:
             raise
-        except TimeoutError:
-            process.close()
+        except (TimeoutError, OSError) as exc:
+            if not isinstance(exc, TimeoutError):
+                logger.warning("SSH process wait failed: %s", type(exc).__name__)
+
+        close = getattr(process, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("SSH process close failed: %s", type(exc).__name__)
         try:
             await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
         except asyncio.CancelledError:
@@ -158,7 +169,6 @@ class SshClient:
                 async with total_lock:
                     total += len(encoded)
                     if total > limit:
-                        process.terminate()
                         raise AppError(ErrorCode.UPSTREAM, "SSH output exceeds size limit")
                 chunks.append(encoded)
 
@@ -179,6 +189,9 @@ class SshClient:
             )
             raise AppError(code, message, retryable=False) from exc
         except asyncio.CancelledError:
+            await self._terminate_process(process)
+            raise
+        except AppError:
             await self._terminate_process(process)
             raise
         return {
@@ -212,7 +225,6 @@ class SshClient:
                 async with lock:
                     total += len(data)
                     if total > MAX_PROCESS_OUTPUT_BYTES:
-                        process.terminate()
                         raise AppError(ErrorCode.UPSTREAM, "SSH output exceeds size limit")
                 chunks.append(data)
 
@@ -227,6 +239,9 @@ class SshClient:
             await self._terminate_process(process)
             raise AppError(ErrorCode.TIMEOUT, "sudo command deadline exceeded") from exc
         except asyncio.CancelledError:
+            await self._terminate_process(process)
+            raise
+        except AppError:
             await self._terminate_process(process)
             raise
         return {
