@@ -226,3 +226,46 @@ jobs:
           subject-name: ${{ steps.promote.outputs.subject_name }}
           subject-digest: ${{ steps.promote.outputs.digest }}
           push-to-registry: true
+
+  release:
+    if: needs.validate-release.outputs.release_tag != ''
+    needs: [validate-release, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.validate-release.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Create GitHub Release from changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          marker = f"## [{version}]"
+          start = text.index(marker)
+          tail = text[start:]
+          next_release = tail.find("\n## [", len(marker))
+          section = tail if next_release == -1 else tail[:next_release]
+          Path("release-notes.md").write_text(section.strip() + "\n", encoding="utf-8")
+          PY
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release already exists: $RELEASE_TAG"
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --title "mikrus-mcp $VERSION" \
+            --notes-file release-notes.md
