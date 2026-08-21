@@ -101,7 +101,9 @@ async def test_official_client_over_authenticated_streamable_http() -> None:
         http_bearer_token=token,
         principal="process-principal-must-not-authorize-http",
         write_enabled=True,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     mock = MockClient(target)
     registry = TargetRegistry(
