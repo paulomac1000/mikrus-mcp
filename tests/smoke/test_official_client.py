@@ -45,7 +45,9 @@ async def test_official_client_lists_schema_and_calls_tool() -> None:
     settings = Settings(
         {"srv": target},
         "srv",
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     registry = TargetRegistry(
         {"srv": target},

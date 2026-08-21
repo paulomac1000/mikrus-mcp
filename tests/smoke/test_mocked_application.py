@@ -40,7 +40,9 @@ async def test_application_kernel_invokes_mocked_backend_and_zero_io_catalog() -
     settings = Settings(
         {"srv": target},
         "srv",
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     registry = TargetRegistry(
         {"srv": target},

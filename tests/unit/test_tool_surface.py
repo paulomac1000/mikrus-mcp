@@ -290,7 +290,9 @@ def make_kernel(write_enabled: bool, client: RealisticMikrusClient) -> Invocatio
         {"prod": target},
         "prod",
         write_enabled=write_enabled,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
     )
     registry = TargetRegistry({"prod": target}, factory=lambda _: client)  # type: ignore[arg-type]
     return InvocationKernel(
