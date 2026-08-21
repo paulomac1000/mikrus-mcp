@@ -16,103 +16,87 @@ verification:
 
 This repository pins `main` of `paulomac1000/ai-skills` at
 `661ff01a5e70d58d6c94a12545b24647e52063ed` (release 1.2.0) as the sole contract
-authority. Upstream hardening branches are tracked as review input only; this consumer
-does not repin to a candidate branch unless its own provider evidence is green and a
-deliberate adoption decision is recorded.
+authority. Upstream hardening branches are review input only; this consumer does not
+repin to a candidate branch unless a deliberate adoption decision is recorded.
 
-Findings below describe the pinned `main` contracts. Where this repository deliberately
-exceeds `main` (skills lock with digests, canonical capability projections, AFDS document
-schema 2 frontmatter, machine-bound adoption evidence, evidence-freshness gate), those
-controls are documented as local hardening in `docs/compliance-status.md` and are never
-presented as upstream requirements.
+Where this repository deliberately exceeds `main` (skills-lock content digests,
+application-owned capability projections, AFDS document schema 2 frontmatter, structural
+evidence artifacts, and the evidence-freshness gate), those controls are documented as
+local hardening in `docs/compliance-status.md` and are not presented as upstream
+requirements.
 
+## Stable main contract used by this repository
 
-## Resolved upstream findings
+For an existing L2+ MCP server, stable `main` requires an exact-revision migration
+assessment covering the complete stable rule catalog, exact artifact evidence, rollback,
+residual risks, and an independent decision. The current adoption schema requires a
+concrete `decision.reviewer` for every decision state. An approval additionally requires
+provider-backed evidence, an APPROVED independent review bound to the exact assessed SHA,
+and an external immutable acceptance authority.
 
-### Read idempotency and retry semantics
+The bundled GitHub evidence verifier in stable `main` is explicitly diagnostic and does
+not itself provide acceptance authority. Consequently this candidate repository must not
+present its own structural workflow or a self-authored assessment as final adoption
+approval. Final acceptance belongs to an external authority workflow/reviewer after the
+implementation SHA is frozen.
 
-The earlier capability schema forced incorrect read semantics. The pinned authority now
-treats reads as naturally idempotent while leaving retry eligibility opt-in and does not
-require a mutation-style idempotency key for a retryable read. `mikrus-mcp` therefore
-keeps explicit transient/rate-limit retry conditions without degrading its read contract.
+## Consumer hardening completed here
 
-### Malformed approval binding validation
+### Authority is pinned to main
 
-The canonical capability validator and generated Python validator now validate binding
-element types before set conversion. Malformed non-hashable values become controlled
-validation findings instead of escaping as `TypeError`.
+Both hosted workflows and `ai-skills.lock.yaml` use the immutable stable `main` revision.
+Candidate-only validators and rule identifiers are not authoritative gates.
 
-### Reusable-workflow inherited permissions
+### Authorization uses two phases
 
-The workflow auditor evaluates effective write permission for local reusable-workflow
-calls instead of checking only job-local `permissions`. A caller cannot hide inherited
-workflow-level write authority from the recursive policy audit.
+The kernel authenticates and authorizes capability plus selector namespace before target
+configuration or network resolution. After the exact backend has been resolved, it
+checks the resolved stable identity, resource authorization, and data classification.
+Mutations additionally require operator write policy and a one-time approval bound to the
+resolved identity and normalized resource/arguments. Identity is revalidated immediately
+before execution.
 
-### Python generator destination links
+### Manifest/runtime parity is executable
 
-The generator checks lexical destination components for symlink/reparse objects before
-resolution. Resolution can no longer erase evidence that an untrusted destination parent
-was reached through a link.
+The public capability projection mirrors the enforced concurrency scope and approval TTL
+contract and retains the independent operational-impact and idempotency-mechanism axes.
+Tests and CI compare the projection with application policy rather than a candidate-only
+upstream schema.
 
-### Reviewerless structural assessments
+### Deadlines, retry and SSH cleanup fail closed
 
-`request-changes` and `rejected` structural assessments may omit `decision.reviewer`.
-Reviewer evidence remains mandatory for `approve`, and supplied reviewer objects remain
-fully validated. This permits an honest pre-review assessment without fabricated review
-IDs or identities.
-
-## Consumer findings fixed in this branch
-
-### Adoption validation is now executable
-
-A dedicated least-privileged workflow checks out the immutable pinned authority, builds
-and installs the exact application wheel before official-client subprocess tests, runs
-the governed-documentation AFDS validation, and emits a real provider artifact containing
-`structural-attestation.json`, its SHA-256, and the exact wheel.
-
-### Stale evidence fails closed
-
-`docs/compliance-status.md` declares the assessed revision in its frontmatter.
-That revision must be an ancestor of the checked-out HEAD, and every file changed after
-it must be an explicitly allowed evidence/status file. Changing runtime code, tests,
-workflow policy, packaging or locks automatically invalidates the assessment until a new
-provider-backed code revision is assessed.
-
-### Mutation deadline phases are separated
-
-The kernel no longer treats entry into a mutation wrapper as proof that a side effect may
-have been dispatched. Lock waiting remains inside the request deadline without consuming
-the one-time approval. After the lock is acquired, a production mutation starts only if
-at least the adapter classification budget remains; otherwise it returns ordinary timeout
-and preserves the approval. Expiry after mutation execution begins remains
-`AMBIGUOUS_OUTCOME` and requires reconciliation. Regression tests cover both paths.
+Long capabilities are not silently capped by the old ten-second default. Local credential
+throttling returns a rate-limit error rather than sleeping through a request deadline.
+Kernel retry backoff never outlives the remaining operation deadline and preserves the
+original error category and retry guidance. SSH timeout, cancellation, and output-limit
+paths all perform bounded process cleanup without turning cleanup failures into a new
+operation result.
 
 ### Platform locks are provider-verified
 
-Linux x64 CPython 3.12, 3.13 and 3.14 runtime/development lock files are committed,
-regenerated from provider-selected wheelhouses and reinstalled with `--require-hashes`
-and `pip check`. This prevents a hand-edited or stale wheel hash from being accepted merely
-because direct dependency pins still resolve.
+Linux x64 CPython 3.12, 3.13 and 3.14 runtime/development lock files are committed.
+Quality and compatibility lanes install the selected committed development lock with
+`--require-hashes`; lock-regeneration lanes compare generated locks with the committed
+copy and fail on drift.
 
-## Remaining upstream observations
+## Structural evidence is not adoption approval
 
-The stable `main` adoption schema requires a concrete reviewer for every decision,
-including `request-changes`. This repository therefore ships no self-authored assessment
-file: a schema-valid `migration-assessment.yaml` can only be produced after an
-independent review of the exact final revision exists, and producing one earlier would
-require fabricating reviewer evidence.
+`.github/workflows/ai-skills-adoption.yml` is deliberately named **AI Skills structural
+evidence**. It validates selected repository invariants against the pinned authority,
+validates governed documentation, emits machine-bound evidence for the exact candidate
+SHA, and rejects stale evidence. A green run is useful pre-review evidence only.
 
-Multi-architecture publication remains unclaimed; a single-architecture container
-profile and a multi-architecture publication profile are not equivalent requirements, and
-this distinction should ultimately be clarified in `ai-skills`.
+No `migration-assessment.yaml` is committed before an independent review exists because
+stable `main` requires a real reviewer object. After the final implementation SHA is
+provider-tested and independently reviewed, generate the assessment from the stable main
+template, classify all stable rules, bind evidence and review records to that exact SHA,
+and run the external acceptance authority. If implementation changes afterward, repeat
+the evidence and review cycle.
 
 ## Evidence that remains external
 
-Canonical manifests do not prove real SSH host-key enrollment and rotation. Structural
-filesystem tests do not prove every production filesystem race. Mock and fake-upstream
-mutation tests do not establish real mikr.us postcondition reconciliation. Provider-green
-CI also does not constitute an independent production review.
-
-Those deployment-specific checks remain blocking residual risks recorded in
-`docs/compliance-status.md`. Adoption approval stays open until an independent review of
-the exact final revision exists.
+Repository mocks cannot prove real SSH host-key enrollment and rotation, every production
+filesystem race, or real mikr.us mutation reconciliation. Deployment audit sinks,
+metrics/SLOs, recovery exercises, and release-platform evidence are also environment
+responsibilities. These remain residual production risks even after repository adoption
+acceptance.
