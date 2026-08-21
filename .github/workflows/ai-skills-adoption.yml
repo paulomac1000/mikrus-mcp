@@ -1,4 +1,4 @@
-name: AI Skills adoption
+name: AI Skills structural evidence
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ai-skills-adoption-${{ github.ref }}
+  group: ai-skills-structural-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -46,7 +46,7 @@ jobs:
           ref: ${{ env.AI_SKILLS_REVISION }}
           path: .trusted-ai-skills
           persist-credentials: false
-      - name: Execute adoption evidence tests
+      - name: Execute structural evidence tests
         run: >-
           python -m pytest -q
           tests/unit/test_config.py
@@ -90,7 +90,7 @@ jobs:
               "run_id": int(os.environ["EVIDENCE_RUN_ID"]),
               "workflow_id": 338973609,
               "workflow_path": ".github/workflows/ai-skills-adoption.yml",
-              "workflow_name": "AI Skills adoption",
+              "workflow_name": "AI Skills structural evidence",
               "event": os.environ["EVIDENCE_EVENT"],
               "job_name": "structural-contract",
               "lane": "python-compatibility",
@@ -120,5 +120,5 @@ jobs:
             dist/*.whl
           if-no-files-found: error
           retention-days: 30
-      - name: Reject stale adoption evidence
+      - name: Reject stale structural evidence
         run: python scripts/check_evidence_freshness.py
