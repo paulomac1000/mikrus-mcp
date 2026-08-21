@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: 2fcd7d19fb113a6f88e29a5ce7a489c484bf8743
+assessed_revision: cc912671e3ebc9ab6f7f7c2d070ae8ba4e1309e0
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
@@ -29,10 +29,11 @@ schema, atomic child controls, AFDS document schema 2) were removed from authori
 gates; where retained locally they are explicitly non-authoritative.
 
 `assessed_revision` in this document's frontmatter names the last revision whose
-provider evidence is complete: ordinary CI `32503108144`, Semgrep `32503108210`, and the
-adoption run `32503634180` are bound to this revision on `master`. The adoption run
-validated every gate except freshness, which was intentionally red before this rebind;
-the evidence-only rebind commit is the descendant that must pass the full workflow. `scripts/check_evidence_freshness.py` fails closed when
+provider evidence is complete: ordinary CI `32512120142` and Semgrep `32512120159` are
+green on that revision, and the adoption run on it validated every gate except freshness,
+which was intentionally red because the dependency-refresh batch itself changed
+implementation inputs. The evidence-only rebind above is the descendant that must pass
+the full workflow. `scripts/check_evidence_freshness.py` fails closed when
 any non-evidence file changes after that revision, and instructs the rebind procedure
 after a squash merge. No document treats its own commit hash as approval evidence.
 
