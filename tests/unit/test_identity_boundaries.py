@@ -44,7 +44,16 @@ async def test_kernel_rejects_alias_bound_approval_and_accepts_stable_identity()
         {"prod": target},
         "prod",
         write_enabled=True,
-        allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+        allowed_scopes=frozenset(
+            {
+                "tool:*",
+                "target:*",
+                "target-id:*",
+                "resource:*",
+                "data:*",
+                "write:server",
+            }
+        ),
     )
     client = MockClient(target)
     registry = TargetRegistry({"prod": target}, factory=lambda _: client)  # type: ignore[arg-type]
