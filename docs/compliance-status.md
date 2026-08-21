@@ -39,7 +39,7 @@ commit hash as approval evidence.
 The freshness gate was then adapted for squash merges: content identity is enforced by the
 evidence-only delta rather than commit ancestry, and a missing assessed object after a
 squash produces an explicit rebind instruction. Adaptation commit
-`2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb` had green ordinary CI (`32429827273`) and
+`2d469623fbb0320e844951b768ddead20e680d09` had green ordinary CI (`32429827273`) and
 Semgrep (`32429827143`); its adoption run `32429827138` was intentionally red at the
 freshness step only, because the gate script itself changed after the preceding assessment.
 The binding above therefore moves to that revision as an evidence-only change, and the

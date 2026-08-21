@@ -1,9 +1,9 @@
 schema_version: 1
 verification_mode: structural-attestation
-assessment_id: paulomac1000/mikrus-mcp@2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb:mcp-server-architect@1.2.0:fdb46268454bf08258e39e604e0ab7f764b54c7a
+assessment_id: paulomac1000/mikrus-mcp@2d469623fbb0320e844951b768ddead20e680d09:mcp-server-architect@1.2.0:fdb46268454bf08258e39e604e0ab7f764b54c7a
 generated_at: "2026-08-20T23:15:36Z"
 prepared_by: [{"provider":"github","login":"paulomac1000","id":9095484}]
-repository: {"name":"paulomac1000/mikrus-mcp","revision":"2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb","source_branch":"agent/ai-skills-compliance-refactor"}
+repository: {"name":"paulomac1000/mikrus-mcp","revision":"2d469623fbb0320e844951b768ddead20e680d09","source_branch":"agent/ai-skills-compliance-refactor"}
 skill: {"name":"mcp-server-architect","version":"1.2.0","maturity":"stable"}
 scope:
   included:
@@ -34,21 +34,21 @@ applicability:
       evidence: &exact
         provider: github-actions
         repository: paulomac1000/mikrus-mcp
-        run_id: 32427847331
-        job_id: 96613374451
-        check_run_id: 96613374451
-        revision: 7cf17f934483469b281a1f30d7ceb1f16ba4e92b
+        run_id: 32429827138
+        job_id: 96619032831
+        check_run_id: 96619032831
+        revision: 2d469623fbb0320e844951b768ddead20e680d09
         workflow_id: 338973609
         workflow_path: .github/workflows/ai-skills-adoption.yml
         workflow_name: "AI Skills adoption"
         event: pull_request
         job_name: structural-contract
         lane: python-compatibility
-        artifact_id: 9428051846
-        artifact_name: ai-skills-structural-7cf17f934483469b281a1f30d7ceb1f16ba4e92b
-        provider_digest: sha256:c0183c7ece02858886ddbde5b99801041f24ba2d7a9e1e0deed6465619ae3913
+        artifact_id: 9428684834
+        artifact_name: ai-skills-structural-2d469623fbb0320e844951b768ddead20e680d09
+        provider_digest: sha256:e2ba7e5541672f8b8bb21a250ba6d55f7d255449970436178ecb2513bb3f06e1
         report_path: structural-attestation.json
-        report_digest: sha256:c42a3b59f54eae3800d969c5dcb00331fbcc7971852e0f5643aafe90fbeb83c9
+        report_digest: sha256:be7f92a1b5d9b09fabac459ddc272c82b5af583af174ffaf2adebf234c665d15
       result: passed
   waiver_id: null
 - rule_id: mcp.sdk.compatibility-isolation
@@ -246,10 +246,10 @@ waivers:
       - "Production acceptance remains blocked until dependency-failure, saturation and bad-release recovery exercises are recorded."
     expires_at: "2026-11-30"
 artifact_verification:
-  exact_revision: 2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb
+  exact_revision: 2d469623fbb0320e844951b768ddead20e680d09
   artifacts:
     - kind: platform-exact-runtime-lock
-      identity: requirements-runtime-linux-x64-py312.lock@2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb
+      identity: requirements-runtime-linux-x64-py312.lock@2d469623fbb0320e844951b768ddead20e680d09
       path: requirements-runtime-linux-x64-py312.lock
       digest: sha256:57ab94e16eda37ac5e2174f4b22e2de4cf924508e4aed5a0334009f256b2b390
       commands:
@@ -313,4 +313,4 @@ residual_risks:
     blocking: true
 decision:
   status: request-changes
-  rationale: "Structural adoption validation, atomic child-control validation, exact installed-wheel official-client checks and provider CI are complete for code/tooling revision 2d46962a39a0a0d6b4dd40c65a01ba9db907e2bb. Production approval remains blocked by real-system deployment evidence and independent review; no reviewer identity or acceptance authority is fabricated."
+  rationale: "Structural adoption validation, atomic child-control validation, exact installed-wheel official-client checks and provider CI are complete for code/tooling revision 2d469623fbb0320e844951b768ddead20e680d09. Production approval remains blocked by real-system deployment evidence and independent review; no reviewer identity or acceptance authority is fabricated."
