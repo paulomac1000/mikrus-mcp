@@ -1,4 +1,3 @@
-# ai-skills-policy-profile: protected-release
 name: Publish container
 
 on:

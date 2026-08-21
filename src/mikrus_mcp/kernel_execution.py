@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from mikrus_mcp import __version__
 from mikrus_mcp.client import Client
@@ -13,6 +13,14 @@ from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 
 
+class _ErrorProvenance(TypedDict):
+    capability: str | None
+    capability_version: str | None
+    target: str | None
+    target_identity: str | None
+    backend: str | None
+
+
 class ExecutionMixin:
     settings: Settings
     registry: TargetRegistry
@@ -20,6 +28,23 @@ class ExecutionMixin:
     if TYPE_CHECKING:
 
         def catalog(self, *, active_only: bool = False) -> list[dict[str, object]]: ...
+
+    @staticmethod
+    def _error_provenance(
+        manifest: Any,
+        target: str,
+        target_identity: str,
+        target_config: Any,
+    ) -> _ErrorProvenance:
+        """Expose provenance in errors only once the target was safely resolved."""
+        resolved = target_config is not None
+        return {
+            "capability": manifest.name if manifest is not None else None,
+            "capability_version": manifest.version if manifest is not None else None,
+            "target": target if resolved else None,
+            "target_identity": target_identity if resolved else None,
+            "backend": target_config.type if resolved else None,
+        }
 
     async def _execute(
         self,
@@ -125,6 +150,11 @@ class ExecutionMixin:
         *,
         retryable: bool = False,
         retry_after_seconds: float | None = None,
+        capability: str | None = None,
+        capability_version: str | None = None,
+        target: str | None = None,
+        target_identity: str | None = None,
+        backend: str | None = None,
     ) -> dict[str, Any]:
         error: dict[str, Any] = {
             "code": code.value,
@@ -133,11 +163,22 @@ class ExecutionMixin:
         }
         if retry_after_seconds is not None:
             error["retry_after_seconds"] = retry_after_seconds
+        meta: dict[str, Any] = {
+            "request_id": request_id,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+        provenance = {
+            "capability": capability,
+            "capability_version": capability_version,
+            "source": "mikrus-mcp" if capability else None,
+            "artifact": f"mikrus-mcp=={__version__}" if capability else None,
+            "target": target,
+            "target_identity": target_identity,
+            "backend": backend,
+        }
+        meta.update({key: value for key, value in provenance.items() if value is not None})
         return {
             "success": False,
             "error": error,
-            "_meta": {
-                "request_id": request_id,
-                "duration_ms": int((time.monotonic() - started) * 1000),
-            },
+            "_meta": meta,
         }

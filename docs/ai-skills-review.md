@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-description: Review findings and remaining amendments for the pinned post-1.2.0 ai-skills hardening authority
+description: Review findings and remaining amendments for the pinned ai-skills main authority
 doc_id: reference.ai-skills-upstream-review
 type: reference
 status: evolving
@@ -8,25 +8,24 @@ rigor: informative
 owners: [repository-maintainers]
 verification:
   kind: manual-review
-  value: Compare each finding with the exact pinned ai-skills contract revision, `migration-assessment.yaml`, `atomic-claims.yaml`, and provider evidence before treating it as resolved.
+  value: Compare each finding with the exact pinned ai-skills contract revision and provider evidence before treating it as resolved.
 ---
 # AI Skills upstream review
 
 ## Current authority
 
-This repository pins the post-1.2.0 hardening authority at
-`fdb46268454bf08258e39e604e0ab7f764b54c7a`. The pin is intentional: a newer upstream
-hardening candidate exists at `agent/transfer-contract-hardening`, but this consumer does
-not repin merely because a branch is newer. The candidate currently resolves to
-`ce00849418d95c577971e8618560e1928979797e`, whose provider CI is failing, so it is not an
-acceptable replacement authority for this migration yet.
+This repository pins `main` of `paulomac1000/ai-skills` at
+`661ff01a5e70d58d6c94a12545b24647e52063ed` (release 1.2.0) as the sole contract
+authority. Upstream hardening branches are tracked as review input only; this consumer
+does not repin to a candidate branch unless its own provider evidence is green and a
+deliberate adoption decision is recorded.
 
-The consumer implementation and adoption tooling are assessed at
-`7cf17f934483469b281a1f30d7ceb1f16ba4e92b`. Provider CI and Semgrep are green on that
-revision. The `AI Skills adoption` source run validates the pinned authority and emits a
-machine-bound structural report before later evidence-only commits update the assessment.
-`scripts/check_evidence_freshness.py` rejects any implementation drift after the assessed
-revision.
+Findings below describe the pinned `main` contracts. Where this repository deliberately
+exceeds `main` (skills lock with digests, canonical capability projections, AFDS document
+schema 2 frontmatter, machine-bound adoption evidence, evidence-freshness gate), those
+controls are documented as local hardening in `docs/compliance-status.md` and are never
+presented as upstream requirements.
+
 
 ## Resolved upstream findings
 
@@ -66,29 +65,14 @@ IDs or identities.
 
 ### Adoption validation is now executable
 
-A dedicated least-privileged workflow checks out the immutable pinned authority and runs
-its skill-lock validator, migration-assessment validator, atomic catalog validator and
-consumer atomic-report validator. It builds and installs the exact application wheel
-before official-client subprocess tests, then emits a real provider artifact containing
-`structural-attestation.json`, its SHA-256, the exact wheel, and the committed assessment
-inputs.
-
-The report for assessed revision `7cf17f934483469b281a1f30d7ceb1f16ba4e92b` was emitted
-by GitHub Actions run `32427847331`; the assessment uses the actual provider run, job,
-artifact, provider digest and report digest. No historical run is relabeled as current
-evidence.
-
-### Atomic child controls are now explicit
-
-`atomic-claims.yaml` records the applicable L2 child controls for the single-repository,
-migration, local-stdio, remote-http, multi-backend, filesystem and packaged profiles.
-Each passed claim points to concrete repository tests and implementation paths. The
-pinned validator reports zero atomic findings for the report and the evidence test set is
-executed in provider CI.
+A dedicated least-privileged workflow checks out the immutable pinned authority, builds
+and installs the exact application wheel before official-client subprocess tests, runs
+the governed-documentation AFDS validation, and emits a real provider artifact containing
+`structural-attestation.json`, its SHA-256, and the exact wheel.
 
 ### Stale evidence fails closed
 
-`migration-assessment.yaml` and `atomic-claims.yaml` must bind the same full revision.
+`docs/compliance-status.md` declares the assessed revision in its frontmatter.
 That revision must be an ancestor of the checked-out HEAD, and every file changed after
 it must be an explicitly allowed evidence/status file. Changing runtime code, tests,
 workflow policy, packaging or locks automatically invalidates the assessment until a new
@@ -110,19 +94,17 @@ regenerated from provider-selected wheelhouses and reinstalled with `--require-h
 and `pip check`. This prevents a hand-edited or stale wheel hash from being accepted merely
 because direct dependency pins still resolve.
 
-## Remaining pinned-authority issue
+## Remaining upstream observations
 
-The pinned atomic catalog currently makes `mcp.artifact.multiarch-exact` applicable when
-the generic atomic profile contains `container`, not only when a deployment actually
-claims multi-architecture publication. `mikrus-mcp` intentionally advertises Linux/amd64
-only. The consumer therefore does not add the `container` profile to its atomic context
-or invent arm64/platform evidence. Its real Linux/amd64 container build and smoke remain
-separate CI evidence.
+The stable `main` adoption schema requires a concrete reviewer for every decision,
+including `request-changes`. This repository therefore ships no self-authored assessment
+file: a schema-valid `migration-assessment.yaml` can only be produced after an
+independent review of the exact final revision exists, and producing one earlier would
+require fabricating reviewer evidence.
 
-This applicability distinction should ultimately be corrected in `ai-skills`: a
-single-architecture container profile and a multi-architecture publication profile are
-not equivalent requirements. Until a corrected authority is provider-green, the consumer
-records the limitation explicitly rather than weakening or falsifying its evidence.
+Multi-architecture publication remains unclaimed; a single-architecture container
+profile and a multi-architecture publication profile are not equivalent requirements, and
+this distinction should ultimately be clarified in `ai-skills`.
 
 ## Evidence that remains external
 
@@ -131,6 +113,6 @@ filesystem tests do not prove every production filesystem race. Mock and fake-up
 mutation tests do not establish real mikr.us postcondition reconciliation. Provider-green
 CI also does not constitute an independent production review.
 
-Those deployment-specific checks remain blocking residual risks in
-`migration-assessment.yaml`. The current decision is therefore `request-changes`, not a
-self-issued adoption approval.
+Those deployment-specific checks remain blocking residual risks recorded in
+`docs/compliance-status.md`. Adoption approval stays open until an independent review of
+the exact final revision exists.

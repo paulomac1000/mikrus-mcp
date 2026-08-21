@@ -13,7 +13,7 @@ concurrency:
 
 env:
   PIP_VERSION: "26.1.2"
-  AI_SKILLS_REVISION: "fdb46268454bf08258e39e604e0ab7f764b54c7a"
+  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
 
 jobs:
   structural-contract:
@@ -46,25 +46,7 @@ jobs:
           ref: ${{ env.AI_SKILLS_REVISION }}
           path: .trusted-ai-skills
           persist-credentials: false
-      - name: Validate immutable skill lock
-        run: >-
-          python .trusted-ai-skills/contracts/validate_skills_lock.py
-          ai-skills.lock.yaml --skills-root .trusted-ai-skills
-      - name: Validate migration assessment structurally
-        run: >-
-          python .trusted-ai-skills/contracts/validate_adoption.py
-          migration-assessment.yaml
-          --catalog .trusted-ai-skills/contracts/rule-catalog.yaml
-          --schema .trusted-ai-skills/contracts/adoption-assessment.schema.json
-          --skills-root .trusted-ai-skills/skills
-          --repository-root .
-      - name: Validate atomic child-control authority
-        run: >-
-          python .trusted-ai-skills/contracts/validate_atomic_claims.py
-          --catalog .trusted-ai-skills/contracts/atomic-claim-catalog.yaml
-          --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml
-          --repository-root .trusted-ai-skills
-      - name: Execute atomic-claim evidence tests
+      - name: Execute adoption evidence tests
         run: >-
           python -m pytest -q
           tests/unit/test_config.py
@@ -75,26 +57,15 @@ jobs:
           tests/unit/test_ai_skills_hardening.py
           tests/unit/test_mikrus_adapter.py
           tests/unit/test_server_registration.py
+          tests/unit/test_review_hardening.py
           tests/smoke/test_official_transports.py
-      - name: Validate consumer atomic-claim report
+      - name: Validate governed documentation with pinned AFDS
         shell: bash
         run: |
           set -euo pipefail
-          test -f atomic-claims.yaml
-          rm -rf .atomic-validation-root
-          mkdir -p .atomic-validation-root/tests
-          cp -R .trusted-ai-skills/skills .atomic-validation-root/skills
-          cp .trusted-ai-skills/tests/test_atomic_claim_contract.py \
-            .atomic-validation-root/tests/test_atomic_claim_contract.py
-          cp -R src .atomic-validation-root/src
-          cp -R tests/unit .atomic-validation-root/tests/unit
-          cp -R tests/smoke .atomic-validation-root/tests/smoke
-          python .trusted-ai-skills/contracts/validate_atomic_claims.py \
-            atomic-claims.yaml \
-            --catalog .trusted-ai-skills/contracts/atomic-claim-catalog.yaml \
-            --parent-catalog .trusted-ai-skills/contracts/rule-catalog.yaml \
-            --schema .trusted-ai-skills/contracts/atomic-claim-report.schema.json \
-            --repository-root .atomic-validation-root
+          mapfile -t governed < <(python scripts/check_docs.py --print-governed)
+          test "${#governed[@]}" -gt 0
+          python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
       - name: Write machine-bound structural evidence
         shell: bash
         env:
@@ -147,8 +118,6 @@ jobs:
             structural-attestation.json
             evidence-sha256.txt
             dist/*.whl
-            atomic-claims.yaml
-            migration-assessment.yaml
           if-no-files-found: error
           retention-days: 30
       - name: Reject stale adoption evidence

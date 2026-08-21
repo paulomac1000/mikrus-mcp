@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shlex
 from typing import Any
 
@@ -28,6 +29,10 @@ from mikrus_mcp.validators import (
     validate_service_action,
     validate_service_name,
 )
+
+logger = logging.getLogger(__name__)
+
+SSH_TERMINATE_WAIT_SECONDS = 5.0
 
 
 class SshClient:
@@ -109,6 +114,26 @@ class SshClient:
                 await wait_closed()
             self._connection = None
 
+    @staticmethod
+    async def _terminate_process(process: Any) -> None:
+        """Terminate, then escalate to close within bounded time so channels never leak."""
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            terminate()
+        try:
+            await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
+            return
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            process.close()
+        try:
+            await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except (TimeoutError, OSError):
+            logger.warning("SSH process channel did not close cleanly")
+
     async def _run(
         self, command: str, *, timeout: float | None = None, mutation: bool = False
     ) -> dict[str, Any]:
@@ -145,7 +170,7 @@ class SshClient:
                 )
                 await process.wait()
         except TimeoutError as exc:
-            process.terminate()
+            await self._terminate_process(process)
             code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
             message = (
                 "SSH mutation outcome is unknown after timeout; reconcile target state before retry"
@@ -154,7 +179,7 @@ class SshClient:
             )
             raise AppError(code, message, retryable=False) from exc
         except asyncio.CancelledError:
-            process.terminate()
+            await self._terminate_process(process)
             raise
         return {
             "output": stdout.decode("utf-8", errors="replace"),
@@ -199,10 +224,10 @@ class SshClient:
                 )
                 await process.wait()
         except TimeoutError as exc:
-            process.terminate()
+            await self._terminate_process(process)
             raise AppError(ErrorCode.TIMEOUT, "sudo command deadline exceeded") from exc
         except asyncio.CancelledError:
-            process.terminate()
+            await self._terminate_process(process)
             raise
         return {
             "output": stdout.decode(errors="replace"),

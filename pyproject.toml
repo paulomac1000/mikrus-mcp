@@ -7,7 +7,7 @@ name = "mikrus-mcp"
 version = "2.0.0"
 description = "Hardened MCP server for mikr.us API and SSH-managed Linux servers"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 license = "MIT"
 authors = [{name = "Pawel Maciejewski"}]
 keywords = ["mcp", "mikrus", "vps", "ssh", "automation"]

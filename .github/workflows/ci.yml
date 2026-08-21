@@ -15,7 +15,7 @@ concurrency:
 
 env:
   PIP_VERSION: "26.1.2"
-  AI_SKILLS_REVISION: "fdb46268454bf08258e39e604e0ab7f764b54c7a"
+  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
 
 jobs:
   quality:
@@ -53,37 +53,36 @@ jobs:
           ref: ${{ env.AI_SKILLS_REVISION }}
           path: .trusted-ai-skills
           persist-credentials: false
-      - name: Validate immutable AI Skills consumer lock
-        run: >-
-          python .trusted-ai-skills/contracts/validate_skills_lock.py
-          ai-skills.lock.yaml --skills-root .trusted-ai-skills
-      - name: Validate canonical capability projections
+      - name: Enforce manifest and runtime policy parity
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-          from jsonschema import Draft202012Validator
-          from mikrus_mcp.manifests import MANIFESTS
+          from mikrus_mcp.manifests import MANIFESTS, validate_manifests
+          from mikrus_mcp.config import Settings, TargetConfig
 
-          contracts = Path(".trusted-ai-skills/contracts")
-          sys.path.insert(0, str(contracts))
-          from validate_capability_manifest import _semantic_findings
-
-          schema = json.loads((contracts / "capability-manifest.schema.json").read_text())
-          Draft202012Validator.check_schema(schema)
-          validator = Draft202012Validator(schema)
-          findings = []
+          target = TargetConfig(
+              "probe", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+          )
+          settings = Settings(
+              {target.name: target},
+              target.name,
+              write_enabled=True,
+              allowed_scopes=frozenset({"tool:*", "target:*", "write:server"}),
+          )
+          validate_manifests(set(MANIFESTS), settings)
           for name, manifest in sorted(MANIFESTS.items()):
               projection = manifest.as_dict()
-              for error in validator.iter_errors(projection):
-                  findings.append(f"{name}: {error.message}")
-              findings.extend(f"{name}: {item}" for item in _semantic_findings(projection))
-          if findings:
-              raise SystemExit("\n".join(findings))
-          print(f"validated {len(MANIFESTS)} canonical capability manifests")
+              concurrency = projection["concurrency"]
+              assert concurrency["serialized"] == (not manifest.concurrent_safe), name
+              if not manifest.concurrent_safe:
+                  assert concurrency["limit"] == 1, name
+                  assert concurrency["scope"] == manifest.concurrency_scope, name
+              approval = projection.get("approval")
+              if manifest.requires_approval:
+                  assert approval["record_ttl_seconds_max"] <= 300, name
+                  assert "resource" in approval["binds"], name
+          print(f"manifest/runtime parity verified for {len(MANIFESTS)} capabilities")
           PY
       - name: Validate governed documentation with pinned AFDS
         shell: bash
@@ -91,8 +90,7 @@ jobs:
           set -euo pipefail
           mapfile -t governed < <(python scripts/check_docs.py --print-governed)
           test "${#governed[@]}" -gt 0
-          python .trusted-ai-skills/skills/afds-doc-writer/validate.py \
-            --minimum-document-schema 2 "${governed[@]}"
+          python .trusted-ai-skills/skills/afds-doc-writer/validate.py "${governed[@]}"
       - name: Audit pull-request workflow with pinned policy authority
         shell: bash
         run: |

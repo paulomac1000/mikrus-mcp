@@ -16,7 +16,7 @@ from typing import Any
 from mikrus_mcp import __version__
 from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.client import Client
-from mikrus_mcp.config import Settings
+from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.kernel_execution import ExecutionMixin
 from mikrus_mcp.kernel_policy import PolicyMixin
@@ -107,10 +107,12 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             for name in sorted(MANIFESTS)
             if (reason := inactive_reason(name, self.settings)) is not None
         ]
+        ready = bool(self.active_names) and default_status == "connected"
         return {
             "startup_complete": True,
             "live": True,
-            "ready": bool(self.active_names) and default_status != "unavailable",
+            "ready": ready,
+            "readiness_reason": None if ready else f"default target is {default_status}",
             "dependency_health": dependency_health,
             "capability_degradation": degraded,
             "shutdown_owned": True,
@@ -130,23 +132,26 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         target = self.settings.default_target
         target_identity = "<none>"
         mutation_execution_started = False
+        manifest: CapabilityManifest | None = None
+        target_config: TargetConfig | None = None
         try:
             manifest = MANIFESTS.get(name)
             if manifest is None or name not in self.active_names:
                 raise AppError(ErrorCode.NOT_FOUND, f"unknown or inactive capability: {name}")
             normalized = self._validate_arguments(name, arguments, manifest)
             target = str(normalized.get("server") or self.settings.default_target)
+            self._authorize_selector(caller, manifest, target)
+            self._authorize_mutation(manifest)
             target_config = None
             if manifest.target_required:
                 target_config = self.registry.config(target)
+                self._authorize_resolved_target(caller, manifest, target, target_config)
                 target_identity = target_config.stable_identity
                 if name in self._MIKRUS_ONLY and target_config.type != "mikrus":
                     raise AppError(
                         ErrorCode.VALIDATION,
                         f"target '{target}' is not a mikr.us target",
                     )
-            self._authorize_selector(caller, manifest, target)
-            self._authorize_mutation(manifest)
             arguments_digest = normalized_arguments_digest(normalized)
             resource = self._resource(manifest, normalized)
             prepared_client: Client | None = None
@@ -210,6 +215,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     target,
                     normalized,
                     client=prepared_client,
+                    expires_at=expires_at,
                 )
 
             async with asyncio.timeout(timeout_seconds):
@@ -244,7 +250,13 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 raise AppError(ErrorCode.UPSTREAM, "result exceeds configured size limit")
             return result
         except ValidationError as exc:
-            return self._failure(ErrorCode.VALIDATION, str(exc), request_id, started)
+            return self._failure(
+                ErrorCode.VALIDATION,
+                str(exc),
+                request_id,
+                started,
+                **self._error_provenance(manifest, target, target_identity, target_config),
+            )
         except AppError as exc:
             return self._failure(
                 exc.code,
@@ -253,6 +265,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 started,
                 retryable=exc.retryable,
                 retry_after_seconds=exc.retry_after_seconds,
+                **self._error_provenance(manifest, target, target_identity, target_config),
             )
         except TimeoutError:
             if mutation_execution_started:
@@ -262,16 +275,25 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     "reconcile target state before retry",
                     request_id,
                     started,
+                    **self._error_provenance(manifest, target, target_identity, target_config),
                 )
             return self._failure(
-                ErrorCode.TIMEOUT, "operation deadline exceeded", request_id, started
+                ErrorCode.TIMEOUT,
+                "operation deadline exceeded",
+                request_id,
+                started,
+                **self._error_provenance(manifest, target, target_identity, target_config),
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Invocation failed with an internal error")
             return self._failure(
-                ErrorCode.INTERNAL, "internal operation failure", request_id, started
+                ErrorCode.INTERNAL,
+                "internal operation failure",
+                request_id,
+                started,
+                **self._error_provenance(manifest, target, target_identity, target_config),
             )
         finally:
             _request_id.reset(token)

@@ -74,18 +74,14 @@ class CapabilityManifest:
         active_state: Literal["active", "inactive", "deprecated"] = "active",
         inactive_reason: str | None = None,
     ) -> dict[str, object]:
-        concurrency_scope = (
-            "global"
-            if not self.target_required
-            else "resource"
-            if self.resource_argument and self.side_effects != "read"
-            else "target"
+        # Advertise exactly what the runtime enforces: concurrent-safe reads run
+        # unlocked, everything else serializes on one lock per scope key. Scope
+        # names are passed through verbatim so manifest and policy share vocabulary.
+        concurrency: dict[str, object] = (
+            {"scope": "none", "serialized": False}
+            if self.concurrent_safe
+            else {"scope": self.concurrency_scope, "serialized": True, "limit": 1}
         )
-        concurrency = {
-            "scope": concurrency_scope,
-            "limit": 8 if self.side_effects == "read" else 1,
-            "queue_limit": 16 if self.side_effects == "read" else 4,
-        }
         extensions: dict[str, object] = {
             "application_version": self.version,
             "confidentiality": self.confidentiality,
@@ -123,11 +119,13 @@ class CapabilityManifest:
             result["approval"] = {
                 "enforcement": "server-side",
                 "record_required": True,
-                "record_ttl_seconds": 3600,
+                "record_ttl_seconds_default": 60,
+                "record_ttl_seconds_max": 300,
                 "binds": [
                     "principal",
                     "capability",
                     "target",
+                    "resource",
                     "arguments-digest",
                     "expires-at",
                 ],

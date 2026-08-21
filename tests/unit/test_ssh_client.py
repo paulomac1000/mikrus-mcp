@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from collections import deque
@@ -188,3 +189,35 @@ def test_ssh_selector_identity_and_timeout_are_derived_from_target_config() -> N
     client = SshClient(target)
     assert client.stable_identity == "ssh:deploy@server.example:2222"
     assert client.config.connect_timeout_seconds == 17
+
+
+class StubbornProcess:
+    """Process whose wait() blocks until close() escalates termination."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+        self.closed = False
+        self._closed_event = asyncio.Event()
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def close(self) -> None:
+        self.closed = True
+        self._closed_event.set()
+
+    async def wait(self) -> None:
+        await self._closed_event.wait()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_escalates_to_close_within_bounded_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    monkeypatch.setattr(ssh_module, "SSH_TERMINATE_WAIT_SECONDS", 0.05)
+    process = StubbornProcess()
+    await SshClient._terminate_process(process)
+    assert process.terminated is True
+    assert process.closed is True

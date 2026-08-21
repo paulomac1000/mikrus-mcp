@@ -78,6 +78,30 @@ class PolicyMixin:
         if manifest.target_required and not (self._has_scope(caller.scopes, f"target:{target}")):
             raise AppError(ErrorCode.AUTHORIZATION, "principal is not authorized for target")
 
+    def _authorize_resolved_target(
+        self,
+        caller: CallerContext,
+        manifest: CapabilityManifest,
+        target: str,
+        target_config: Any,
+    ) -> None:
+        """Second authorization phase against the resolved backend identity."""
+        if manifest.target_required and not (self._has_scope(caller.scopes, f"target:{target}")):
+            raise AppError(
+                ErrorCode.AUTHORIZATION,
+                "principal is not authorized for the resolved target",
+            )
+        if (
+            target_config is not None
+            and target_config.type == "ssh"
+            and not target_config.verify_host_key
+            and manifest.side_effects != "read"
+        ):
+            raise AppError(
+                ErrorCode.AUTHORIZATION,
+                "mutations over unverified SSH host keys are prohibited",
+            )
+
     @staticmethod
     def _resource(manifest: CapabilityManifest, arguments: dict[str, Any]) -> str:
         if manifest.resource_argument:
@@ -268,6 +292,7 @@ class PolicyMixin:
         arguments: dict[str, Any],
         *,
         client: Client | None = None,
+        expires_at: float | None = None,
     ) -> Any:
         maximum_attempts = 3 if manifest.retry_conditions else 1
         for attempt in range(maximum_attempts):
@@ -294,5 +319,15 @@ class PolicyMixin:
                     if exc.retry_after_seconds is not None
                     else min(4.0, float(2**attempt))
                 )
-                await self._sleep(min(60.0, base_delay + random.uniform(0.0, 0.25)))
+                delay = min(60.0, base_delay + random.uniform(0.0, 0.25))
+                if expires_at is not None:
+                    remaining = expires_at - asyncio.get_running_loop().time()
+                    if remaining <= delay:
+                        raise AppError(
+                            ErrorCode.TIMEOUT,
+                            "retry backoff exceeds the remaining operation deadline",
+                            retryable=False,
+                            retry_after_seconds=delay,
+                        ) from exc
+                await self._sleep(delay)
         raise AssertionError("policy retry loop exhausted")

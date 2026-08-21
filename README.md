@@ -53,7 +53,7 @@ Operator approvals are issued with `scripts/approval.py --server <configured-ali
 
 ## Deadlines and result bounds
 
-The effective operation timeout is the minimum of the capability timeout, the request/default deadline, and `MCP_SERVER_MAX_DEADLINE_MS`. Both process defaults are 120 seconds so bounded long operations are not silently truncated by the former 10-second default.
+The effective operation timeout is the minimum of the capability timeout, the request/default deadline, and `MCP_SERVER_MAX_DEADLINE_MS`. Both process defaults are 120 seconds, so bounded long operations are not silently truncated.
 
 Successful results preserve request ID, capability/version, source artifact, backend, exact target selector, resolved target identity, and duration metadata. Tool errors preserve retryability and `retry_after_seconds`. `MCP_MAX_RESULT_BYTES` is enforced against the serialized application envelope including metadata, not only the nested result data.
 
