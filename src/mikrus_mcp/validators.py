@@ -32,6 +32,8 @@ _DOMAIN: Final = re.compile(
 _SEARCH: Final = re.compile(r"^[A-Za-z0-9_./:@\s-]{1,1000}$")
 _USERNAME: Final = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _PROCESS: Final = re.compile(r"^(?:[1-9][0-9]{0,9}|[A-Za-z0-9_-]{1,128})$")
+_PROGRAM_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
+_PROGRAM_JOB: Final = re.compile(r"^[A-Za-z0-9_-]{32}$")
 
 _READ_DENIED: Final = tuple(
     PurePosixPath(value)
@@ -139,6 +141,38 @@ def validate_process_target(target: str) -> str:
     if not isinstance(target, str) or not _PROCESS.fullmatch(target):
         raise ValidationError("Invalid process target")
     return target
+
+
+def validate_program_executable(executable: str) -> str:
+    if (
+        not isinstance(executable, str)
+        or not executable
+        or len(executable) > 255
+        or _PROGRAM_CONTROL.search(executable)
+    ):
+        raise ValidationError("executable must be a non-empty string without control characters")
+    return executable
+
+
+def validate_program_arguments(argv: object) -> list[str]:
+    if not isinstance(argv, list) or len(argv) > 128:
+        raise ValidationError("argv must be a list containing at most 128 strings")
+    result: list[str] = []
+    total = 0
+    for value in argv:
+        if not isinstance(value, str) or len(value) > 4_096 or _PROGRAM_CONTROL.search(value):
+            raise ValidationError("argv entries must be strings without control characters")
+        total += len(value.encode("utf-8"))
+        if total > 100_000:
+            raise ValidationError("argv exceeds the 100000-byte limit")
+        result.append(value)
+    return result
+
+
+def validate_program_job_id(job_id: str) -> str:
+    if not isinstance(job_id, str) or not _PROGRAM_JOB.fullmatch(job_id):
+        raise ValidationError("job_id must be a valid typed program job handle")
+    return job_id
 
 
 def validate_content_size(content: str, max_size: int = MAX_WRITE_SIZE) -> None:
