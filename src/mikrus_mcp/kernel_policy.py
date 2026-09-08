@@ -25,6 +25,9 @@ from mikrus_mcp.validators import (
     validate_path,
     validate_port,
     validate_process_target,
+    validate_program_arguments,
+    validate_program_executable,
+    validate_program_job_id,
     validate_search_pattern,
     validate_service_action,
     validate_service_name,
@@ -51,6 +54,7 @@ class PolicyMixin:
             arguments: dict[str, Any],
             *,
             client: Client | None = None,
+            caller: CallerContext | None = None,
         ) -> Any: ...
 
     @staticmethod
@@ -191,6 +195,11 @@ class PolicyMixin:
             "get_journal_logs": {"unit", "lines"},
             "find_system_errors": {"hours"},
             "search_journal_logs": {"term", "lines"},
+            "execute_program": {"executable", "argv", "cwd", "stdin"},
+            "start_program": {"executable", "argv", "cwd", "stdin"},
+            "get_program_status": {"job_id"},
+            "get_program_result": {"job_id"},
+            "cancel_program": {"job_id"},
         }
         expected = allowed.get(name)
         if expected is None:
@@ -219,7 +228,7 @@ class PolicyMixin:
                     raise ValidationError("Invalid log ID")
             case "assign_domain":
                 port = normalized.get("port")
-                if not isinstance(port, (str, int)):
+                if not isinstance(port, str | int):
                     raise ValidationError("port must be a string or integer")
                 normalized["port"] = str(validate_port(port))
                 normalized["domain"] = validate_domain(required_text("domain", maximum=253))
@@ -241,7 +250,7 @@ class PolicyMixin:
                 normalized["action"] = action
             case "check_port":
                 port = normalized.get("port")
-                if not isinstance(port, (str, int)):
+                if not isinstance(port, str | int):
                     raise ValidationError("port must be a string or integer")
                 normalized["port"] = str(validate_port(port))
             case "terminate_process":
@@ -265,6 +274,17 @@ class PolicyMixin:
             case "search_journal_logs":
                 normalized["term"] = validate_search_pattern(required_text("term"))
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
+            case "execute_program" | "start_program":
+                normalized["executable"] = validate_program_executable(
+                    required_text("executable", maximum=255)
+                )
+                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
+                if "cwd" in normalized and normalized["cwd"] is not None:
+                    normalized["cwd"] = validate_path(required_text("cwd"))
+                if "stdin" in normalized and normalized["stdin"] is not None:
+                    validate_content_size(normalized["stdin"])
+            case "get_program_status" | "get_program_result" | "cancel_program":
+                normalized["job_id"] = validate_program_job_id(required_text("job_id", maximum=64))
         return normalized
 
     def _authorize_mutation(
@@ -333,12 +353,13 @@ class PolicyMixin:
         arguments: dict[str, Any],
         *,
         client: Client | None = None,
+        caller: CallerContext | None = None,
         expires_at: float | None = None,
     ) -> Any:
         maximum_attempts = 3 if manifest.retry_conditions else 1
         for attempt in range(maximum_attempts):
             try:
-                return await self._execute(name, target, arguments, client=client)
+                return await self._execute(name, target, arguments, client=client, caller=caller)
             except AppError as exc:
                 condition = self._retry_condition(exc)
                 allowed = (

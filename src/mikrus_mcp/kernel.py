@@ -18,9 +18,11 @@ from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.jobs import ProgramJobRegistry
 from mikrus_mcp.kernel_execution import ExecutionMixin
 from mikrus_mcp.kernel_policy import PolicyMixin
 from mikrus_mcp.manifests import MANIFESTS, CapabilityManifest, active_names, inactive_reason
+from mikrus_mcp.provenance import runtime_provenance
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 from mikrus_mcp.validators import ValidationError
@@ -59,6 +61,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             "assign_domain",
         }
     )
+    _SSH_ONLY = frozenset({"execute_program", "start_program", "cancel_program"})
 
     def __init__(
         self,
@@ -73,6 +76,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             weakref.WeakValueDictionary()
         )
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+        self.program_jobs = ProgramJobRegistry()
 
     @property
     def active_names(self) -> set[str]:
@@ -153,6 +157,11 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                         ErrorCode.VALIDATION,
                         f"target '{target}' is not a mikr.us target",
                     )
+                if name in self._SSH_ONLY and target_config.type != "ssh":
+                    raise AppError(
+                        ErrorCode.UNAVAILABLE,
+                        f"capability '{name}' is unavailable for mikr.us targets",
+                    )
                 prepared_client = await self.registry.get(target)
                 target_identity = prepared_client.stable_identity
                 self._authorize_resolved_target(
@@ -226,6 +235,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     target,
                     normalized,
                     client=prepared_client,
+                    caller=caller,
                     expires_at=expires_at,
                 )
 
@@ -253,6 +263,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     "target_identity": target_identity if manifest.target_required else None,
                     "backend": target_config.type if target_config is not None else None,
                     "duration_ms": int((time.monotonic() - started) * 1000),
+                    "provenance": runtime_provenance(),
                 },
             }
             encoded = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
@@ -310,4 +321,5 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             _request_id.reset(token)
 
     async def close(self) -> None:
+        await self.program_jobs.close()
         await self.registry.close()

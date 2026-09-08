@@ -35,6 +35,7 @@ MIKRUS_ONLY = frozenset(
         "assign_domain",
     }
 )
+SSH_ONLY = frozenset({"execute_program", "start_program", "cancel_program"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +173,7 @@ def _mutation(
     destructive: bool = False,
     impact: str = "persistent",
     timeout_ms: int = DEFAULT_MUTATION_TIMEOUT_MS,
+    target_required: bool = True,
     resource_argument: str | None = None,
 ) -> CapabilityManifest:
     return CapabilityManifest(
@@ -192,6 +194,7 @@ def _mutation(
         requires_approval=True,
         required_scopes=(f"tool:{name}", "write:server"),
         target_binding="verified backend identity plus approval-bound resource",
+        target_required=target_required,
         resource_argument=resource_argument,
     )
 
@@ -245,6 +248,26 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_journal_logs": _read("get_journal_logs", "sensitive", resource_argument="unit"),
     "find_system_errors": _read("find_system_errors", "sensitive"),
     "search_journal_logs": _read("search_journal_logs", "sensitive"),
+    "execute_program": _mutation("execute_program", impact="process execution"),
+    "start_program": _mutation("start_program", impact="process execution"),
+    "get_program_status": _read(
+        "get_program_status",
+        timeout_ms=1_000,
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "get_program_result": _read(
+        "get_program_result",
+        timeout_ms=1_000,
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "cancel_program": _mutation(
+        "cancel_program",
+        impact="process execution",
+        resource_argument="job_id",
+        target_required=False,
+    ),
     "list_configured_servers": _read(
         "list_configured_servers", "sensitive", timeout_ms=1_000, target_required=False
     ),
@@ -260,6 +283,8 @@ def inactive_reason(name: str, settings: Settings) -> str | None:
         target.type == "mikrus" for target in settings.targets.values()
     ):
         return "requires at least one configured mikr.us target"
+    if name in SSH_ONLY and not any(target.type == "ssh" for target in settings.targets.values()):
+        return "requires at least one configured SSH target"
     if manifest.side_effects != "read" and not settings.write_enabled:
         return "write operations are disabled by process policy"
     return None

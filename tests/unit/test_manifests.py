@@ -1,5 +1,5 @@
 from mikrus_mcp.config import Settings, TargetConfig
-from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
+from mikrus_mcp.manifests import MANIFESTS, active_names, inactive_reason, validate_manifests
 
 
 def settings() -> Settings:
@@ -32,6 +32,18 @@ def test_sensitive_reads_declare_confidentiality() -> None:
 def test_general_purpose_command_execution_has_no_manifest() -> None:
     assert "execute_command" not in MANIFESTS
     assert "execute_command" not in active_names(settings())
+
+
+def test_typed_program_execution_is_ssh_only_and_write_gated() -> None:
+    current = settings()
+    assert "execute_program" not in active_names(current)
+    assert inactive_reason("execute_program", current) == (
+        "requires at least one configured SSH target"
+    )
+
+    target = TargetConfig("host", "ssh", host="server.example")
+    writable = Settings({"host": target}, "host", write_enabled=True)
+    assert "execute_program" in active_names(writable)
 
 
 def test_manifest_validation_fails_on_registration_drift() -> None:

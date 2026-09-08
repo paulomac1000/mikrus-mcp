@@ -9,8 +9,13 @@ from mikrus_mcp import __version__
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.jobs import ProgramJobRegistry
+from mikrus_mcp.provenance import runtime_provenance
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
+
+if TYPE_CHECKING:
+    from mikrus_mcp.kernel import CallerContext
 
 
 class _ErrorProvenance(TypedDict):
@@ -24,6 +29,7 @@ class _ErrorProvenance(TypedDict):
 class ExecutionMixin:
     settings: Settings
     registry: TargetRegistry
+    program_jobs: ProgramJobRegistry
 
     if TYPE_CHECKING:
 
@@ -53,6 +59,7 @@ class ExecutionMixin:
         arguments: dict[str, Any],
         *,
         client: Client | None = None,
+        caller: CallerContext | None = None,
     ) -> Any:
         if name == "describe_mikrus_capabilities":
             return {
@@ -61,9 +68,29 @@ class ExecutionMixin:
                 "supported_transports": ["stdio", "streamable-http"],
                 "supported": self.catalog(active_only=False),
                 "active": self.catalog(active_only=True),
+                "provenance": runtime_provenance(),
             }
         if name == "list_configured_servers":
             return self.registry.status(self.settings.default_target)
+
+        if caller is None:
+            raise AppError(
+                ErrorCode.INTERNAL,
+                "caller context is required for capability execution",
+            )
+
+        if name == "get_program_status":
+            return await self.program_jobs.status(
+                job_id=str(arguments["job_id"]), principal=caller.principal
+            )
+        if name == "get_program_result":
+            return await self.program_jobs.result(
+                job_id=str(arguments["job_id"]), principal=caller.principal
+            )
+        if name == "cancel_program":
+            return await self.program_jobs.cancel(
+                job_id=str(arguments["job_id"]), principal=caller.principal
+            )
 
         if client is None:
             client = await self.registry.get(target)
@@ -137,6 +164,24 @@ class ExecutionMixin:
             case "search_journal_logs":
                 return await client.search_journal_logs(
                     str(args["term"]), int(args.get("lines", 50))
+                )
+            case "execute_program":
+                return await client.execute_program(
+                    str(args["executable"]),
+                    list(args.get("argv", [])),
+                    args.get("cwd"),
+                    args.get("stdin"),
+                )
+            case "start_program":
+                return await self.program_jobs.submit(
+                    principal=caller.principal,
+                    target=target,
+                    target_identity=client.stable_identity,
+                    client=client,
+                    executable=str(args["executable"]),
+                    argv=list(args.get("argv", [])),
+                    cwd=args.get("cwd"),
+                    stdin=args.get("stdin"),
                 )
             case _:
                 raise AppError(ErrorCode.NOT_FOUND, f"unknown capability: {name}")
