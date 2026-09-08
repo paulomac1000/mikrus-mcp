@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          from mikrus_mcp.manifests import MANIFESTS, validate_manifests
+           from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
           from mikrus_mcp.config import Settings, TargetConfig
 
           target = TargetConfig(
@@ -69,7 +69,7 @@ jobs:
                   {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
               ),
           )
-          validate_manifests(set(MANIFESTS), settings)
+           validate_manifests(active_names(settings), settings)
           for name, manifest in sorted(MANIFESTS.items()):
               projection = manifest.as_dict()
               concurrency = projection["concurrency"]
@@ -310,7 +310,7 @@ jobs:
           set -euo pipefail
           image="mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}"
           docker run --rm --entrypoint python "$image" -c \
-            "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+             "import os; from mikrus_mcp import __version__; assert __version__ == '2.1.0'; assert os.getuid() == 10001"
           python -m venv .container-smoke
           .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "mcp==2.0.0"
           .container-smoke/bin/python scripts/container_smoke.py --image "$image"
