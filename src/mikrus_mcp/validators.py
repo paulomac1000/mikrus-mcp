@@ -38,7 +38,6 @@ _PROGRAM_EXECUTABLES: Final = frozenset(
     {
         "cat",
         "df",
-        "docker",
         "du",
         "echo",
         "free",
@@ -48,7 +47,6 @@ _PROGRAM_EXECUTABLES: Final = frozenset(
         "ls",
         "ps",
         "printf",
-        "sed",
         "sort",
         "ss",
         "systemctl",
@@ -172,10 +170,7 @@ def validate_program_executable(executable: str) -> str:
         or _PROGRAM_CONTROL.search(executable)
     ):
         raise ValidationError("executable must be a non-empty string without control characters")
-    name = executable.rsplit("/", 1)[-1]
-    if "/" in executable and not executable.startswith("/"):
-        raise ValidationError("executable path must be absolute when a path is provided")
-    if name not in _PROGRAM_EXECUTABLES:
+    if "/" in executable or executable not in _PROGRAM_EXECUTABLES:
         raise ValidationError("executable is not permitted by the typed program policy")
     return executable
 

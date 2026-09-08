@@ -74,8 +74,9 @@ def test_content_limit_counts_encoded_bytes() -> None:
 
 
 def test_program_executable_is_allowlisted_and_shells_are_rejected() -> None:
-    assert validate_program_executable("/usr/bin/docker") == "/usr/bin/docker"
-    with pytest.raises(ValidationError, match="not permitted"):
-        validate_program_executable("/bin/sh")
+    assert validate_program_executable("ps") == "ps"
+    for value in ("/usr/bin/ps", "/tmp/ps", "docker", "sed", "/bin/sh"):
+        with pytest.raises(ValidationError, match="not permitted"):
+            validate_program_executable(value)
     with pytest.raises(ValidationError, match="not permitted"):
         validate_program_executable("python3")

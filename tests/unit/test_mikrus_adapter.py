@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from mikrus_mcp.clients.mikrus import MikrusClient
+from mikrus_mcp.clients.mikrus import MikrusClient, _redact_process_command
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.validators import ValidationError
 
@@ -247,3 +247,10 @@ async def test_get_server_stats_marks_wrapper_only_process_output_partial() -> N
     assert stats["processSnapshot"]["state"] == "partial"
     assert stats["processSnapshot"]["processes"] == []
     assert stats["processSnapshot"]["error"]["code"] == "PROCESS_SNAPSHOT_UNAVAILABLE"
+
+
+def test_process_command_redaction_fails_closed_for_split_and_malformed_secrets() -> None:
+    assert _redact_process_command("app --token secret --cookie=crumb") == (
+        "app --token <REDACTED> --cookie=<REDACTED>"
+    )
+    assert _redact_process_command("app --authorization 'unterminated") == "<REDACTED>"

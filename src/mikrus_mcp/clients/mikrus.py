@@ -52,17 +52,22 @@ def _redact_process_command(command: str) -> str:
     try:
         parts = shlex.split(command)
     except ValueError:
-        return sanitize_text(command)
+        return "<REDACTED>"
     redacted: list[str] = []
     redact_next = False
     for part in parts:
         if redact_next:
             redacted.append("<REDACTED>")
             redact_next = False
-        elif _SECRET_ARGUMENT.fullmatch(part):
-            redacted.append(part)
-            redact_next = True
         else:
+            option, separator, value = part.partition("=")
+            if separator and _SECRET_ARGUMENT.fullmatch(option):
+                redacted.append(f"{option}=<REDACTED>")
+                continue
+            if _SECRET_ARGUMENT.fullmatch(part):
+                redacted.append(part)
+                redact_next = True
+                continue
             redacted.append(sanitize_text(part))
     return " ".join(redacted)
 
