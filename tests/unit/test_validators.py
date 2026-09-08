@@ -9,6 +9,7 @@ from mikrus_mcp.validators import (
     validate_path,
     validate_port,
     validate_process_target,
+    validate_program_executable,
     validate_search_pattern,
     validate_service_action,
     validate_service_name,
@@ -70,3 +71,11 @@ def test_content_limit_counts_encoded_bytes() -> None:
     validate_content_size("a" * 100_000)
     with pytest.raises(ValidationError, match="too large"):
         validate_content_size("ą" * 100_000)
+
+
+def test_program_executable_is_allowlisted_and_shells_are_rejected() -> None:
+    assert validate_program_executable("/usr/bin/docker") == "/usr/bin/docker"
+    with pytest.raises(ValidationError, match="not permitted"):
+        validate_program_executable("/bin/sh")
+    with pytest.raises(ValidationError, match="not permitted"):
+        validate_program_executable("python3")

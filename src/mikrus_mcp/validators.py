@@ -34,6 +34,27 @@ _USERNAME: Final = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _PROCESS: Final = re.compile(r"^(?:[1-9][0-9]{0,9}|[A-Za-z0-9_-]{1,128})$")
 _PROGRAM_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
 _PROGRAM_JOB: Final = re.compile(r"^[A-Za-z0-9_-]{32}$")
+_PROGRAM_EXECUTABLES: Final = frozenset(
+    {
+        "cat",
+        "df",
+        "docker",
+        "du",
+        "echo",
+        "free",
+        "grep",
+        "ip",
+        "journalctl",
+        "ls",
+        "ps",
+        "printf",
+        "sed",
+        "sort",
+        "ss",
+        "systemctl",
+        "tail",
+    }
+)
 
 _READ_DENIED: Final = tuple(
     PurePosixPath(value)
@@ -151,6 +172,11 @@ def validate_program_executable(executable: str) -> str:
         or _PROGRAM_CONTROL.search(executable)
     ):
         raise ValidationError("executable must be a non-empty string without control characters")
+    name = executable.rsplit("/", 1)[-1]
+    if "/" in executable and not executable.startswith("/"):
+        raise ValidationError("executable path must be absolute when a path is provided")
+    if name not in _PROGRAM_EXECUTABLES:
+        raise ValidationError("executable is not permitted by the typed program policy")
     return executable
 
 
