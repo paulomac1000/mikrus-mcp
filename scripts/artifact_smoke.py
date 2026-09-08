@@ -31,7 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import httpx2
+import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -242,7 +242,7 @@ async def smoke_http(api_url, cert_file, upstream):
         )
         try:
             await wait_for_port(port, process)
-            async with httpx2.AsyncClient(
+            async with httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {token}"}
             ) as http_client:
                 async with streamable_http_client(
