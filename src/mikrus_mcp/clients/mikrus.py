@@ -42,6 +42,29 @@ from mikrus_mcp.validators import (
 )
 
 PROCESS_STATS_LIMIT = 50
+_SECRET_ARGUMENT = re.compile(
+    r"^--?(?:token|password|passwd|pwd|secret|api[-_]?key|cookie|authorization)$",
+    re.IGNORECASE,
+)
+
+
+def _redact_process_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return sanitize_text(command)
+    redacted: list[str] = []
+    redact_next = False
+    for part in parts:
+        if redact_next:
+            redacted.append("<REDACTED>")
+            redact_next = False
+        elif _SECRET_ARGUMENT.fullmatch(part):
+            redacted.append(part)
+            redact_next = True
+        else:
+            redacted.append(sanitize_text(part))
+    return " ".join(redacted)
 
 
 def _parse_process_snapshot(raw: str) -> dict[str, Any]:
@@ -68,7 +91,7 @@ def _parse_process_snapshot(raw: str) -> dict[str, Any]:
                 "rssBytes": rss,
                 "state": fields[7],
                 "executable": fields[10].split(None, 1)[0] if fields[10] else None,
-                "command": sanitize_text(fields[10]) if fields[10] else None,
+                "command": _redact_process_command(fields[10]) if fields[10] else None,
             }
         )
     if not records:
@@ -80,6 +103,7 @@ def _parse_process_snapshot(raw: str) -> dict[str, Any]:
             "processLimit": PROCESS_STATS_LIMIT,
             "processSort": "memory",
         }
+    records.sort(key=lambda item: float(item["memoryPercent"]), reverse=True)
     return {
         "state": "complete",
         "processes": records[:PROCESS_STATS_LIMIT],
