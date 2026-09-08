@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: 692ee9ab0e514db8979f86ab2c9a796f4561c6ba
+assessed_revision: 89ff9b149d4b6acf23fcdff75be39763424d1646
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
@@ -28,14 +28,16 @@ contracts from an upstream hardening branch (skills-lock validator, canonical ca
 schema, atomic child controls, AFDS document schema 2) were removed from authoritative
 gates; where retained locally they are explicitly non-authoritative.
 
-`assessed_revision` in this document's frontmatter names the exact 2.0 release-candidate
-code and workflow revision immediately before evidence-only release documentation updates.
-Any descendant used for the release may differ only in the evidence paths allowed by
-`scripts/check_evidence_freshness.py`; any implementation, dependency, configuration, or
-workflow change requires a new assessment binding. Provider run IDs and artifact IDs are
-not treated as timeless approval: release publication independently requires a successful
-ordinary CI run and the exact non-expired release bundle for the tagged SHA. No document
-treats its own commit hash, a badge, or self-authored evidence as independent production
+`assessed_revision` in this document's frontmatter names the exact 2.1.0 branch
+revision whose implementation and workflow state was reviewed by the independent
+ChatGPT reviewer (APPROVE on head 6b3230d; the only descendant 89ff9b1 changes a
+single lock-evidence tool pin). Any descendant used for the release may differ only
+in the evidence paths allowed by `scripts/check_evidence_freshness.py`; any
+implementation, dependency, configuration, or workflow change requires a new
+assessment binding. Provider run IDs and artifact IDs are not treated as timeless
+approval: release publication independently requires a successful ordinary CI run
+and the exact non-expired release bundle for the tagged SHA. No document treats
+its own commit hash, a badge, or self-authored evidence as independent production
 approval.
 
 ## Implemented contract changes
