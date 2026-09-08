@@ -22,7 +22,7 @@ from mikrus_mcp.jobs import ProgramJobRegistry
 from mikrus_mcp.kernel_execution import ExecutionMixin
 from mikrus_mcp.kernel_policy import PolicyMixin
 from mikrus_mcp.manifests import MANIFESTS, CapabilityManifest, active_names, inactive_reason
-from mikrus_mcp.provenance import runtime_provenance
+from mikrus_mcp.provenance import capture_runtime_provenance
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 from mikrus_mcp.validators import ValidationError
@@ -77,6 +77,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
         )
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
         self.program_jobs = ProgramJobRegistry()
+        self._provenance = capture_runtime_provenance()
 
     @property
     def active_names(self) -> set[str]:
@@ -276,7 +277,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     "target_identity": target_identity if manifest.target_required else None,
                     "backend": target_config.type if target_config is not None else None,
                     "duration_ms": int((time.monotonic() - started) * 1000),
-                    "provenance": runtime_provenance(),
+                    "provenance": self._provenance.as_dict(),
                 },
             }
             encoded = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")

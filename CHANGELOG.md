@@ -12,7 +12,12 @@ All notable changes to mikrus-mcp are recorded here.
   process-local retention semantics.
 - Regression coverage for HTML-escaped mikr.us diagnostics and truthful disk-analysis failures.
 - Bounded structured process snapshots with partial-state reporting and secret redaction.
-- Build/runtime provenance fields in capability discovery and successful result metadata.
+- Immutable build provenance: the exact wheel is stamped at build time with the
+  candidate source revision, build ID, policy revision, and package content digest;
+  runtime reports `packageIntegrity` (verified/failed/unstamped), a process-local
+  `instanceGeneration`, and deployment binding (verified/missing/invalid) validated
+  against a deployment receipt. Environment variables can no longer establish
+  artifact identity.
 
 ## [2.0.0] - 2026-08-21
 

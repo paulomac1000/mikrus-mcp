@@ -10,7 +10,7 @@ from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.jobs import ProgramJobRegistry
-from mikrus_mcp.provenance import runtime_provenance
+from mikrus_mcp.provenance import ProvenanceSnapshot
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 
@@ -30,6 +30,7 @@ class ExecutionMixin:
     settings: Settings
     registry: TargetRegistry
     program_jobs: ProgramJobRegistry
+    _provenance: ProvenanceSnapshot
 
     if TYPE_CHECKING:
 
@@ -68,7 +69,7 @@ class ExecutionMixin:
                 "supported_transports": ["stdio", "streamable-http"],
                 "supported": self.catalog(active_only=False),
                 "active": self.catalog(active_only=True),
-                "provenance": runtime_provenance(),
+                "provenance": self._provenance.as_dict(),
             }
         if name == "list_configured_servers":
             return self.registry.status(self.settings.default_target)
@@ -186,8 +187,8 @@ class ExecutionMixin:
             case _:
                 raise AppError(ErrorCode.NOT_FOUND, f"unknown capability: {name}")
 
-    @staticmethod
     def _failure(
+        self,
         code: ErrorCode,
         message: str,
         request_id: str,
@@ -211,6 +212,7 @@ class ExecutionMixin:
         meta: dict[str, Any] = {
             "request_id": request_id,
             "duration_ms": int((time.monotonic() - started) * 1000),
+            "provenance": self._provenance.as_dict(),
         }
         provenance = {
             "capability": capability,
