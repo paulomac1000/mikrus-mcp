@@ -172,7 +172,7 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python }}
         run: |
           set -euo pipefail
-          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
+          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.1"
           lock_id="linux-x64-py${PYTHON_VERSION//./}"
           mkdir -p compiled lock-output runtime-wheelhouse dev-wheelhouse
           python -m piptools compile \
