@@ -3,14 +3,14 @@
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
 [![AI Skills](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml)
 [![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue)](https://www.python.org/)
-[![Version 2.0.0](https://img.shields.io/badge/version-2.0.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
+[![Version 2.1.0](https://img.shields.io/badge/version-2.1.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for managing [mikr.us](https://mikr.us/) VPS instances and remote Linux hosts over SSH.
 
 `mikrus-mcp` exposes a bounded set of administration capabilities through one policy-enforced invocation path. It supports local `stdio` and authenticated loopback-only Streamable HTTP, separates read operations from mutations, binds privileged actions to an exact target identity and resource, and keeps raw shell execution out of the public MCP surface.
 
-> **Version 2.0 is intentionally stricter than 1.x.** Python 3.12+ is required, legacy HTTP+SSE is removed, SSH host verification is enabled by default, mutations require explicit write enablement and short-lived server-side approvals, and broad legacy management tools have been replaced with operation-specific capabilities.
+> **Version 2.1 adds typed SSH program execution and bounded process jobs.** Version 2.0 remains intentionally stricter than 1.x: Python 3.12+ is required, legacy HTTP+SSE is removed, SSH host verification is enabled by default, mutations require explicit write enablement and short-lived server-side approvals, and broad legacy management tools have been replaced with operation-specific capabilities.
 
 ## Contents
 
@@ -40,6 +40,8 @@ A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for
 - **No public raw shell tool** — privileged operations are exposed as bounded, operation-specific tools with validation.
 - **Reproducible builds** — committed hashed dependency locks are maintained for Linux x64 on CPython 3.12, 3.13, and 3.14.
 - **Exact artifact verification** — CI builds and exercises the exact wheel and Linux/amd64 container artifact.
+- **Runtime provenance** — capability discovery and successful results expose version, source/build,
+  artifact, configuration, and instance-generation fields when supplied by the build/deployment profile.
 - **Pinned standards authority** — repository contracts are aligned with the pinned `ai-skills@main` stable revision recorded in `ai-skills.lock.yaml`.
 
 ## Requirements
@@ -87,12 +89,12 @@ The single-server form is the smallest configuration. For SSH or multiple target
 ### 4. Build and run with Docker
 
 ```bash
-docker build -t mikrus-mcp:2.0.0 .
+docker build -t mikrus-mcp:2.1.0 .
 
 docker run --rm \
   -e MIKRUS_API_KEY='replace-me' \
   -e MIKRUS_SERVER_NAME='srv123' \
-  mikrus-mcp:2.0.0
+  mikrus-mcp:2.1.0
 ```
 
 Published release images are promoted by immutable digest. Prefer a release tag or digest over an unpinned moving tag in production.
@@ -122,7 +124,7 @@ For Docker-based clients, point the MCP command at `docker run` and pass credent
 
 ## Available tools
 
-The supported catalog contains **34 application-owned capabilities**. Runtime registration is configuration-aware: tools that do not apply to any configured backend, or mutations disabled by policy, are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
+The supported catalog contains **35 application-owned capabilities**. Runtime registration is configuration-aware: tools that do not apply to any configured backend, or mutations disabled by policy, are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
 
 ### Discovery
 
@@ -167,6 +169,11 @@ These capabilities operate through the configured backend abstraction and are av
 | `list_directory` | Sensitive read | List a validated directory. |
 | `tail_file` | Sensitive read | Read the bounded tail of a text file. |
 | `search_in_files` | Sensitive read | Search within a validated path. |
+| `execute_program` | Mutation | Run an approved executable with typed `argv`, optional `cwd`, and optional stdin through an SSH target. |
+| `start_program` | Mutation | Start an approved typed program and return a bounded in-process job handle. |
+| `get_program_status` | Read | Inspect the status of an owned typed program job. |
+| `get_program_result` | Read | Retrieve the terminal result of an owned typed program job. |
+| `cancel_program` | Mutation | Cancel an owned queued or running typed program job. |
 | `get_memory_info` | Read | Show memory usage. |
 | `get_network_info` | Sensitive read | Show network interfaces and listening sockets. |
 | `get_process_tree` | Sensitive read | Show the process tree. |
@@ -345,9 +352,9 @@ Representative success:
   "_meta": {
     "request_id": "6a5c...",
     "capability": "get_server_info",
-    "capability_version": "2.0.0",
+    "capability_version": "2.1.0",
     "source": "mikrus-mcp",
-    "artifact": "mikrus-mcp==2.0.0",
+    "artifact": "mikrus-mcp==2.1.0",
     "target": "srv123",
     "target_identity": "mikrus:srv123",
     "backend": "mikrus",
@@ -377,11 +384,22 @@ Representative failure:
 
 Metadata is only included when it is safe and actually known. For example, a pre-resolution authorization failure does not disclose the backend's resolved identity.
 
+Build and deployment profiles may provide immutable provenance through
+`MIKRUS_MCP_SOURCE_REVISION`, `MIKRUS_MCP_BUILD_ID`, `MIKRUS_MCP_ARTIFACT_DIGEST`,
+`MIKRUS_MCP_BUILT_AT`, and `MIKRUS_MCP_CONFIG_REVISION`. These values are reported in
+capability discovery and successful result metadata; they must be injected by the
+controlled build/deployment pipeline rather than inferred from a mounted checkout.
+
 Result limits are enforced against the serialized application envelope, including metadata, rather than only the nested `data` value.
 
 ## Security model
 
 `mikrus-mcp` is a privileged administration service. Treat its process environment, bearer-token file, SSH keys, approval registry, and target credentials as secrets.
+
+Typed program jobs are bounded and process-local. A job handle remains valid only while
+the owning MCP process is running and within the retention TTL; a process restart clears
+the registry and does not claim durable remote-job recovery. Use operation-specific tools
+for supported administrative workflows rather than reconstructing a shell command.
 
 Key defaults:
 
@@ -392,6 +410,7 @@ Key defaults:
 - one-time server-side approvals for every public mutation;
 - no automatic mutation retries after timeout, disconnect, rate limit, or ambiguous completion;
 - no public arbitrary-command tool;
+- typed program execution is SSH-only, approval-bound, and sends user-controlled values as helper stdin rather than shell command text;
 - component-safe no-follow remote file writes;
 - bounded request, response, output, concurrency, and deadline behavior;
 - sensitive response fields sanitized before model-visible serialization.

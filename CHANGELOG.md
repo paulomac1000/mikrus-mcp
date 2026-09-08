@@ -2,6 +2,18 @@
 
 All notable changes to mikrus-mcp are recorded here.
 
+## [2.1.0] - 2026-09-08
+
+### Added
+
+- Typed SSH program execution with structured `executable`, `argv`, `cwd`, and
+  `stdin` inputs; arbitrary shell strings remain unavailable on the public MCP surface.
+- Bounded process-job handles with owner-scoped status, result, cancellation, and
+  process-local retention semantics.
+- Regression coverage for HTML-escaped mikr.us diagnostics and truthful disk-analysis failures.
+- Bounded structured process snapshots with partial-state reporting and secret redaction.
+- Build/runtime provenance fields in capability discovery and successful result metadata.
+
 ## [2.0.0] - 2026-08-21
 
 ### Breaking
