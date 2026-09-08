@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import shlex
+import textwrap
 from typing import Any
 
 from mikrus_mcp.clients.common import _remote_atomic_write_command, _remote_read_prefix
@@ -34,13 +35,68 @@ from mikrus_mcp.validators import (
 logger = logging.getLogger(__name__)
 
 SSH_TERMINATE_WAIT_SECONDS = 5.0
-_PROGRAM_HELPER = (
-    "import json,subprocess,sys; "
-    "p=json.load(sys.stdin); "
-    "r=subprocess.run([p['executable'],*p['argv']],cwd=p.get('cwd'),input=p.get('stdin'),"
-    "capture_output=True,text=True,check=False); "
-    "print(json.dumps({'output':r.stdout,'stderr':r.stderr,'exit_code':r.returncode}))"
-)
+_PROGRAM_HELPER = textwrap.dedent(
+    """
+    import json, os, select, signal, subprocess, sys
+    LIMIT = 512 * 1024
+    payload = json.load(sys.stdin)
+    child = subprocess.Popen(
+        [payload["executable"], *payload["argv"]],
+        cwd=payload.get("cwd"),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    def kill_child():
+        try:
+            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+    def stop(*_):
+        kill_child()
+        raise SystemExit(143)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    if payload.get("stdin") is not None:
+        child.stdin.write(payload["stdin"].encode())
+    child.stdin.close()
+    streams = {child.stdout: "output", child.stderr: "stderr"}
+    chunks = {"output": [], "stderr": []}
+    total = 0
+    truncated = False
+    while streams:
+        ready, _, _ = select.select(list(streams), [], [], 0.25)
+        for stream in ready:
+            data = stream.read(8192)
+            if not data:
+                del streams[stream]
+                continue
+            total += len(data)
+            collected = sum(len(item) for values in chunks.values() for item in values)
+            remaining = max(0, LIMIT - collected)
+            if remaining:
+                chunks[streams[stream]].append(data[:remaining])
+            if total > LIMIT:
+                truncated = True
+                kill_child()
+                print(json.dumps({
+                    "output": b"".join(chunks["output"]).decode(errors="replace"),
+                    "stderr": b"".join(chunks["stderr"]).decode(errors="replace"),
+                    "exit_code": child.returncode,
+                    "truncated": True,
+                }))
+                raise SystemExit(0)
+    code = child.wait()
+    print(json.dumps({
+        "output": b"".join(chunks["output"]).decode(errors="replace"),
+        "stderr": b"".join(chunks["stderr"]).decode(errors="replace"),
+        "exit_code": code,
+        "truncated": truncated,
+    }))
+    """
+).strip()
 
 
 class SshClient:
