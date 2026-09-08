@@ -70,7 +70,7 @@ Verify that tool discovery contains no legacy mixed-risk names, does not expose
 configured SSH targets, and omits capabilities which are inactive for the configured
 backend. Job handles are process-local and are not durable across a server restart;
 `cancel_program` cancels only an owned queued or running job.
-or current write policy. Inspect `capabilities://catalog` for the corresponding inactive
+or the current write policy. Inspect `capabilities://catalog` for the corresponding inactive
 reasons. Verify `health://ready` remains false until the configured default dependency has
 connected successfully.
 

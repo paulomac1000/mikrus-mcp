@@ -124,7 +124,7 @@ For Docker-based clients, point the MCP command at `docker run` and pass credent
 
 ## Available tools
 
-The supported catalog contains **35 application-owned capabilities**. Runtime registration is configuration-aware: tools that do not apply to any configured backend, or mutations disabled by policy, are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
+The supported catalog contains **39 application-owned capabilities**. Runtime registration is configuration-aware: tools that do not apply to any configured backend, or mutations disabled by policy, are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
 
 ### Discovery
 
