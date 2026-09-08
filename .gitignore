@@ -19,3 +19,4 @@ evidence/
 # tooling sidecar data
 *.py,cover
 .omo/
+.codegraph/
