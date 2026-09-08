@@ -144,6 +144,11 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 raise AppError(ErrorCode.NOT_FOUND, f"unknown or inactive capability: {name}")
             normalized = self._validate_arguments(name, arguments, manifest)
             target = str(normalized.get("server") or self.settings.default_target)
+            if name in {"get_program_status", "get_program_result", "cancel_program"}:
+                target, target_identity = await self.program_jobs.target_binding(
+                    job_id=str(normalized["job_id"]), principal=caller.principal
+                )
+                target_config = self.registry.config(target)
             self._authorize_selector(caller, manifest, target)
             self._authorize_data_classification(caller, manifest)
             self._authorize_mutation(manifest)
@@ -164,6 +169,14 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     )
                 prepared_client = await self.registry.get(target)
                 target_identity = prepared_client.stable_identity
+                self._authorize_resolved_target(
+                    caller,
+                    manifest,
+                    target_config,
+                    target_identity,
+                    resource,
+                )
+            elif target_identity is not None:
                 self._authorize_resolved_target(
                     caller,
                     manifest,

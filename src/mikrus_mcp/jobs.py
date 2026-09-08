@@ -73,6 +73,11 @@ class ProgramJobRegistry:
             job = self._owned_job(job_id, principal)
             return self._status(job)
 
+    async def target_binding(self, *, job_id: str, principal: str) -> tuple[str, str]:
+        async with self._lock:
+            job = self._owned_job(job_id, principal)
+            return job.target, job.target_identity
+
     async def result(self, *, job_id: str, principal: str) -> dict[str, object]:
         async with self._lock:
             job = self._owned_job(job_id, principal)
