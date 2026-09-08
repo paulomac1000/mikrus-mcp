@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-           from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
+          from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
           from mikrus_mcp.config import Settings, TargetConfig
 
           target = TargetConfig(
@@ -69,7 +69,7 @@ jobs:
                   {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
               ),
           )
-           validate_manifests(active_names(settings), settings)
+          validate_manifests(active_names(settings), settings)
           for name, manifest in sorted(MANIFESTS.items()):
               projection = manifest.as_dict()
               concurrency = projection["concurrency"]
