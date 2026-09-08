@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PIP_VERSION: "26.1.2"
+  PIP_VERSION: "26.2.1"
   AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
 
 jobs:

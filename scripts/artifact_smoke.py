@@ -5,19 +5,28 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import subprocess
 import sys
 import tempfile
 import venv
 from pathlib import Path
 
-RUNTIME_REQUIREMENTS = (
-    "mcp==2.0.0",
-    "httpx==0.28.1",
-    "asyncssh==2.24.0",
-    "uvicorn==0.52.1",
-    "cryptography==50.0.0",
-)
+RUNTIME_LOCK = Path("requirements-runtime-linux-x64-py312.lock")
+_LOCK_ENTRY = re.compile(r"^([A-Za-z0-9._-]+)==([0-9A-Za-z.+-]+) --hash=")
+
+
+def runtime_requirements(lock_path: Path) -> tuple[str, ...]:
+    """Derive the smoke dependency set from the authoritative runtime lock."""
+    entries: list[str] = []
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        match = _LOCK_ENTRY.match(line)
+        if match is not None:
+            entries.append(f"{match.group(1)}=={match.group(2)}")
+    if not entries:
+        raise SystemExit(f"runtime lock contains no pinned requirements: {lock_path}")
+    return tuple(entries)
+
 
 TRANSPORT_SMOKE_CODE = r"""
 import asyncio
@@ -285,6 +294,12 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--wheel", type=Path, required=True)
     value.add_argument("--wheelhouse", type=Path, required=True)
+    value.add_argument(
+        "--runtime-lock",
+        type=Path,
+        default=RUNTIME_LOCK,
+        help="authoritative runtime lock used to derive smoke dependencies",
+    )
     return value
 
 
@@ -292,6 +307,7 @@ def main() -> int:
     args = parser().parse_args()
     wheel = args.wheel.resolve(strict=True)
     wheelhouse = args.wheelhouse.resolve(strict=True)
+    requirements = runtime_requirements(args.runtime_lock.resolve(strict=True))
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="mikrus-wheel-smoke-") as directory:
         root = Path(directory)
@@ -299,7 +315,7 @@ def main() -> int:
         venv.EnvBuilder(with_pip=True, clear=True).create(environment)
         python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         base = [str(python), "-m", "pip", "install", "--no-index", f"--find-links={wheelhouse}"]
-        subprocess.run([*base, *RUNTIME_REQUIREMENTS], check=True)
+        subprocess.run([*base, *requirements], check=True)
         subprocess.run([*base, "--no-deps", str(wheel)], check=True)
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
         subprocess.run([str(python), "-c", TRANSPORT_SMOKE_CODE], check=True)
