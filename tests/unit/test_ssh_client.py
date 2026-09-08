@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from collections import deque
@@ -10,7 +11,7 @@ import pytest
 
 from mikrus_mcp.client import SshClient
 from mikrus_mcp.config import TargetConfig
-from mikrus_mcp.errors import AppError
+from mikrus_mcp.errors import AppError, ErrorCode
 
 
 class FakeStream:
@@ -163,6 +164,33 @@ async def test_sudo_password_is_written_to_stdin_not_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_program_keeps_typed_values_out_of_remote_command() -> None:
+    process = FakeProcess([json.dumps({"output": "ok", "stderr": "", "exit_code": 0}).encode()])
+    connection = FakeConnection(process)
+    client = SshClient(ssh_target())
+    client._connection = connection
+
+    result = await client.execute_program(
+        "printf",
+        ["%s", "value with spaces; and symbols"],
+        cwd="/tmp",
+        stdin="input",
+    )
+
+    command = connection.commands[0][0]
+    assert "value with spaces" not in command
+    assert "printf" not in command
+    payload = json.loads(bytes(process.stdin.data))
+    assert payload == {
+        "executable": "printf",
+        "argv": ["%s", "value with spaces; and symbols"],
+        "cwd": "/tmp",
+        "stdin": "input",
+    }
+    assert result == {"output": "ok", "stderr": "", "exit_code": 0}
+
+
+@pytest.mark.asyncio
 async def test_file_commands_use_nofollow_atomic_remote_write() -> None:
     read_process = FakeProcess([b"text"])
     read_connection = FakeConnection(read_process)
@@ -224,3 +252,18 @@ async def test_terminate_process_escalates_to_close_within_bounded_time(
     await SshClient._terminate_process(process)
     assert process.terminated is True
     assert process.closed is True
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_fails_on_non_zero_exit_code() -> None:
+    process = FakeProcess([b""], stderr=[b"Permission denied"])
+    process.exit_status = 1
+    connection = FakeConnection(process)
+    client = SshClient(ssh_target())
+    client._connection = connection
+
+    with pytest.raises(AppError) as exc_info:
+        await client.analyze_disk("/root")
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "disk analysis failed with exit code 1" in exc_info.value.message
+    assert "Permission denied" in exc_info.value.message

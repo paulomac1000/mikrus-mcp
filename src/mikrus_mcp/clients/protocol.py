@@ -46,6 +46,13 @@ class Client(Protocol):
     async def get_journal_logs(self, unit: str, lines: int = 50) -> Any: ...
     async def find_system_errors(self, hours: int = 1) -> Any: ...
     async def search_journal_logs(self, term: str, lines: int = 50) -> Any: ...
+    async def execute_program(
+        self,
+        executable: str,
+        argv: list[str],
+        cwd: str | None = None,
+        stdin: str | None = None,
+    ) -> Any: ...
 
 
 def build_client(config: TargetConfig) -> Client:

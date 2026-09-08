@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shlex
 from typing import Any
@@ -33,6 +34,13 @@ from mikrus_mcp.validators import (
 logger = logging.getLogger(__name__)
 
 SSH_TERMINATE_WAIT_SECONDS = 5.0
+_PROGRAM_HELPER = (
+    "import json,subprocess,sys; "
+    "p=json.load(sys.stdin); "
+    "r=subprocess.run([p['executable'],*p['argv']],cwd=p.get('cwd'),input=p.get('stdin'),"
+    "capture_output=True,text=True,check=False); "
+    "print(json.dumps({'output':r.stdout,'stderr':r.stderr,'exit_code':r.returncode}))"
+)
 
 
 class SshClient:
@@ -250,6 +258,87 @@ class SshClient:
             "exit_code": int(process.exit_status),
         }
 
+    async def execute_program(
+        self,
+        executable: str,
+        argv: list[str],
+        cwd: str | None = None,
+        stdin: str | None = None,
+    ) -> Any:
+        """Run a typed program request through a fixed remote helper.
+
+        AsyncSSH's exec API accepts a command string, not a separate argv list
+        or native remote cwd. Keep that command constant and pass all
+        user-controlled values as JSON to the helper, which applies cwd and
+        invokes subprocess with shell=False.
+
+        User-controlled values are JSON input, never part of the remote command
+        string. The helper invokes subprocess with shell=False.
+        """
+        if self._connection is None:
+            raise AppError(ErrorCode.UNAVAILABLE, "SSH client is not open")
+        process = await self._connection.create_process(
+            "python3 -c " + shlex.quote(_PROGRAM_HELPER), encoding=None
+        )
+        payload = json.dumps(
+            {"executable": executable, "argv": argv, "cwd": cwd, "stdin": stdin},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        process.stdin.write(payload)
+        await process.stdin.drain()
+        process.stdin.write_eof()
+        return await self._collect_process(process, timeout=EXEC_HTTP_TIMEOUT, mutation=True)
+
+    async def _collect_process(
+        self, process: Any, *, timeout: float, mutation: bool
+    ) -> dict[str, Any]:
+        total = 0
+        total_lock = asyncio.Lock()
+
+        async def collect(stream: Any) -> bytes:
+            nonlocal total
+            chunks: list[bytes] = []
+            while True:
+                chunk = await stream.read(65_536)
+                if not chunk:
+                    return b"".join(chunks)
+                data = (
+                    chunk.encode("utf-8", errors="replace")
+                    if isinstance(chunk, str)
+                    else bytes(chunk)
+                )
+                async with total_lock:
+                    total += len(data)
+                    if total > MAX_PROCESS_OUTPUT_BYTES:
+                        raise AppError(ErrorCode.UPSTREAM, "SSH output exceeds size limit")
+                chunks.append(data)
+
+        try:
+            async with asyncio.timeout(timeout):
+                stdout, stderr = await asyncio.gather(
+                    collect(process.stdout), collect(process.stderr)
+                )
+                await process.wait()
+        except TimeoutError as exc:
+            await self._terminate_process(process)
+            code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
+            raise AppError(code, "SSH program outcome is unknown after timeout") from exc
+        except asyncio.CancelledError:
+            await self._terminate_process(process)
+            raise
+        except AppError:
+            await self._terminate_process(process)
+            raise
+        try:
+            result = json.loads(stdout.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            raise AppError(
+                ErrorCode.UPSTREAM_PROTOCOL, "SSH program helper returned invalid JSON"
+            ) from exc
+        if not isinstance(result, dict):
+            raise AppError(ErrorCode.UPSTREAM_PROTOCOL, "SSH program helper returned invalid data")
+        return result
+
     async def read_file(self, path: str) -> Any:
         return await self._run(
             _remote_read_prefix(path)
@@ -275,12 +364,20 @@ class SshClient:
         )
 
     async def analyze_disk(self, path: str = "/") -> Any:
-        return await self._run(
+        result = await self._run(
             _remote_read_prefix(path)
             + 'df -h -- "$resolved"; echo ---TOP20---; '
             + 'du -sh -- "$resolved"/* 2>/dev/null | sort -rh | head -n 20',
             timeout=30,
         )
+        if result.get("exit_code", 0) != 0:
+            stderr = result.get("stderr", "")
+            detail = stderr or result.get("output", "")
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                f"disk analysis failed with exit code {result['exit_code']}: {detail}",
+            )
+        return result
 
     async def check_port(self, port: str) -> Any:
         value = validate_port(port)
