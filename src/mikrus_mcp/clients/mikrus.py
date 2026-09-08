@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 import shlex
@@ -19,6 +20,7 @@ from mikrus_mcp.clients.common import (
     _remote_read_prefix,
 )
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.sanitizer import sanitize_text
 from mikrus_mcp.tools.constants import (
     DEFAULT_HTTP_TIMEOUT,
     EXEC_HTTP_TIMEOUT,
@@ -38,6 +40,53 @@ from mikrus_mcp.validators import (
     validate_service_action,
     validate_service_name,
 )
+
+PROCESS_STATS_LIMIT = 50
+
+
+def _parse_process_snapshot(raw: str) -> dict[str, Any]:
+    """Parse a bounded ``ps aux`` snapshot without exposing secret argv values."""
+    lines = html.unescape(raw).splitlines()
+    records: list[dict[str, Any]] = []
+    for line in lines:
+        fields = line.split(None, 10)
+        if len(fields) < 11 or not fields[1].isdigit():
+            continue
+        try:
+            cpu = float(fields[2])
+            memory = float(fields[3])
+            rss = int(fields[5]) * 1024
+        except ValueError:
+            continue
+        records.append(
+            {
+                "pid": int(fields[1]),
+                "ppid": None,
+                "user": fields[0],
+                "cpuPercent": cpu,
+                "memoryPercent": memory,
+                "rssBytes": rss,
+                "state": fields[7],
+                "executable": fields[10].split(None, 1)[0] if fields[10] else None,
+                "command": sanitize_text(fields[10]) if fields[10] else None,
+            }
+        )
+    if not records:
+        return {
+            "state": "partial",
+            "error": {"code": "PROCESS_SNAPSHOT_UNAVAILABLE"},
+            "processes": [],
+            "processesTruncated": False,
+            "processLimit": PROCESS_STATS_LIMIT,
+            "processSort": "memory",
+        }
+    return {
+        "state": "complete",
+        "processes": records[:PROCESS_STATS_LIMIT],
+        "processesTruncated": len(records) > PROCESS_STATS_LIMIT,
+        "processLimit": PROCESS_STATS_LIMIT,
+        "processSort": "memory",
+    }
 
 
 class MikrusClient:
@@ -220,7 +269,16 @@ class MikrusClient:
         return await self._request("/serwery")
 
     async def get_server_stats(self) -> Any:
-        return await self._request("/stats")
+        result = await self._request("/stats")
+        if isinstance(result, dict):
+            normalized = {
+                k: (html.unescape(v) if isinstance(v, str) else v) for k, v in result.items()
+            }
+            raw_processes = normalized.pop("ps", None)
+            if isinstance(raw_processes, str):
+                normalized["processSnapshot"] = _parse_process_snapshot(raw_processes)
+            return normalized
+        return result
 
     async def restart_server(self) -> Any:
         return await self._request("/restart", timeout=EXEC_HTTP_TIMEOUT, mutation=True)
@@ -254,11 +312,25 @@ class MikrusClient:
             mutation=True,
         )
 
+    @staticmethod
+    def _check_exec_failure(result: Any) -> None:
+        if isinstance(result, dict):
+            output = str(result.get("output", "")).strip()
+            if output == "błąd wykonania polecenia" or output.startswith("ERROR: błąd wykonania"):
+                raise AppError(
+                    ErrorCode.UPSTREAM,
+                    f"remote command execution failed on mikr.us: {output}",
+                )
+
     async def _exec_read(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
-        return await self._request("/exec", {"cmd": command}, timeout=timeout)
+        result = await self._request("/exec", {"cmd": command}, timeout=timeout)
+        self._check_exec_failure(result)
+        return result
 
     async def _exec_mutation(self, command: str, *, timeout: float = EXEC_HTTP_TIMEOUT) -> Any:
-        return await self._request("/exec", {"cmd": command}, timeout=timeout, mutation=True)
+        result = await self._request("/exec", {"cmd": command}, timeout=timeout, mutation=True)
+        self._check_exec_failure(result)
+        return result
 
     async def read_file(self, path: str) -> Any:
         prefix = _remote_read_prefix(path)
@@ -369,13 +441,26 @@ class MikrusClient:
             f"journalctl -q --no-pager -n 5000 | grep -i -F -- {pattern} | tail -n {count}"
         )
 
+    async def execute_program(
+        self,
+        executable: str,
+        argv: list[str],
+        cwd: str | None = None,
+        stdin: str | None = None,
+    ) -> Any:
+        del executable, argv, cwd, stdin
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "typed program execution is unavailable for the mikr.us API adapter",
+        )
+
     @staticmethod
     def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
         raw = str(result.get("output", ""))
         parsed: list[dict[str, Any]] = []
         for line in raw.splitlines():
             try:
-                value = json.loads(line)
+                value = json.loads(html.unescape(line))
             except json.JSONDecodeError:
                 continue
             if isinstance(value, dict):
