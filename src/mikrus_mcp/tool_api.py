@@ -22,8 +22,10 @@ from mikrus_mcp.tool_mikrus import (
 )
 from mikrus_mcp.tool_system import (
     analyze_disk,
+    cancel_program,
     change_service_state,
     check_port,
+    execute_program,
     find_system_errors,
     get_docker_logs,
     get_docker_stats,
@@ -31,6 +33,8 @@ from mikrus_mcp.tool_system import (
     get_memory_info,
     get_network_info,
     get_process_tree,
+    get_program_result,
+    get_program_status,
     get_service_status,
     list_directory,
     list_docker_containers,
@@ -38,6 +42,7 @@ from mikrus_mcp.tool_system import (
     read_file,
     search_in_files,
     search_journal_logs,
+    start_program,
     tail_file,
     terminate_process,
     update_system,
@@ -79,6 +84,11 @@ _TOOL_FUNCTIONS = (
     get_journal_logs,
     find_system_errors,
     search_journal_logs,
+    execute_program,
+    start_program,
+    get_program_status,
+    get_program_result,
+    cancel_program,
 )
 
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {

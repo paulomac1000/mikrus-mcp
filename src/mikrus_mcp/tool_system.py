@@ -204,3 +204,71 @@ async def search_journal_logs(
         "search_journal_logs",
         {"server": server, "term": term, "lines": lines},
     )
+
+
+async def execute_program(
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    cwd: str | None = None,
+    stdin: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Run an approved typed program request without exposing a shell command string."""
+    return await _invoke(
+        ctx,
+        "execute_program",
+        {
+            "server": server,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "cwd": cwd,
+            "stdin": stdin,
+        },
+    )
+
+
+async def start_program(
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    cwd: str | None = None,
+    stdin: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Start an approved typed program and return a bounded in-process job handle."""
+    return await _invoke(
+        ctx,
+        "start_program",
+        {
+            "server": server,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "cwd": cwd,
+            "stdin": stdin,
+        },
+    )
+
+
+async def get_program_status(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Return the status of a typed program job owned by the calling principal."""
+    return await _invoke(ctx, "get_program_status", {"job_id": job_id})
+
+
+async def get_program_result(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Return a terminal result, or the current status, for an owned program job."""
+    return await _invoke(ctx, "get_program_result", {"job_id": job_id})
+
+
+async def cancel_program(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Cancel an owned typed program job without exposing a remote shell."""
+    return await _invoke(ctx, "cancel_program", {"job_id": job_id})
