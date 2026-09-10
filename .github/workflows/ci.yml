@@ -342,7 +342,9 @@ jobs:
             "$image" -c \
             "import os; from mikrus_mcp import __version__; from mikrus_mcp.provenance import runtime_provenance; p = runtime_provenance(); assert __version__ == '2.1.0'; assert os.getuid() == 10001; assert p['sourceRevision'] == os.environ['EXPECTED_SOURCE_REVISION']; assert p['packageIntegrity'] == 'verified'; assert p['artifactDigest'] == p['packageContentDigest']"
           python -m venv .container-smoke
-          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "mcp==2.0.0"
+          mcp_pin="$(grep -oE '^mcp==[0-9.]+' requirements-runtime-linux-x64-py312.lock | head -1)"
+          test -n "$mcp_pin"
+          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "$mcp_pin"
           .container-smoke/bin/python scripts/container_smoke.py --image "$image"
           mkdir -p release
           docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
