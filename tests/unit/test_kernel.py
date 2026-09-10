@@ -1047,6 +1047,9 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
         caller,
     )
     assert accepted_plan["data"]["allow_runtime_drift"] is True
+    assert accepted_plan["data"]["plan_receipt"] != plan_data["plan_receipt"], (
+        "drift-accepting plan must produce a different receipt than the refusing one"
+    )
     receipt = str(accepted_plan["data"]["plan_receipt"])
     arguments = {"service": "web", "plan_receipt": receipt}
     denied = await kernel.invoke("docker_recreate_apply", arguments, caller)

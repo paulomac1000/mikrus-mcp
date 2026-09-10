@@ -275,6 +275,7 @@ class ExecutionMixin:
             desired_image_explicit=desired_image is not None,
             desired=desired,
             image_digest=image_digest,
+            allow_runtime_drift=allow_runtime_drift,
         )
         receipt = encode_receipt(payload)
         live = live_state(inspected)
