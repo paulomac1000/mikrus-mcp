@@ -333,6 +333,40 @@ _FILE_PATCH_HELPER = textwrap.dedent(
     def fail(code, **extra):
         print(json.dumps({"error": code, **extra}))
         raise SystemExit(0)
+    def open_host_lock(name, exclusive, error_code):
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
+        try:
+            home_fd = os.open(os.path.expanduser("~"), dir_flags)
+        except OSError:
+            fail(error_code)
+        try:
+            try:
+                os.mkdir(".mikrus-mcp", 0o700, dir_fd=home_fd)
+            except FileExistsError:
+                pass
+            try:
+                state_fd = os.open(".mikrus-mcp", dir_flags, dir_fd=home_fd)
+            except OSError:
+                fail(error_code)
+            try:
+                fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=state_fd)
+            except OSError:
+                fail(error_code)
+            finally:
+                os.close(state_fd)
+        finally:
+            os.close(home_fd)
+        try:
+            os.fchmod(fd, 0o600)
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                os.close(fd)
+                fail(error_code)
+        except OSError:
+            fail(error_code)
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        return fd
     path = payload.get("path")
     expected = payload.get("expected_digest")
     encoded = payload.get("content_b64")
@@ -354,14 +388,7 @@ _FILE_PATCH_HELPER = textwrap.dedent(
         fail("SIZE_LIMIT_EXCEEDED")
     if not any(path == root or path.startswith(root + "/") for root in roots):
         fail("VALIDATION_FAILED")
-    locks_root = os.path.expanduser("~/.mikrus-mcp/locks")
-    os.makedirs(locks_root, mode=0o700, exist_ok=True)
-    cas_lock_path = os.path.join(locks_root, "cas.lock")
-    cas_lock_fd = os.open(
-        cas_lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
-    os.fchmod(cas_lock_fd, 0o600)
-    fcntl.flock(cas_lock_fd, fcntl.LOCK_EX)
+    cas_lock_fd = open_host_lock("cas.lock", True, "SYMLINK_REJECTED")
     *directories, leaf = parts
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
@@ -474,12 +501,46 @@ _FILE_PATCH_HELPER = textwrap.dedent(
 ).strip()
 _CRON_HELPER = textwrap.dedent(
     """
-    import fcntl, hashlib, json, os, re, subprocess, sys
+    import fcntl, hashlib, json, os, re, stat, subprocess, sys
     payload = json.load(sys.stdin)
     LIMIT_TEXT = 1048576
     def fail(code, **extra):
         print(json.dumps({"error": code, **extra}))
         raise SystemExit(0)
+    def open_host_lock(name, exclusive, error_code):
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
+        try:
+            home_fd = os.open(os.path.expanduser("~"), dir_flags)
+        except OSError:
+            fail(error_code)
+        try:
+            try:
+                os.mkdir(".mikrus-mcp", 0o700, dir_fd=home_fd)
+            except FileExistsError:
+                pass
+            try:
+                state_fd = os.open(".mikrus-mcp", dir_flags, dir_fd=home_fd)
+            except OSError:
+                fail(error_code)
+            try:
+                fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=state_fd)
+            except OSError:
+                fail(error_code)
+            finally:
+                os.close(state_fd)
+        finally:
+            os.close(home_fd)
+        try:
+            os.fchmod(fd, 0o600)
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                os.close(fd)
+                fail(error_code)
+        except OSError:
+            fail(error_code)
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        return fd
     def read_crontab():
         try:
             result = subprocess.run(["crontab", "-l"], capture_output=True, timeout=20)
@@ -499,13 +560,8 @@ _CRON_HELPER = textwrap.dedent(
     def digest(text):
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
     def crontab_lock(exclusive):
-        locks_root = os.path.expanduser("~/.mikrus-mcp/locks")
-        os.makedirs(locks_root, mode=0o700, exist_ok=True)
-        lock_path = os.path.join(locks_root, "crontab.lock")
-        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.fchmod(lock_fd, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        return lock_fd
+        code = "CRONTAB_INSTALL_FAILED" if exclusive else "CRONTAB_READ_FAILED"
+        return open_host_lock("crontab.lock", exclusive, code)
     operation = payload.get("operation")
     if operation == "read":
         lock_fd = crontab_lock(False)
