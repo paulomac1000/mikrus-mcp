@@ -178,7 +178,11 @@ The following cannot be established by repository mocks or self-review:
   dedicated SSH target, with owner-scoped cancel and output-cursor continuity) — the local
   durable-job implementation is covered by credential-free gates only;
 - a deployment receipt binding exact source SHA, package content digest, and image
-  digest, verified by `scripts/verify_deployed_release.py` against a running instance;
+  digest, verified by `scripts/verify_deployed_release.py` against a running instance —
+  satisfied locally on 2026-09-10 for the exact stamped wheel/container of revision
+  `d6204a2f` (binding and package integrity verified both inside the running container
+  and from the host against the exact wheel); registry publication and promotion of the
+  immutable image remain provider steps for any real release;
 - published-image digest smoke for any release platform actually promoted;
 
 ## Real-system evidence recorded 2026-09-10
@@ -189,6 +193,20 @@ authorization; it is session evidence, not a durable CI gate:
 - real mikr.us API (read-only): live `real_backend` suite passed 4/4 — `get_server_info`
   shape, `get_ports`, `list_servers` containing the configured identity, and sequential
   rate-limiter behavior against `https://api.mikr.us`;
+- real mikr.us VPS via the operator-assigned SSH endpoint (`srv07.mikr.us:10359`,
+  unprivileged user, verified ED25519 host fingerprint): the same full-kernel suite —
+  durable remote jobs (start, idempotent reuse, bounded wait, output cursors returning
+  the real remote hostname, owner-scoped cancel, completion with result),
+  `file_patch_atomic` replace plus stale-digest `CONFLICT` without write, cron profile
+  upsert/list/remove with the installed crontab byte-preserved, and Docker
+  snapshot/plan/receipt-bound apply with observed container recreation and bounded
+  `service_wait` — all passed on the actual VPS (Docker 26.1.3, Compose v2.32.4);
+- exact-artifact behavior: the stamped wheel (`sha256:45070db2…`) passed transport
+  smoke, the built container served authenticated loopback Streamable HTTP through the
+  official MCP client (3/3 live instance tests: tool listing, sanitized
+  `get_server_info`, unapproved write fail-closed), and the deployment receipt
+  verified `binding=verified`, `package=verified` inside the running container and
+  from the host against the exact wheel;
 - SSH platform limitation recorded: the configured mikr.us VPS runs `sshd` on
   `0.0.0.0:22` internally, but the platform port-forward set does not expose TCP/22
   externally (all assigned forwards refused from two independent networks); SSH-backed
