@@ -207,6 +207,10 @@ authorization; it is session evidence, not a durable CI gate:
   `get_server_info`, unapproved write fail-closed), and the deployment receipt
   verified `binding=verified`, `package=verified` inside the running container and
   from the host against the exact wheel;
+- exact-artifact re-verification after the CodeRabbit fix rounds: wheel
+  `sha256:cf3411fa…` (transport smoke) and container `sha256:a54a1e7b…` of the fix
+  head — 3/3 live instance tests repeated, receipt re-verified in-container, and the
+  reviewed empty-stdin helper hang reproduced as EXIT with correct output;
 - SSH platform limitation recorded: the configured mikr.us VPS runs `sshd` on
   `0.0.0.0:22` internally, but the platform port-forward set does not expose TCP/22
   externally (all assigned forwards refused from two independent networks); SSH-backed
