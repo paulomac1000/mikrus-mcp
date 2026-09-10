@@ -179,13 +179,13 @@ These capabilities operate through the configured backend abstraction and are av
 | `remote_job_wait` | Read | Wait server-side for bounded remote job progress or terminal state. |
 | `remote_job_result` | Read | Retrieve a durable remote job result. |
 | `remote_job_output` | Read | Read bounded stdout or stderr using an explicit cursor. |
-| `remote_job_cancel` | Mutation | Cancel the exact remote process group after PID identity validation. |
-| `file_patch_atomic` | Mutation | Replace a regular file only when its current SHA-256 digest matches `expected_digest` (compare-and-swap; binary-safe via base64). |
+| `remote_job_cancel` | Mutation | Cancel the exact remote process group after PID identity validation and report whether termination was verified. |
+| `file_patch_atomic` | Mutation | Replace a regular file only when its current SHA-256 digest matches `expected_digest` (compare-and-swap; binary-safe via base64; serialized by a host-local advisory lock across mikrus-mcp writers). |
 | `cron_list` | Read | Report owned cron profiles with their installed crontab state and marker digest. |
 | `cron_upsert` | Mutation | Idempotently project one owned cron profile into the installed crontab. |
 | `cron_remove` | Mutation | Remove exactly the marker and generated line pair for one owned cron profile. |
 | `docker_runtime_snapshot` | Sensitive read | Return a bounded semantic snapshot of one compose service or container. |
-| `docker_recreate_plan` | Sensitive read | Compute a canonical semantic recreate plan with a bound plan receipt. |
+| `docker_recreate_plan` | Sensitive read | Compute a canonical semantic recreate plan with a bound plan receipt and an expiring server-side record. |
 | `docker_recreate_apply` | Mutation | Apply a verified recreate plan; reports `ALREADY_APPLIED` when state already matches. |
 | `service_wait` | Read | Wait server-side for bounded compose service readiness. |
 | `get_memory_info` | Read | Show memory usage. |
@@ -264,7 +264,10 @@ export MCP_REMOTE_JOB_STORE_FILE="$PWD/.mikrus-remote-jobs.json"
 ```
 
 The capability remains inactive when this setting is absent or when no SSH target is
-configured. Do not place the store in a shared or symlinked directory.
+configured. Do not place the store in a shared or symlinked directory. Cancellation
+verifies descendant termination after the kill and reports an honest `terminated`
+field; a start whose outcome was ambiguous is reconciled once against the remote
+record instead of surfacing the raw timeout.
 
 ### Cron profiles
 
@@ -284,7 +287,17 @@ line whose arguments are strictly single-quote escaped; arbitrary command string
 never serialized. Crontab updates re-read the file immediately before install and fail
 with `CONCURRENT_MODIFICATION` when it changed concurrently. All non-profile crontab
 lines are preserved byte-for-byte, and cron capabilities remain inactive when the
-setting is absent or no SSH target is configured.
+setting is absent or no SSH target is configured. Crontab installs and reads are
+serialized through a host-local advisory lock (`~/.mikrus-mcp/locks/crontab.lock`) so
+mikrus-mcp writers never interleave; concurrent non-mikrus writers stay outside that
+guarantee and are still caught by the immediate pre-install re-read
+(`CONCURRENT_MODIFICATION`).
+
+The same advisory-lock family (`~/.mikrus-mcp/locks/cas.lock`) covers
+`file_patch_atomic`: the digest read, comparison, temp-file write, and rename all hold
+the lock, making the compare-and-swap atomic across every mikrus-mcp writer on the
+host. Non-mikrus writers are outside the guarantee; the digest precondition still
+detects them at operation start.
 
 ### Docker and Compose
 
@@ -300,6 +313,13 @@ desired-state input from the stored record rather than from invocation arguments
 Environment values are used for apply comparison but are never returned to the model —
 only environment keys are visible.
 
+`docker_recreate_plan` additionally records whether the live container carries
+runtime-only drift relative to compose (fields such as runtime-applied environment or
+labels that the compose file does not declare). Planning with
+`allow_runtime_drift=true` records explicit acceptance; otherwise
+`docker_recreate_apply` refuses the mutation with `RECREATE_CONFIG_DRIFT` and the
+operator must re-plan to accept losing that runtime-only configuration.
+
 `docker_recreate_apply` takes only the service and `plan_receipt`; a missing or expired
 record is `PLAN_STALE`. The stored record classifies drift: compose-desired fields
 changed since planning → `PLAN_STALE`; the image digest moved on an implicitly pinned
@@ -308,9 +328,12 @@ Behavior is identical fail-closed: re-plan required. When the live semantic stat
 already equals the compose-desired state the apply reports `ALREADY_APPLIED` without
 recreating. The apply itself is the bounded argv sequence
 `docker compose -p <project> -f <files>... up -d --no-deps --force-recreate <service>`;
-a single inspect re-check follows. `service_wait` polls `docker inspect` inside one
-bounded helper invocation and reports `READINESS_TIMEOUT` or `HEALTH_FAILED` as
-read-class errors; with a `plan_receipt` it verifies the record exists before waiting.
+a single inspect re-check follows, and optional `readiness` (`running` or `healthy`)
+with `timeout_seconds` (5–25, default 15) runs the bounded wait inline and reports the
+result as `post_wait` without affecting desired state. `service_wait` polls
+`docker inspect` inside one bounded helper invocation and reports `READINESS_TIMEOUT`
+or `HEALTH_FAILED` as read-class errors; with a `plan_receipt` it verifies the record
+exists before waiting.
 
 ### mikr.us target fields
 

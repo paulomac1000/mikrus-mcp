@@ -702,3 +702,51 @@ async def test_docker_inspect_maps_not_found_and_compose_config_failure(tmp_path
         await client.docker_compose_config(project="site", files=["/srv/a.yaml"])
     assert failed.value.code == ErrorCode.UPSTREAM
     assert environment_path  # helper fixture path prepared for local runs only
+
+
+def test_remote_job_helper_cancel_reports_terminated(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import time
+    from pathlib import Path as PathLib
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    home = tmp_path / "home"
+    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("j" * 32)
+    job_dir.mkdir(parents=True)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.2)
+    stat_fields = PathLib(f"/proc/{child.pid}/stat").read_text("ascii").split()
+    record = {
+        "jobId": "j" * 32,
+        "state": "running",
+        "runtimeIdentity": {
+            "pid": str(child.pid),
+            "pgid": str(os.getpgid(child.pid)),
+            "startTicks": stat_fields[21],
+        },
+    }
+    (job_dir / "record.json").write_text(json.dumps(record))
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", ssh_module._REMOTE_JOB_HELPER],
+        input=json.dumps({"operation": "cancel", "job_id": "j" * 32, "reason": "test"}).encode(),
+        capture_output=True,
+        env=environment,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()
+    payload = json.loads(completed.stdout.decode())
+    assert payload["state"] == "cancelled"
+    assert "terminated" in payload
+    assert payload["terminated"] is True
+    child.wait(timeout=5)
+    with pytest.raises(ProcessLookupError):
+        os.killpg(os.getpgid(child.pid), 0)

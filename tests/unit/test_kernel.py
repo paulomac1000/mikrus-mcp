@@ -565,7 +565,10 @@ async def test_cron_and_patch_capabilities_fail_closed_without_store(tmp_path: P
     assert "cron_list" not in active_names(settings)
     assert "cron_upsert" not in active_names(settings)
     assert "cron_remove" not in active_names(settings)
-    assert inactive_reason("cron_list", settings) == "requires MCP_CRON_PROFILE_STORE_FILE"
+    assert inactive_reason("cron_list", settings) == {
+        "code": "STORE_NOT_CONFIGURED",
+        "message": "requires MCP_CRON_PROFILE_STORE_FILE",
+    }
     assert "file_patch_atomic" in active_names(settings)
 
     kernel = _kernel_for(settings, client)
@@ -934,9 +937,10 @@ async def test_docker_capabilities_are_ssh_only_and_unavailable_on_mikrus(tmp_pa
     assert "docker_recreate_apply" not in active_names(no_store)
     assert "service_wait" not in active_names(no_store)
     assert "docker_runtime_snapshot" in active_names(no_store)
-    assert inactive_reason("docker_recreate_apply", no_store) == (
-        "requires MCP_DOCKER_PLAN_STORE_FILE"
-    )
+    assert inactive_reason("docker_recreate_apply", no_store) == {
+        "code": "STORE_NOT_CONFIGURED",
+        "message": "requires MCP_DOCKER_PLAN_STORE_FILE",
+    }
 
     only_mikrus = Settings(
         targets={"prod": _mikrus_target()},
@@ -944,9 +948,10 @@ async def test_docker_capabilities_are_ssh_only_and_unavailable_on_mikrus(tmp_pa
         allowed_scopes=frozenset({"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}),
     )
     assert "docker_runtime_snapshot" not in active_names(only_mikrus)
-    assert inactive_reason("docker_recreate_apply", only_mikrus) == (
-        "requires at least one configured SSH target"
-    )
+    assert inactive_reason("docker_recreate_apply", only_mikrus) == {
+        "code": "SSH_TARGET_REQUIRED",
+        "message": "requires at least one configured SSH target",
+    }
 
     client = FakeDockerComposeClient(_ssh_target())
     registry = TargetRegistry(
@@ -1017,32 +1022,9 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
     assert plan_data["plan_receipt"].startswith("plan:v1:sha256:")
     assert plan_data["project"] == "site"
     assert plan_data["image_digest"] == client.image_digest
-    assert "image" in plan_data["proposed_differences"]
+    assert "image" in plan_data["runtime_only_drift"]
 
     receipt = str(plan_data["plan_receipt"])
-
-    missing = await kernel.invoke(
-        "docker_recreate_apply", {"service": "web", "plan_receipt": receipt}, caller
-    )
-    assert missing["error"]["code"] == "AUTHORIZATION_FAILED"
-    assert not client.ups
-
-    approvals.issue_for_test(
-        "docker_recreate_apply",
-        "principal",
-        client.stable_identity,
-        "web",
-        normalized_arguments_digest({"service": "web", "plan_receipt": receipt}),
-    )
-    applied = await kernel.invoke(
-        "docker_recreate_apply", {"service": "web", "plan_receipt": receipt}, caller
-    )
-    assert applied["success"] is True
-    assert applied["data"]["status"] == "APPLIED"
-    assert client.ups == [
-        {"project": "site", "files": ["/srv/site/compose.yaml"], "service": "web"}
-    ]
-
     arguments = {"service": "web", "plan_receipt": receipt}
     approvals.issue_for_test(
         "docker_recreate_apply",
@@ -1051,10 +1033,56 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
         "web",
         normalized_arguments_digest(arguments),
     )
+    refused = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert refused["error"]["code"] == "CONFLICT"
+    assert "RECREATE_CONFIG_DRIFT" in refused["error"]["message"]
+    assert not client.ups
+
+    unapproved = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert unapproved["error"]["code"] == "AUTHORIZATION_FAILED"
+
+    accepted_plan = await kernel.invoke(
+        "docker_recreate_plan",
+        {"service": "web", "allow_runtime_drift": True},
+        caller,
+    )
+    assert accepted_plan["data"]["allow_runtime_drift"] is True
+    receipt = str(accepted_plan["data"]["plan_receipt"])
+    arguments = {"service": "web", "plan_receipt": receipt}
+    denied = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
+
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    applied = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert applied["success"] is True
+    assert applied["data"]["status"] == "APPLIED"
+    assert applied["data"]["post_wait"] is None
+    assert client.ups == [
+        {"project": "site", "files": ["/srv/site/compose.yaml"], "service": "web"}
+    ]
+
     client.converged = True
+    clean_plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    assert clean_plan["data"]["has_runtime_only_drift"] is False
+    receipt = str(clean_plan["data"]["plan_receipt"])
+    arguments = {"service": "web", "plan_receipt": receipt}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
     already = await kernel.invoke("docker_recreate_apply", arguments, caller)
     assert already["success"] is True
     assert already["data"]["status"] == "ALREADY_APPLIED"
+    assert already["data"]["post_wait"] is None
     assert len(client.ups) == 1
 
     unknown = {"service": "web", "plan_receipt": "plan:v1:sha256:" + "0" * 64}
@@ -1109,6 +1137,7 @@ async def test_docker_apply_classification_derives_from_record(tmp_path: Path) -
     )
     caller = CallerContext("principal", settings.allowed_scopes)
 
+    client.converged = True
     plan = await kernel.invoke(
         "docker_recreate_plan",
         {"service": "web", "desired_image": "nginx:1.27"},
@@ -1154,6 +1183,7 @@ async def test_docker_apply_detects_compose_config_change_after_plan(tmp_path: P
         approvals=approvals,
     )
     caller = CallerContext("principal", settings.allowed_scopes)
+    client.converged = True
     plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
     assert plan["success"] is True
 
@@ -1223,3 +1253,162 @@ async def test_docker_ambiguous_service_and_wait(tmp_path: Path) -> None:
         caller,
     )
     assert waited_again["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_docker_apply_runs_inline_readiness_wait(tmp_path: Path) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    plan = await kernel.invoke(
+        "docker_recreate_plan",
+        {"service": "web", "allow_runtime_drift": True},
+        caller,
+    )
+    receipt = str(plan["data"]["plan_receipt"])
+    arguments = {
+        "service": "web",
+        "plan_receipt": receipt,
+        "readiness": "running",
+        "timeout_seconds": 8,
+    }
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    applied = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert applied["success"] is True
+    assert applied["data"]["status"] == "APPLIED"
+    assert applied["data"]["post_wait"] == {
+        "status": "READY",
+        "state": "running",
+        "health": None,
+    }
+    assert client.waits[-1] == {"readiness": "running", "timeout_seconds": 8.0}
+
+
+class AmbiguousStartClient(FakeDockerComposeClient):
+    """Client whose remote job start times out ambiguously after launch."""
+
+    def __init__(self, config: TargetConfig) -> None:
+        super().__init__(config)
+        self.launched: list[str] = []
+
+    async def remote_job_start(self, **kwargs: object) -> dict[str, object]:
+        job_id = str(kwargs.get("job_id"))
+        self.launched.append(job_id)
+        raise AppError(ErrorCode.AMBIGUOUS, "SSH program outcome is unknown after timeout")
+
+    async def remote_job_status(self, *, job_id: str) -> dict[str, object]:
+        if job_id in self.launched:
+            return {"jobId": job_id, "state": "running", "exitCode": None}
+        raise AppError(ErrorCode.NOT_FOUND, "remote job not found")
+
+
+@pytest.mark.asyncio
+async def test_remote_job_start_reconciles_after_ambiguity(tmp_path: Path) -> None:
+    client = AmbiguousStartClient(_ssh_target())
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        remote_job_store_file=tmp_path / "jobs.json",
+    )
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "idempotency_key": "reconcile-me",
+        "executable": "tail",
+        "argv": ["-f", "/tmp/x"],
+    }
+    approvals.issue_for_test(
+        "remote_job_start",
+        "principal",
+        client.stable_identity,
+        "reconcile-me",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("remote_job_start", arguments, caller)
+    assert result["success"] is True
+    assert result["data"]["reused"] is True
+    assert result["data"]["reconciled_after_ambiguity"] is True
+    assert result["data"]["state"] == "running"
+    assert len(client.launched) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_job_cancel_reports_termination_field(tmp_path: Path) -> None:
+    class CancelledJobClient(FakeDockerComposeClient):
+        async def remote_job_cancel(self, *, job_id: str, reason: str) -> dict[str, object]:
+            del reason
+            return {"jobId": job_id, "state": "cancelled", "terminated": False}
+
+    from mikrus_mcp.remote_jobs import RemoteJobRecord, RemoteJobStore
+
+    client = CancelledJobClient(_ssh_target())
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        remote_job_store_file=tmp_path / "jobs.json",
+    )
+    store = RemoteJobStore(tmp_path / "jobs.json")
+    record = RemoteJobRecord.create(
+        principal="principal",
+        server_id="host",
+        target_identity=client.stable_identity,
+        idempotency_key="cancel-me",
+        request_digest_value="a" * 64,
+        now="2026-09-10T12:00:00Z",
+    )
+    record.transition("running", now="2026-09-10T12:00:01Z")
+    store.save(record)
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {"job_id": record.job_id, "reason": "operator request"}
+    approvals.issue_for_test(
+        "remote_job_cancel",
+        "principal",
+        client.stable_identity,
+        record.job_id,
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("remote_job_cancel", arguments, caller)
+    assert result["success"] is True
+    assert "terminated" in result["data"]
+    assert result["data"]["terminated"] is False
+    assert result["data"]["state"] == "cancelled"

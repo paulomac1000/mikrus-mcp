@@ -101,6 +101,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
     """
     import hashlib, json, os, re, signal, subprocess, sys, tempfile, time
     from pathlib import Path
+    from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
     JOB_ID = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
     payload = json.load(sys.stdin)
@@ -227,7 +228,33 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     os.killpg(numeric_pgid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+            def group_alive():
+                if numeric_pid is None:
+                    return False
+                try:
+                    fields = (
+                        PathLib(f"/proc/{numeric_pid}/stat").read_text(encoding="ascii").split()
+                    )
+                except (OSError, ValueError):
+                    return False
+                if len(fields) <= 2:
+                    return False
+                return fields[2] not in {"Z", "z", "X", "x"}
+            terminated = not group_alive()
+            grace_deadline = time.monotonic() + 3.0
+            while group_alive() and time.monotonic() < grace_deadline:
+                time.sleep(0.1)
+            if group_alive():
+                try:
+                    os.killpg(numeric_pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                kill_deadline = time.monotonic() + 0.5
+                while group_alive() and time.monotonic() < kill_deadline:
+                    time.sleep(0.05)
+            terminated = not group_alive()
             record["state"] = "cancelled"
+            record["terminated"] = terminated
             write_record(record)
             print(json.dumps(record))
         else:
@@ -299,7 +326,7 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
 
 _FILE_PATCH_HELPER = textwrap.dedent(
     """
-    import base64, errno, hashlib, json, os, re, stat, sys
+    import base64, errno, fcntl, hashlib, json, os, re, stat, sys
     payload = json.load(sys.stdin)
     LIMIT_NEW = 100000
     LIMIT_EXISTING = 1048576
@@ -327,6 +354,14 @@ _FILE_PATCH_HELPER = textwrap.dedent(
         fail("SIZE_LIMIT_EXCEEDED")
     if not any(path == root or path.startswith(root + "/") for root in roots):
         fail("VALIDATION_FAILED")
+    locks_root = os.path.expanduser("~/.mikrus-mcp/locks")
+    os.makedirs(locks_root, mode=0o700, exist_ok=True)
+    cas_lock_path = os.path.join(locks_root, "cas.lock")
+    cas_lock_fd = os.open(
+        cas_lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    os.fchmod(cas_lock_fd, 0o600)
+    fcntl.flock(cas_lock_fd, fcntl.LOCK_EX)
     *directories, leaf = parts
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
@@ -433,11 +468,13 @@ _FILE_PATCH_HELPER = textwrap.dedent(
                 pass
         for descriptor in reversed(opened):
             os.close(descriptor)
+        fcntl.flock(cas_lock_fd, fcntl.LOCK_UN)
+        os.close(cas_lock_fd)
     """
 ).strip()
 _CRON_HELPER = textwrap.dedent(
     """
-    import hashlib, json, re, subprocess, sys
+    import fcntl, hashlib, json, os, re, subprocess, sys
     payload = json.load(sys.stdin)
     LIMIT_TEXT = 1048576
     def fail(code, **extra):
@@ -461,9 +498,22 @@ _CRON_HELPER = textwrap.dedent(
             return None
     def digest(text):
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    def crontab_lock(exclusive):
+        locks_root = os.path.expanduser("~/.mikrus-mcp/locks")
+        os.makedirs(locks_root, mode=0o700, exist_ok=True)
+        lock_path = os.path.join(locks_root, "crontab.lock")
+        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        return lock_fd
     operation = payload.get("operation")
     if operation == "read":
-        text = read_crontab()
+        lock_fd = crontab_lock(False)
+        try:
+            text = read_crontab()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
         if text is None:
             fail("CRONTAB_READ_FAILED")
         print(json.dumps({"text": text, "hash": digest(text), "size": len(text.encode("utf-8"))}))
@@ -477,23 +527,28 @@ _CRON_HELPER = textwrap.dedent(
             fail("VALIDATION_FAILED")
         if len(new_text.encode("utf-8")) > LIMIT_TEXT:
             fail("VALIDATION_FAILED")
-        current = read_crontab()
-        if current is None:
-            fail("CRONTAB_READ_FAILED")
-        if digest(current) != expected_hash:
-            fail("CONCURRENT_MODIFICATION")
+        lock_fd = crontab_lock(True)
         try:
-            installed = subprocess.run(
-                ["crontab", "-"],
-                input=new_text.encode("utf-8"),
-                capture_output=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            fail("CRONTAB_INSTALL_FAILED")
-        if installed.returncode != 0:
-            fail("CRONTAB_INSTALL_FAILED")
-        fresh = read_crontab()
+            current = read_crontab()
+            if current is None:
+                fail("CRONTAB_READ_FAILED")
+            if digest(current) != expected_hash:
+                fail("CONCURRENT_MODIFICATION")
+            try:
+                installed = subprocess.run(
+                    ["crontab", "-"],
+                    input=new_text.encode("utf-8"),
+                    capture_output=True,
+                    timeout=20,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                fail("CRONTAB_INSTALL_FAILED")
+            if installed.returncode != 0:
+                fail("CRONTAB_INSTALL_FAILED")
+            fresh = read_crontab()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
         if fresh is None or digest(fresh) != digest(new_text):
             fail("AMBIGUOUS_OUTCOME")
         print(json.dumps({

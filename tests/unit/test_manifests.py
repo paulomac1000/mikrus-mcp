@@ -37,9 +37,10 @@ def test_general_purpose_command_execution_has_no_manifest() -> None:
 def test_typed_program_execution_is_ssh_only_and_write_gated() -> None:
     current = settings()
     assert "execute_program" not in active_names(current)
-    assert inactive_reason("execute_program", current) == (
-        "requires at least one configured SSH target"
-    )
+    assert inactive_reason("execute_program", current) == {
+        "code": "SSH_TARGET_REQUIRED",
+        "message": "requires at least one configured SSH target",
+    }
 
     target = TargetConfig("host", "ssh", host="server.example")
     writable = Settings({"host": target}, "host", write_enabled=True)

@@ -224,3 +224,34 @@ def test_absent_deployment_receipt_is_missing(tmp_path: Path) -> None:
 
     assert snapshot.package_integrity == "verified"
     assert snapshot.deployment.binding == "missing"
+
+
+def test_stamped_revision_rejects_deployment_receipt_of_other_revision(
+    tmp_path: Path,
+) -> None:
+    package_dir = copy_package(tmp_path)
+    stamp(package_dir)
+    embedded = capture_runtime_provenance(package_dir=package_dir, environ={})
+    assert embedded.source_revision == SOURCE_REVISION
+
+    other_revision = "c" * 40
+    for receipt_revision in (other_revision, SOURCE_REVISION):
+        receipt = tmp_path / f"receipt-{receipt_revision[:4]}.json"
+        write_receipt(
+            receipt,
+            package_content_digest=embedded.package_content_digest,
+            source_revision=receipt_revision,
+        )
+        snapshot = capture_runtime_provenance(
+            package_dir=package_dir,
+            receipt_path=receipt,
+            environ={},
+        )
+        if receipt_revision == SOURCE_REVISION:
+            assert snapshot.deployment.binding == "verified"
+        else:
+            assert snapshot.deployment.binding == "invalid"
+            assert snapshot.deployment.image_digest == "unknown"
+            assert snapshot.deployment.release_manifest_digest == "unknown"
+            serialized = json.dumps(snapshot.as_dict())
+            assert other_revision not in serialized

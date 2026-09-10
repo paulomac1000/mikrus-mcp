@@ -20,7 +20,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -561,6 +561,7 @@ def plan_output(
     desired: dict[str, Any],
     image_digest: str | None,
     differences: dict[str, Any],
+    allow_runtime_drift: bool = False,
 ) -> dict[str, Any]:
     """Model-visible plan evidence: bounded, and environment values removed."""
     return {
@@ -574,7 +575,9 @@ def plan_output(
         "desired_ports": desired["ports"],
         "desired_networks": desired["networks"],
         "depends_on": desired["depends_on"],
-        "proposed_differences": differences,
+        "runtime_only_drift": differences,
+        "has_runtime_only_drift": bool(differences),
+        "allow_runtime_drift": allow_runtime_drift,
         "modeled_fields": list(_MODELLED_FIELDS),
     }
 
@@ -594,8 +597,10 @@ class PlanRecord:
     compose_files: list[str]
     desired_image: str | None
     desired_image_explicit: bool
-    payload: dict[str, Any]
-    created_at: float
+    allow_runtime_drift: bool = False
+    has_runtime_drift: bool = False
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -605,6 +610,8 @@ class PlanRecord:
             "composeFiles": list(self.compose_files),
             "desiredImage": self.desired_image,
             "desiredImageExplicit": self.desired_image_explicit,
+            "allowRuntimeDrift": self.allow_runtime_drift,
+            "hasRuntimeDrift": self.has_runtime_drift,
             "payload": self.payload,
             "createdAt": self.created_at,
         }
@@ -633,6 +640,8 @@ class PlanRecord:
             compose_files=[str(item) for item in values["composeFiles"]],
             desired_image=None if desired_image is None else str(desired_image),
             desired_image_explicit=bool(values["desiredImageExplicit"]),
+            allow_runtime_drift=bool(payload.get("allowRuntimeDrift", False)),
+            has_runtime_drift=bool(payload.get("hasRuntimeDrift", False)),
             payload=dict(values["payload"]),
             created_at=float(str(values["createdAt"])),
         )
@@ -667,6 +676,8 @@ class PlanRecordStore:
         compose_files: list[str],
         desired_image: str | None,
         desired_image_explicit: bool,
+        allow_runtime_drift: bool = False,
+        has_runtime_drift: bool = False,
         payload: dict[str, Any],
     ) -> PlanRecord:
         with self._lock():
@@ -683,6 +694,8 @@ class PlanRecordStore:
                 compose_files=list(compose_files),
                 desired_image=desired_image,
                 desired_image_explicit=desired_image_explicit,
+                allow_runtime_drift=allow_runtime_drift,
+                has_runtime_drift=has_runtime_drift,
                 payload=payload,
                 created_at=self._clock(),
             )

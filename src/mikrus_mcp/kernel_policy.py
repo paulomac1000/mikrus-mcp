@@ -225,8 +225,14 @@ class PolicyMixin:
                 "compose_project",
                 "compose_files",
                 "desired_image",
+                "allow_runtime_drift",
             },
-            "docker_recreate_apply": {"service", "plan_receipt"},
+            "docker_recreate_apply": {
+                "service",
+                "plan_receipt",
+                "readiness",
+                "timeout_seconds",
+            },
             "service_wait": {
                 "service",
                 "plan_receipt",
@@ -397,6 +403,10 @@ class PolicyMixin:
                     normalized["desired_image"] = validate_desired_image(
                         required_text("desired_image", maximum=254)
                     )
+                allow_runtime_drift = normalized.get("allow_runtime_drift", False)
+                if type(allow_runtime_drift) is not bool:
+                    raise ValidationError("allow_runtime_drift must be a boolean")
+                normalized["allow_runtime_drift"] = allow_runtime_drift
             case "docker_recreate_apply":
                 normalized["service"] = validate_compose_name(required_text("service"))
                 normalized["plan_receipt"] = validate_plan_receipt(
@@ -413,6 +423,16 @@ class PolicyMixin:
                     raise ValidationError("readiness must be running or healthy")
                 normalized["readiness"] = readiness
                 timeout = normalized.get("timeout_seconds", 10)
+                if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
+                    raise ValidationError("timeout_seconds must be between 5 and 25")
+                normalized["timeout_seconds"] = float(timeout)
+            case "docker_recreate_apply":
+                readiness = normalized.get("readiness")
+                if readiness is not None:
+                    if readiness not in {"running", "healthy"}:
+                        raise ValidationError("readiness must be running or healthy")
+                    normalized["readiness"] = readiness
+                timeout = normalized.get("timeout_seconds", 15)
                 if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
                     raise ValidationError("timeout_seconds must be between 5 and 25")
                 normalized["timeout_seconds"] = float(timeout)

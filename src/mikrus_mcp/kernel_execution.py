@@ -244,6 +244,7 @@ class ExecutionMixin:
         project: str | None,
         files: list[str] | None,
         desired_image: str | None,
+        allow_runtime_drift: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
         """Shared plan computation: returns (output, desired, live, receipt payload)."""
         live_project, live_files, inspected = await self._docker_resolve_target(
@@ -281,6 +282,7 @@ class ExecutionMixin:
             desired=desired,
             image_digest=image_digest,
             differences=differences,
+            allow_runtime_drift=allow_runtime_drift,
         )
         return output, desired, live, payload
 
@@ -351,6 +353,43 @@ class ExecutionMixin:
                         cwd=arguments.get("cwd"),
                         stdin=arguments.get("stdin"),
                     )
+                except AppError as exc:
+                    if exc.code == ErrorCode.AMBIGUOUS:
+                        try:
+                            remote = await client.remote_job_status(job_id=record.job_id)
+                        except AppError:
+                            self.remote_jobs.mark_lost(
+                                job_id=record.job_id, principal=caller.principal, now=now
+                            )
+                            raise
+                        remote_state = remote.get("state")
+                        if remote_state in {
+                            "queued",
+                            "running",
+                            "succeeded",
+                            "failed",
+                            "cancelled",
+                            "lost",
+                            "expired",
+                        }:
+                            self.remote_jobs.update(
+                                job_id=record.job_id,
+                                principal=caller.principal,
+                                state=remote_state,
+                                now=datetime.now(UTC).isoformat(),
+                                exit_code=remote.get("exitCode")
+                                if isinstance(remote.get("exitCode"), int)
+                                else None,
+                            )
+                        return {
+                            **remote,
+                            "reused": True,
+                            "reconciled_after_ambiguity": True,
+                        }
+                    self.remote_jobs.mark_lost(
+                        job_id=record.job_id, principal=caller.principal, now=now
+                    )
+                    raise
                 except Exception:
                     self.remote_jobs.mark_lost(
                         job_id=record.job_id, principal=caller.principal, now=now
@@ -578,12 +617,14 @@ class ExecutionMixin:
                 client = await self.registry.get(target)
             if self.docker_plans is None:
                 raise AppError(ErrorCode.UNAVAILABLE, "the docker plan store is not configured")
+            allow_runtime_drift = bool(arguments.get("allow_runtime_drift", False))
             output, _, _, payload = await self._docker_plan(
                 client,
                 service=str(arguments["service"]),
                 project=arguments.get("compose_project"),
                 files=arguments.get("compose_files"),
                 desired_image=arguments.get("desired_image"),
+                allow_runtime_drift=allow_runtime_drift,
             )
             self.docker_plans.save(
                 receipt_digest=receipt_digest(str(output["plan_receipt"])),
@@ -592,6 +633,8 @@ class ExecutionMixin:
                 compose_files=list(output["compose_files"]),
                 desired_image=arguments.get("desired_image"),
                 desired_image_explicit=arguments.get("desired_image") is not None,
+                allow_runtime_drift=allow_runtime_drift,
+                has_runtime_drift=bool(output["has_runtime_only_drift"]),
                 payload=payload,
             )
             return output
@@ -606,7 +649,15 @@ class ExecutionMixin:
                 project=plan_record.project,
                 files=plan_record.compose_files,
                 desired_image=plan_record.desired_image,
+                allow_runtime_drift=plan_record.allow_runtime_drift,
             )
+            if plan_record.has_runtime_drift and not plan_record.allow_runtime_drift:
+                raise AppError(
+                    ErrorCode.CONFLICT,
+                    "the live state carries runtime-only drift that the plan did not "
+                    "explicitly accept; re-plan with allow_runtime_drift=true "
+                    "(RECREATE_CONFIG_DRIFT)",
+                )
             fresh = canonical_json_bytes(fresh_payload)
             stored = canonical_json_bytes(record_payload := plan_record.payload)
             if fresh != stored:
@@ -631,6 +682,9 @@ class ExecutionMixin:
                     "plan_receipt": output["plan_receipt"],
                     "service": service,
                     "project": output["project"],
+                    "post_state": None,
+                    "post_verified": True,
+                    "post_wait": None,
                 }
             await client.docker_compose_up(
                 project=str(output["project"]),
@@ -638,11 +692,30 @@ class ExecutionMixin:
                 service=service,
             )
             post_state: dict[str, Any] | None
+            post_wait: dict[str, Any] | None = None
+            readiness = arguments.get("readiness")
             try:
                 post_project, post_files, post_inspected = await self._docker_resolve_target(
                     client, service=service, project=str(output["project"])
                 )
                 post_state = project_inspect(post_inspected)
+                if readiness is not None:
+                    try:
+                        waited = await client.docker_service_wait(
+                            container_id=str(post_inspected.get("Id") or ""),
+                            readiness=str(readiness),
+                            timeout_seconds=float(arguments.get("timeout_seconds", 15)),
+                        )
+                        post_wait = {
+                            "status": "READY",
+                            "state": str(waited.get("state") or ""),
+                            "health": waited.get("health"),
+                        }
+                    except AppError as wait_error:
+                        post_wait = {
+                            "status": "UNREADY",
+                            "error": str(wait_error),
+                        }
             except AppError:
                 post_state = None
             return {
@@ -652,6 +725,7 @@ class ExecutionMixin:
                 "project": output["project"],
                 "post_state": post_state,
                 "post_verified": post_state is not None,
+                "post_wait": post_wait,
             }
 
         if name == "service_wait":

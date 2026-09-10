@@ -128,15 +128,16 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
 
     def catalog(self, *, active_only: bool = False) -> list[dict[str, object]]:
         names = self.active_names if active_only else set(MANIFESTS)
+        config_generation = self._provenance.config_revision or self._provenance.instance_generation
         result: list[dict[str, object]] = []
         for name in sorted(names):
             reason = inactive_reason(name, self.settings)
-            result.append(
-                MANIFESTS[name].as_dict(
-                    active_state="active" if reason is None else "inactive",
-                    inactive_reason=reason,
-                )
+            entry = MANIFESTS[name].as_dict(
+                active_state="active" if reason is None else "inactive",
+                inactive_reason=reason,
             )
+            entry["config_generation"] = config_generation
+            result.append(entry)
         return result
 
     def health(self) -> dict[str, object]:

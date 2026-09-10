@@ -100,7 +100,7 @@ class CapabilityManifest:
         self,
         *,
         active_state: Literal["active", "inactive", "deprecated"] = "active",
-        inactive_reason: str | None = None,
+        inactive_reason: dict[str, str] | None = None,
     ) -> dict[str, object]:
         # Advertise exactly what the runtime enforces: concurrent-safe reads run
         # unlocked, everything else serializes on one lock per scope key. Scope
@@ -341,31 +341,53 @@ MANIFESTS: dict[str, CapabilityManifest] = {
 }
 
 
-def inactive_reason(name: str, settings: Settings) -> str | None:
+def _reason(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def inactive_reason(name: str, settings: Settings) -> dict[str, str] | None:
     manifest = MANIFESTS[name]
     if name in MIKRUS_ONLY and not any(
         target.type == "mikrus" for target in settings.targets.values()
     ):
-        return "requires at least one configured mikr.us target"
+        return _reason(
+            "MIKRUS_TARGET_REQUIRED",
+            "requires at least one configured mikr.us target",
+        )
     if name in SSH_ONLY and not any(target.type == "ssh" for target in settings.targets.values()):
-        return "requires at least one configured SSH target"
+        return _reason(
+            "SSH_TARGET_REQUIRED",
+            "requires at least one configured SSH target",
+        )
     if name in REMOTE_JOB_NAMES:
         if settings.remote_job_store_file is None:
-            return "requires MCP_REMOTE_JOB_STORE_FILE"
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_REMOTE_JOB_STORE_FILE")
         if not any(target.type == "ssh" for target in settings.targets.values()):
-            return "requires at least one configured SSH target"
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
     if name in CRON_NAMES:
         if settings.cron_profile_store_file is None:
-            return "requires MCP_CRON_PROFILE_STORE_FILE"
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_CRON_PROFILE_STORE_FILE")
         if not any(target.type == "ssh" for target in settings.targets.values()):
-            return "requires at least one configured SSH target"
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
     if name in DOCKER_PLAN_NAMES:
         if settings.docker_plan_store_file is None:
-            return "requires MCP_DOCKER_PLAN_STORE_FILE"
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_DOCKER_PLAN_STORE_FILE")
         if not any(target.type == "ssh" for target in settings.targets.values()):
-            return "requires at least one configured SSH target"
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
     if manifest.side_effects != "read" and not settings.write_enabled:
-        return "write operations are disabled by process policy"
+        return _reason(
+            "WRITE_OPERATIONS_DISABLED",
+            "write operations are disabled by process policy",
+        )
     return None
 
 
