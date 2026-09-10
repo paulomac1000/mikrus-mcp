@@ -13,7 +13,7 @@ concurrency:
 
 env:
   PIP_VERSION: "26.2.1"
-  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
+  AI_SKILLS_REVISION: "435061ad67ee36d77e01a993bc4f9e4379a29666"
 
 jobs:
   structural-contract:
