@@ -1647,10 +1647,10 @@ async def test_cron_upsert_ambiguous_reconciles_against_installed_projection(
     assert store.get(profile_id="backup", principal="principal", server_id="host")
 
     client.persist_despite_error = False
-    fresh = generate_cron_line(
-        schedule=_schedule(), executable="grep", argv=["--other"], environment={}
+    rolled_back_line = generate_cron_line(
+        schedule=_schedule(), executable="grep", argv=[], environment={}
     )
-    unused = desired_digest(fresh)
+    rolled_back_digest = desired_digest(rolled_back_line)
     client.install_error = AppError(ErrorCode.AMBIGUOUS, "outcome unknown after timeout")
     ambiguous_arguments = _cron_arguments("second")
     approvals.issue_for_test(
@@ -1664,7 +1664,7 @@ async def test_cron_upsert_ambiguous_reconciles_against_installed_projection(
     assert rolled_back["error"]["code"] == "AMBIGUOUS_OUTCOME"
     with pytest.raises(AppError):
         store.get(profile_id="second", principal="principal", server_id="host")
-    assert marker_line("second", unused) not in client.crontab
+    assert marker_line("second", rolled_back_digest) not in client.crontab
 
 
 @pytest.mark.asyncio

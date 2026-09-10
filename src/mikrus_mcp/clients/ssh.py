@@ -96,15 +96,16 @@ _PROGRAM_HELPER = textwrap.dedent(
                     "truncated": True,
                 }))
                 raise SystemExit(0)
-        if child.stdin in writable_ready and stdin_sent < len(stdin_data):
-            try:
-                stdin_sent += os.write(
-                    child.stdin.fileno(), stdin_data[stdin_sent:stdin_sent + 8192]
-                )
-            except BlockingIOError:
-                pass
-            except OSError:
-                stdin_open = False
+        if stdin_open and child.stdin in writable_ready:
+            if stdin_sent < len(stdin_data):
+                try:
+                    stdin_sent += os.write(
+                        child.stdin.fileno(), stdin_data[stdin_sent:stdin_sent + 8192]
+                    )
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    stdin_open = False
             if stdin_sent >= len(stdin_data):
                 try:
                     child.stdin.close()
@@ -350,6 +351,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 _REMOTE_JOB_WORKER = textwrap.dedent(
     """
     import fcntl, json, os, signal, subprocess, tempfile
+    from datetime import datetime, timezone
     from pathlib import Path
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
     job_dir = meta_path.parent
@@ -410,6 +412,8 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
                 except (ProcessLookupError, OSError):
                     pass
                 raise SystemExit(0)
+            record["state"] = "running"
+            record["startedAt"] = datetime.now(timezone.utc).isoformat()
             record["runtimeIdentity"] = {
                 "pid": str(child.pid),
                 "pgid": str(os.getpgid(child.pid)),

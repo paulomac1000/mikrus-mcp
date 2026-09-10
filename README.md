@@ -485,11 +485,17 @@ Representative failure:
 
 Metadata is only included when it is safe and actually known. For example, a pre-resolution authorization failure does not disclose the backend's resolved identity.
 
-Build and deployment profiles may provide immutable provenance through
-`MIKRUS_MCP_SOURCE_REVISION`, `MIKRUS_MCP_BUILD_ID`, `MIKRUS_MCP_ARTIFACT_DIGEST`,
-`MIKRUS_MCP_BUILT_AT`, and `MIKRUS_MCP_CONFIG_REVISION`. These values are reported in
-capability discovery and successful result metadata; they must be injected by the
-controlled build/deployment pipeline rather than inferred from a mounted checkout.
+Build and deployment profiles provide immutable provenance through the embedded
+`_build_provenance.json` stamp, written by `scripts/stamp_build_provenance.py` from the
+inputs `--source-revision`, `--build-id`, `--built-at`, and `--config-revision`;
+`packageContentDigest` is computed from the stamped package during stamping. At runtime
+only two environment variables are read: `MIKRUS_MCP_CONFIG_REVISION` (overrides the
+stamped `configRevision`) and `MIKRUS_MCP_DEPLOYMENT_RECEIPT_FILE` (deployment receipt
+path). The stamped `sourceRevision`, `buildId`, `packageContentDigest`, and `builtAt`
+are reported in capability discovery and successful result metadata; they cannot be
+injected through environment variables or inferred from a mounted checkout. Build
+wheels through `scripts/build_wheel.py --provenance stamped|unstamped` so the stamp
+cannot silently go stale.
 
 Result limits are enforced against the serialized application envelope, including metadata, rather than only the nested `data` value.
 

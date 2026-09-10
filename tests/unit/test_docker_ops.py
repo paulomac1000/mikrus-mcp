@@ -480,8 +480,13 @@ def test_receipt_binds_allow_runtime_drift_decision() -> None:
         image_digest="sha256:" + "9" * 64,
         allow_runtime_drift=False,
     )
-    accepted = {
-        **base,
-        "allow_runtime_drift": True,
-    }
+    accepted = receipt_payload(
+        service="web",
+        project="site",
+        compose_files=["/srv/site/compose.yaml"],
+        desired_image_explicit=False,
+        desired=desired_state(),
+        image_digest="sha256:" + "9" * 64,
+        allow_runtime_drift=True,
+    )
     assert encode_receipt(base) != encode_receipt(accepted)
