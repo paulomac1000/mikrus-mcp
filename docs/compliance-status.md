@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: 89ff9b149d4b6acf23fcdff75be39763424d1646
+assessed_revision: 3777a298fb26d1d8859420a17a28166fbbdab056
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
@@ -25,11 +25,10 @@ profile at maturity level L2.
 At `1.4.0` the `mcp-server-architect` rule catalog expands from twelve stable rule
 families to twenty-seven. All twelve families previously assessed against `1.2.0`
 remain normative and unchanged in identifier; the fifteen additional families are
-assessed in the rule summary below. Because the pin migration and the remaining
-capability work are implementation changes, the prior assessment binding
-(`assessed_revision` `89ff9b1`) is historical: a new independent review bound to the
-exact final revision is required before any adoption claim under the `1.4.0`
-authority.
+assessed in the rule summary below. `assessed_revision` in this document's frontmatter
+binds the structural assessment to the exact branch revision whose locks and workflow
+bindings were provider-verified; subsequent descendants may differ only in evidence
+paths as enforced by `scripts/check_evidence_freshness.py`.
 
 Some repository controls deliberately exceed what `main` requires; they are labeled
 *local hardening* below and are never presented as upstream requirements. Candidate-only
@@ -38,16 +37,17 @@ schema, atomic child controls, AFDS document schema 2) were removed from authori
 gates; where retained locally they are explicitly non-authoritative.
 
 `assessed_revision` in this document's frontmatter names the exact 2.1.0 branch
-revision whose implementation and workflow state was reviewed by the independent
-ChatGPT reviewer (APPROVE on head 6b3230d; the only descendant 89ff9b1 changes a
-single lock-evidence tool pin). Any descendant used for the release may differ only
-in the evidence paths allowed by `scripts/check_evidence_freshness.py`; any
-implementation, dependency, configuration, or workflow change requires a new
-assessment binding. Provider run IDs and artifact IDs are not treated as timeless
-approval: release publication independently requires a successful ordinary CI run
-and the exact non-expired release bundle for the tagged SHA. No document treats
-its own commit hash, a badge, or self-authored evidence as independent production
-approval.
+revision whose implementation, lock, and workflow state this structural assessment
+describes. The independent ChatGPT provider review of the capability delta in this
+branch returned APPROVE at round 2 after the plan-record fix (session of 2026-09-10,
+recorded below); additional provider review rounds are attached to the pull request
+for the exact head. Any descendant used for the release may differ only in the
+evidence paths allowed by `scripts/check_evidence_freshness.py`; any implementation,
+dependency, configuration, or workflow change requires a new assessment binding.
+Provider run IDs and artifact IDs are not treated as timeless approval: release
+publication independently requires a successful ordinary CI run and the exact
+non-expired release bundle for the tagged SHA. No document treats its own commit
+hash, a badge, or self-authored evidence as independent production approval.
 
 ## Implemented contract changes
 
