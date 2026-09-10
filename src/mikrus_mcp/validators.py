@@ -41,6 +41,13 @@ _CRON_ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _CRON_ENV_VALUE_CONTROL: Final = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 _BASE64: Final = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 _EXPECTED_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ASCII_DECIMAL: Final = re.compile(r"[0-9]+")
+
+
+def _ascii_decimal(value: str) -> bool:
+    return _ASCII_DECIMAL.fullmatch(value) is not None
+
+
 _CRON_FIELD_BOUNDS: Final[dict[str, tuple[int, int]]] = {
     "minute": (0, 59),
     "hour": (0, 23),
@@ -254,16 +261,16 @@ def validate_cron_field(value: object, field: str) -> str:
     for element in elements:
         body, slash, step_text = element.partition("/")
         if slash:
-            if not step_text.isdigit() or not 1 <= int(step_text) <= high:
+            if not _ascii_decimal(step_text) or not 1 <= int(step_text) <= high:
                 raise ValidationError(f"{field} has an out-of-range step value")
         if body == "*":
             continue
         first, dash, last = body.partition("-")
-        if not first.isdigit():
+        if not _ascii_decimal(first):
             raise ValidationError(f"{field} elements must be numeric ranges or steps")
         start = int(first)
         if dash:
-            if not last.isdigit():
+            if not _ascii_decimal(last):
                 raise ValidationError(f"{field} ranges must use numeric bounds")
             end = int(last)
         else:

@@ -382,9 +382,17 @@ async def cron_upsert(
     )
 
 
-async def cron_remove(profile_id: str, ctx: Context[AppContext]) -> ToolResult:
+async def cron_remove(
+    profile_id: str,
+    ctx: Context[AppContext],
+    server: str | None = None,
+) -> ToolResult:
     """Remove exactly the marker and generated line pair for one owned profile."""
-    return await _invoke(ctx, "cron_remove", {"profile_id": profile_id})
+    return await _invoke(
+        ctx,
+        "cron_remove",
+        {"server": server, "profile_id": profile_id},
+    )
 
 
 async def docker_runtime_snapshot(

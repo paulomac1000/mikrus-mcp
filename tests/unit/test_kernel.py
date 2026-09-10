@@ -1511,3 +1511,158 @@ async def test_docker_apply_rejects_invalid_tuning_before_side_effects(
         assert result["error"]["code"] == "VALIDATION_FAILED"
         assert not client.ups
         assert not client.waits
+
+
+class FlakyCronClient(FakeSshJobsClient):
+    """Cron client whose install can fail after (or without) persisting."""
+
+    install_error: AppError | None = None
+    persist_despite_error: bool = False
+
+    async def cron_install(self, *, expected_hash: str, new_text: str) -> dict[str, object]:
+        import hashlib
+
+        if self.persist_despite_error:
+            self.installs.append(new_text)
+            self.crontab = new_text
+        if self.install_error is not None:
+            raise self.install_error
+        if hashlib.sha256(self.crontab.encode("utf-8")).hexdigest() != expected_hash:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "the installed crontab changed concurrently (CONCURRENT_MODIFICATION)",
+            )
+        self.installs.append(new_text)
+        self.crontab = new_text
+        return {"status": "INSTALLED", "hash": expected_hash, "size": len(new_text)}
+
+
+def _cron_arguments(profile_id: str = "backup") -> dict[str, Any]:
+    return {
+        "profile_id": profile_id,
+        "schedule": _schedule(),
+        "executable": "grep",
+        "argv": [],
+        "environment": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_cron_upsert_failure_rolls_back_only_its_own_record(tmp_path: Path) -> None:
+    from mikrus_mcp.cron_profiles import CronProfileStore
+
+    client = FlakyCronClient(_ssh_target())
+    client.install_error = AppError(ErrorCode.UPSTREAM, "crontab write failed")
+    store_file = tmp_path / "cron.json"
+    settings = _cron_settings(client, store_file=store_file, write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = _cron_arguments()
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("cron_upsert", arguments, caller)
+    assert result["error"]["code"] == "UPSTREAM_FAILED"
+    store = CronProfileStore(store_file)
+    with pytest.raises(AppError):
+        store.get(profile_id="backup", principal="principal", server_id="host")
+
+    client.install_error = None
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    first = await kernel.invoke("cron_upsert", arguments, caller)
+    assert first["success"] is True
+    persisted = store.get(profile_id="backup", principal="principal", server_id="host")
+
+    client.install_error = AppError(ErrorCode.UPSTREAM, "crontab write failed")
+    updated = dict(arguments, argv=["--changed"])
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(updated),
+    )
+    second = await kernel.invoke("cron_upsert", updated, caller)
+    assert second["error"]["code"] == "UPSTREAM_FAILED"
+    restored = store.get(profile_id="backup", principal="principal", server_id="host")
+    assert restored.updated_at == persisted.updated_at
+    assert restored.argv == persisted.argv
+
+
+@pytest.mark.asyncio
+async def test_cron_upsert_ambiguous_reconciles_against_installed_projection(
+    tmp_path: Path,
+) -> None:
+    from mikrus_mcp.cron_profiles import (
+        CronProfileStore,
+        desired_digest,
+        generate_cron_line,
+        marker_line,
+    )
+
+    client = FlakyCronClient(_ssh_target())
+    client.install_error = AppError(ErrorCode.AMBIGUOUS, "outcome unknown after timeout")
+    client.persist_despite_error = True
+    settings = _cron_settings(client, store_file=tmp_path / "cron.json", write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = _cron_arguments()
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("cron_upsert", arguments, caller)
+    assert result["success"] is True
+    assert result["data"]["reconciled_after_ambiguity"] is True
+    assert "mikrus-mcp:backup" in client.crontab
+    store = CronProfileStore(tmp_path / "cron.json")
+    assert store.get(profile_id="backup", principal="principal", server_id="host")
+
+    client.persist_despite_error = False
+    fresh = generate_cron_line(
+        schedule=_schedule(), executable="grep", argv=["--other"], environment={}
+    )
+    unused = desired_digest(fresh)
+    client.install_error = AppError(ErrorCode.AMBIGUOUS, "outcome unknown after timeout")
+    ambiguous_arguments = _cron_arguments("second")
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "second",
+        normalized_arguments_digest(ambiguous_arguments),
+    )
+    rolled_back = await kernel.invoke("cron_upsert", ambiguous_arguments, caller)
+    assert rolled_back["error"]["code"] == "AMBIGUOUS_OUTCOME"
+    with pytest.raises(AppError):
+        store.get(profile_id="second", principal="principal", server_id="host")
+    assert marker_line("second", unused) not in client.crontab

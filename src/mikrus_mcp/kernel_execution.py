@@ -528,10 +528,72 @@ class ExecutionMixin:
                 generated_line=generated,
                 digest=profile.desired_digest,
             )
-            await client.cron_install(
-                expected_hash=str(installed.get("hash", "")), new_text=new_text
-            )
+
+            def matches_candidate(persisted: CronProfileRecord) -> bool:
+                return (
+                    persisted.updated_at == profile.updated_at
+                    and persisted.desired_digest == profile.desired_digest
+                    and persisted.target_identity == profile.target_identity
+                )
+
+            def rollback_candidate() -> None:
+                try:
+                    persisted = self.cron_profiles.store.get(
+                        profile_id=profile.profile_id,
+                        principal=caller.principal,
+                        server_id=target,
+                    )
+                except AppError:
+                    return
+                if not matches_candidate(persisted):
+                    return
+                if previous is None:
+                    self.cron_profiles.store.delete(
+                        profile_id=profile.profile_id,
+                        principal=caller.principal,
+                        server_id=target,
+                    )
+                else:
+                    self.cron_profiles.store.upsert(previous)
+
+            try:
+                previous = self.cron_profiles.store.get(
+                    profile_id=profile.profile_id,
+                    principal=caller.principal,
+                    server_id=target,
+                )
+            except AppError:
+                previous = None
             self.cron_profiles.store.upsert(profile)
+            try:
+                await client.cron_install(
+                    expected_hash=str(installed.get("hash", "")), new_text=new_text
+                )
+            except AppError as install_error:
+                if install_error.code == ErrorCode.AMBIGUOUS:
+                    reconciled = await client.cron_read()
+                    reconciled_text = validate_installed_text(str(reconciled.get("text", "")))
+                    reconciled_observed = scan_installed(reconciled_text)
+                    if (
+                        marker_count(reconciled_observed, profile.profile_id) == 1
+                        and profile_state(
+                            reconciled_observed,
+                            profile_id=profile.profile_id,
+                            generated_line=generated,
+                            digest=profile.desired_digest,
+                        )
+                        == "IN_SYNC"
+                    ):
+                        self.cron_profiles.store.upsert(profile)
+                        return {
+                            "profile_id": profile.profile_id,
+                            "state": "IN_SYNC",
+                            "desired_digest": profile.desired_digest,
+                            "marker": marker_line(profile.profile_id, profile.desired_digest),
+                            "reconciled_after_ambiguity": True,
+                        }
+                rollback_candidate()
+                raise
             return {
                 "profile_id": profile.profile_id,
                 "state": "IN_SYNC",

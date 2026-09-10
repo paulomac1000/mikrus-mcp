@@ -185,3 +185,14 @@ def test_typed_program_allowlist_is_strict_and_argv_charset_is_bounded() -> None
     for argv in (["two words"], ["semi;colon"], ["pipe|x"], ["a" * 257], ["quoted'arg"]):
         with pytest.raises(ValidationError, match="bounded typed arguments"):
             validate_program_arguments(argv)
+
+
+def test_cron_numeric_fields_reject_unicode_digits() -> None:
+    from mikrus_mcp.validators import validate_cron_field
+
+    with pytest.raises(ValidationError):
+        validate_cron_field("*/٥", "minute")
+    with pytest.raises(ValidationError):
+        validate_cron_field("٥", "minute")
+    with pytest.raises(ValidationError):
+        validate_cron_field("0-١٠", "hour")
