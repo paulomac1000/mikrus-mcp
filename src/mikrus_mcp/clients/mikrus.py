@@ -483,6 +483,104 @@ class MikrusClient:
             "typed program execution is unavailable for the mikr.us API adapter",
         )
 
+    async def remote_job_start(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def remote_job_status(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def remote_job_wait(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def remote_job_result(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def remote_job_output(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def remote_job_cancel(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
+    async def file_patch_atomic(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "atomic file patching is unavailable for the mikr.us API adapter",
+        )
+
+    async def cron_read(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "cron profile management is unavailable for the mikr.us API adapter",
+        )
+
+    async def cron_install(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "cron profile management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_ps_filter(self, *, service: str, project: str | None = None) -> Any:
+        del service, project
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_inspect(self, ids: list[str]) -> Any:
+        del ids
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_compose_config(self, *, project: str, files: list[str]) -> Any:
+        del project, files
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_image_inspect(self, image: str) -> Any:
+        del image
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_compose_up(self, *, project: str, files: list[str], service: str) -> Any:
+        del project, files, service
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
+    async def docker_service_wait(
+        self, *, container_id: str, readiness: str, timeout_seconds: float
+    ) -> Any:
+        del container_id, readiness, timeout_seconds
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "docker compose management is unavailable for the mikr.us API adapter",
+        )
+
     @staticmethod
     def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
         raw = str(result.get("output", ""))

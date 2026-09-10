@@ -80,3 +80,93 @@ def test_program_executable_is_allowlisted_and_shells_are_rejected() -> None:
             validate_program_executable(value)
     with pytest.raises(ValidationError, match="not permitted"):
         validate_program_executable("python3")
+
+
+def test_content_b64_rejects_non_canonical_and_oversized_payloads() -> None:
+    from mikrus_mcp.validators import validate_content_b64
+
+    assert validate_content_b64("") == ""
+    assert validate_content_b64("SGVsbG8=") == "SGVsbG8="
+    with pytest.raises(ValidationError, match="canonical base64"):
+        validate_content_b64("abc")  # length not a multiple of four
+    with pytest.raises(ValidationError, match="canonical base64"):
+        validate_content_b64("SGVsbG8*")
+    with pytest.raises(ValidationError, match="decoded content too large"):
+        validate_content_b64("QUJD" * 50_001)  # 150003 decoded bytes
+
+
+def test_expected_digest_requires_sha256_prefix_and_hex() -> None:
+    from mikrus_mcp.validators import validate_expected_digest
+
+    assert validate_expected_digest("sha256:" + "a" * 64) == "sha256:" + "a" * 64
+    for value in ("md5:" + "a" * 32, "sha256:" + "g" * 64, "sha256:" + "a" * 63, ""):
+        with pytest.raises(ValidationError, match="sha256"):
+            validate_expected_digest(value)
+
+
+def test_cron_profile_id_grammar_is_tight() -> None:
+    from mikrus_mcp.validators import validate_cron_profile_id
+
+    assert validate_cron_profile_id("nightly-backup_1") == "nightly-backup_1"
+    assert validate_cron_profile_id("a" * 64) == "a" * 64
+    for value in ("Upper", "-leading", "with space", "a" * 65, "", "semi;colon"):
+        with pytest.raises(ValidationError):
+            validate_cron_profile_id(value)
+
+
+def test_cron_fields_reject_metacharacters_and_out_of_range_values() -> None:
+    from mikrus_mcp.validators import validate_cron_field, validate_cron_schedule
+
+    assert validate_cron_field("*/15", "minute") == "*/15"
+    assert validate_cron_field("0-30/5", "minute") == "0-30/5"
+    assert validate_cron_field("1,15,23", "hour") == "1,15,23"
+    assert validate_cron_field("7", "day_of_week") == "7"
+
+    for field, bad in (
+        ("minute", "60"),
+        ("minute", "*/0"),
+        ("hour", "24"),
+        ("day_of_month", "0"),
+        ("month", "13"),
+        ("day_of_week", "8"),
+        ("minute", "10-5"),
+        ("minute", "0;rm -rf /"),
+        ("minute", "0%value"),
+        ("minute", "0\n5"),
+        ("minute", "jan"),
+    ):
+        with pytest.raises(ValidationError):
+            validate_cron_field(bad, field)
+
+    with pytest.raises(ValidationError, match="exactly"):
+        validate_cron_schedule({"minute": "0", "hour": "3"})
+    assert validate_cron_schedule(
+        {
+            "minute": "0",
+            "hour": "3",
+            "day_of_month": "*",
+            "month": "*",
+            "day_of_week": "1-5",
+        }
+    ) == {
+        "minute": "0",
+        "hour": "3",
+        "day_of_month": "*",
+        "month": "*",
+        "day_of_week": "1-5",
+    }
+
+
+def test_cron_environment_bounds_keys_values_and_size() -> None:
+    from mikrus_mcp.validators import validate_cron_environment
+
+    assert validate_cron_environment({"LC_ALL": "C"}) == {"LC_ALL": "C"}
+    assert validate_cron_environment(None) == {}
+    with pytest.raises(ValidationError):
+        validate_cron_environment({"0BAD": "value"})
+    with pytest.raises(ValidationError):
+        validate_cron_environment({"OK": "line\nbreak"})
+    with pytest.raises(ValidationError):
+        validate_cron_environment({"OK": "x" * 1025})
+    with pytest.raises(ValidationError):
+        validate_cron_environment({f"K{i}": "v" for i in range(17)})

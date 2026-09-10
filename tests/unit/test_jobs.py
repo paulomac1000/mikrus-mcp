@@ -1,11 +1,119 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.jobs import ProgramJobRegistry
+from mikrus_mcp.remote_jobs import (
+    MAX_REMOTE_OUTPUT_BYTES,
+    DurableRemoteJobRegistry,
+    RemoteJobRecord,
+    RemoteJobStore,
+    request_digest,
+)
+
+
+def test_remote_job_record_is_bounded_and_serializable() -> None:
+    digest = request_digest({"argv": ["build"], "executable": "make"})
+    record = RemoteJobRecord.create(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host:fingerprint",
+        idempotency_key="build-2026-09-10",
+        request_digest_value=digest,
+        now="2026-09-10T12:00:00Z",
+    )
+
+    record.append_output(stream="stdout", chunk="x" * (MAX_REMOTE_OUTPUT_BYTES + 10))
+    record.transition("running", now="2026-09-10T12:00:01Z")
+    record.transition("succeeded", now="2026-09-10T12:00:02Z")
+    payload = record.as_dict()
+
+    assert payload["state"] == "succeeded"
+    assert payload["stdoutTruncated"] is True
+    assert len(str(payload["stdout"]).encode("utf-8")) <= MAX_REMOTE_OUTPUT_BYTES
+    assert payload["requestDigest"] == digest
+
+
+def test_remote_job_record_rejects_transition_after_terminal_state() -> None:
+    record = RemoteJobRecord.create(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host:fingerprint",
+        idempotency_key="key",
+        request_digest_value="a" * 64,
+        now="2026-09-10T12:00:00Z",
+    )
+    record.transition("failed", now="2026-09-10T12:00:01Z")
+
+    with pytest.raises(ValueError, match="terminal"):
+        record.transition("running", now="2026-09-10T12:00:02Z")
+
+
+def test_remote_job_store_round_trips_and_reuses_idempotent_record(tmp_path: Path) -> None:
+    store = RemoteJobStore(tmp_path / "jobs.json")
+    record = RemoteJobRecord.create(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host:fingerprint",
+        idempotency_key="key",
+        request_digest_value="a" * 64,
+        now="2026-09-10T12:00:00Z",
+    )
+
+    store.save(record)
+
+    loaded = store.find_idempotent(principal="principal", server_id="host", idempotency_key="key")
+    assert loaded is not None
+    assert loaded.job_id == record.job_id
+    assert (tmp_path / "jobs.json").stat().st_mode & 0o077 == 0
+
+
+def test_durable_registry_rejects_conflicting_retry_and_scopes_updates(tmp_path: Path) -> None:
+    registry = DurableRemoteJobRegistry(RemoteJobStore(tmp_path / "jobs.json"))
+    record, reused = registry.create_or_reuse(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host:fingerprint",
+        idempotency_key="key",
+        request_digest_value="a" * 64,
+        now="2026-09-10T12:00:00Z",
+    )
+    assert reused is False
+    same, reused = registry.create_or_reuse(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host:fingerprint",
+        idempotency_key="key",
+        request_digest_value="a" * 64,
+        now="2026-09-10T12:00:01Z",
+    )
+    assert reused is True
+    assert same.job_id == record.job_id
+
+    with pytest.raises(AppError) as conflict:
+        registry.create_or_reuse(
+            principal="principal",
+            server_id="host",
+            target_identity="ssh:host:fingerprint",
+            idempotency_key="key",
+            request_digest_value="b" * 64,
+            now="2026-09-10T12:00:01Z",
+        )
+    assert conflict.value.code == ErrorCode.CONFLICT
+
+    with pytest.raises(AppError) as denied:
+        registry.mark_lost(job_id=record.job_id, principal="other", now="2026-09-10T12:00:02Z")
+    assert denied.value.code == ErrorCode.NOT_FOUND
+    assert (
+        registry.mark_lost(
+            job_id=record.job_id, principal="principal", now="2026-09-10T12:00:02Z"
+        ).state
+        == "lost"
+    )
 
 
 class FakeProgramClient:

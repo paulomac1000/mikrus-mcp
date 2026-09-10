@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -447,3 +448,778 @@ async def test_kernel_retries_only_explicit_transient_upstream_errors(target: Ta
         assert result["success"] is False
         assert result["error"]["code"] == code.value
         assert permanent.attempts == 1
+
+
+def _ssh_target() -> TargetConfig:
+    return TargetConfig("host", "ssh", host="server.example")
+
+
+def _mikrus_target() -> TargetConfig:
+    return TargetConfig(
+        "prod", "mikrus", api_url="https://api.mikr.us", api_key="k", server_id="srv"
+    )
+
+
+class FakeSshJobsClient:
+    """Kernel-level double for the SSH-backed file patch and cron capabilities."""
+
+    def __init__(self, config: TargetConfig) -> None:
+        self.config = config
+        self.stable_identity = f"{config.stable_identity}#host-key=SHA256:test-host-key"
+        self.crontab = "# user entry\n0 0 * * * existing-job\n"
+        self.installs: list[str] = []
+        self.patches: list[dict[str, str]] = []
+        self.install_fails_concurrently = False
+
+    async def open(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def cron_read(self) -> dict[str, object]:
+        import hashlib
+
+        encoded = self.crontab.encode("utf-8")
+        return {
+            "text": self.crontab,
+            "hash": hashlib.sha256(encoded).hexdigest(),
+            "size": len(encoded),
+        }
+
+    async def cron_install(self, *, expected_hash: str, new_text: str) -> dict[str, object]:
+        import hashlib
+
+        if (
+            self.install_fails_concurrently
+            or hashlib.sha256(self.crontab.encode("utf-8")).hexdigest() != expected_hash
+        ):
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "the installed crontab changed concurrently (CONCURRENT_MODIFICATION)",
+            )
+        self.installs.append(new_text)
+        self.crontab = new_text
+        return {"status": "INSTALLED", "hash": expected_hash, "size": len(new_text)}
+
+    async def file_patch_atomic(
+        self, *, path: str, expected_digest: str, content_b64: str
+    ) -> dict[str, object]:
+        self.patches.append(
+            {
+                "path": path,
+                "expected_digest": expected_digest,
+                "content_b64": content_b64,
+            }
+        )
+        return {"status": "REPLACED", "before_size": 1, "after_size": 2}
+
+
+def _cron_settings(
+    ssh_client: FakeSshJobsClient,
+    *,
+    store_file: Any = None,
+    write_enabled: bool = False,
+) -> Settings:
+    targets: dict[str, TargetConfig] = {"host": _ssh_target()}
+    values: dict[str, Any] = {
+        "targets": targets,
+        "default_target": "host",
+        "allowed_scopes": frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        "write_enabled": write_enabled,
+    }
+    if store_file is not None:
+        values["cron_profile_store_file"] = store_file
+    settings = Settings(**values)
+    return settings
+
+
+def _kernel_for(
+    settings: Settings, client: FakeSshJobsClient, approvals: ApprovalRegistry | None = None
+) -> InvocationKernel:
+    registry = TargetRegistry(
+        dict(settings.targets),
+        factory=lambda _: client,  # type: ignore[arg-type]
+    )
+    return InvocationKernel(settings, registry=registry, approvals=approvals)
+
+
+def _schedule() -> dict[str, str]:
+    return {
+        "minute": "0",
+        "hour": "3",
+        "day_of_month": "*",
+        "month": "*",
+        "day_of_week": "1-5",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cron_and_patch_capabilities_fail_closed_without_store(tmp_path: Path) -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, write_enabled=True)
+    from mikrus_mcp.manifests import active_names, inactive_reason
+
+    assert "cron_list" not in active_names(settings)
+    assert "cron_upsert" not in active_names(settings)
+    assert "cron_remove" not in active_names(settings)
+    assert inactive_reason("cron_list", settings) == "requires MCP_CRON_PROFILE_STORE_FILE"
+    assert "file_patch_atomic" in active_names(settings)
+
+    kernel = _kernel_for(settings, client)
+    result = await kernel.invoke(
+        "cron_list", {}, CallerContext("principal", settings.allowed_scopes)
+    )
+    assert result["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_cron_capabilities_activate_only_with_store(tmp_path: Path) -> None:
+    from mikrus_mcp.manifests import active_names
+
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, store_file=tmp_path / "cron.json", write_enabled=True)
+    assert {"cron_list", "cron_upsert", "cron_remove"}.issubset(active_names(settings))
+
+
+@pytest.mark.asyncio
+async def test_mikrus_targets_report_unavailable_for_new_ssh_capabilities() -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    targets = {"prod": _mikrus_target(), "host": _ssh_target()}
+    settings = Settings(
+        targets=targets,
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        cron_profile_store_file=Path("/tmp/unused-cron-store.json"),
+        remote_job_store_file=Path("/tmp/unused-job-store.json"),
+    )
+    kernel = _kernel_for(settings, client)
+    caller = CallerContext("principal", settings.allowed_scopes)
+
+    patch = await kernel.invoke(
+        "file_patch_atomic",
+        {
+            "server": "prod",
+            "path": "/tmp/f",
+            "expected_digest": "sha256:" + "a" * 64,
+            "content_b64": "",
+        },
+        caller,
+    )
+    assert patch["error"]["code"] == "UNAVAILABLE"
+    listing = await kernel.invoke("cron_list", {"server": "prod"}, caller)
+    assert listing["error"]["code"] == "UNAVAILABLE"
+    assert not client.patches
+
+
+@pytest.mark.asyncio
+async def test_cron_upsert_requires_approval_then_is_idempotent(tmp_path: Path) -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, store_file=tmp_path / "cron.json", write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = _kernel_for(settings, client, approvals)
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "profile_id": "backup",
+        "schedule": _schedule(),
+        "executable": "grep",
+        "argv": ["--count"],
+        "environment": {"LC_ALL": "C"},
+    }
+
+    denied = await kernel.invoke("cron_upsert", arguments, caller)
+    assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert not client.installs
+
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    first = await kernel.invoke("cron_upsert", arguments, caller)
+    assert first["success"] is True
+    assert first["data"]["state"] == "IN_SYNC"
+    assert client.crontab.count("# mikrus-mcp:backup:sha256=") == 1
+
+    before = client.crontab
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    second = await kernel.invoke("cron_upsert", arguments, caller)
+    assert second["success"] is True
+    assert client.crontab == before
+    assert client.crontab.count("# mikrus-mcp:backup:sha256=") == 1
+
+
+@pytest.mark.asyncio
+async def test_cron_remove_deletes_exactly_one_pair(tmp_path: Path) -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, store_file=tmp_path / "cron.json", write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = _kernel_for(settings, client, approvals)
+    caller = CallerContext("principal", settings.allowed_scopes)
+
+    for profile_id in ("backup", "other"):
+        arguments = {
+            "profile_id": profile_id,
+            "schedule": _schedule(),
+            "executable": "grep",
+            "argv": [f"--{profile_id}"],
+            "environment": {},
+        }
+        approvals.issue_for_test(
+            "cron_upsert",
+            "principal",
+            client.stable_identity,
+            profile_id,
+            normalized_arguments_digest(arguments),
+        )
+        outcome = await kernel.invoke("cron_upsert", arguments, caller)
+        assert outcome["success"] is True
+
+    remove_arguments = {"profile_id": "backup"}
+    approvals.issue_for_test(
+        "cron_remove",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(remove_arguments),
+    )
+    removed = await kernel.invoke("cron_remove", remove_arguments, caller)
+    assert removed["success"] is True
+    assert "mikrus-mcp:backup" not in client.crontab
+    assert "--backup" not in client.crontab
+    assert "mikrus-mcp:other" in client.crontab
+    assert "# user entry\n" in client.crontab
+
+    absent = {"profile_id": "absent"}
+    approvals.issue_for_test(
+        "cron_remove",
+        "principal",
+        client.stable_identity,
+        "absent",
+        normalized_arguments_digest(absent),
+    )
+    missing = await kernel.invoke("cron_remove", absent, caller)
+    assert missing["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_cron_concurrent_modification_surfaces_conflict(tmp_path: Path) -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    client.install_fails_concurrently = True
+    settings = _cron_settings(client, store_file=tmp_path / "cron.json", write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = _kernel_for(settings, client, approvals)
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "profile_id": "backup",
+        "schedule": _schedule(),
+        "executable": "grep",
+        "argv": [],
+        "environment": {},
+    }
+    approvals.issue_for_test(
+        "cron_upsert",
+        "principal",
+        client.stable_identity,
+        "backup",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("cron_upsert", arguments, caller)
+    assert result["error"]["code"] == "CONFLICT"
+    assert not client.installs
+
+
+@pytest.mark.asyncio
+async def test_file_patch_atomic_end_to_end_is_typed_and_approved(tmp_path: Path) -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, write_enabled=True)
+    approvals = ApprovalRegistry()
+    kernel = _kernel_for(settings, client, approvals)
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "path": "/tmp/srv/config.txt",
+        "expected_digest": "sha256:" + "a" * 64,
+        "content_b64": "SGVsbG8=",
+    }
+
+    denied = await kernel.invoke("file_patch_atomic", arguments, caller)
+    assert denied["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert not client.patches
+
+    approvals.issue_for_test(
+        "file_patch_atomic",
+        "principal",
+        client.stable_identity,
+        "/tmp/srv/config.txt",
+        normalized_arguments_digest(arguments),
+    )
+    outcome = await kernel.invoke("file_patch_atomic", arguments, caller)
+    assert outcome["success"] is True
+    assert outcome["data"]["status"] == "REPLACED"
+    assert client.patches == [arguments]
+
+
+@pytest.mark.asyncio
+async def test_file_patch_atomic_rejects_bad_digest_format_before_io() -> None:
+    client = FakeSshJobsClient(_ssh_target())
+    settings = _cron_settings(client, write_enabled=True)
+    kernel = _kernel_for(settings, client)
+    result = await kernel.invoke(
+        "file_patch_atomic",
+        {
+            "path": "/tmp/f",
+            "expected_digest": "md5:not-a-digest",
+            "content_b64": "",
+        },
+        CallerContext("principal", settings.allowed_scopes),
+    )
+    assert result["error"]["code"] == "VALIDATION_FAILED"
+    assert not client.patches
+
+
+class FakeDockerComposeClient:
+    """Kernel-level double for the Docker/Compose capability family."""
+
+    def __init__(self, config: TargetConfig) -> None:
+        self.config = config
+        self.stable_identity = f"{config.stable_identity}#host-key=SHA256:dk"
+        self.image_digest = "sha256:" + "9" * 64
+        self.ups: list[dict[str, object]] = []
+        self.waits: list[dict[str, object]] = []
+        self.converged = False
+        self.compose_cfg: dict[str, object] = {"services": {"web": {"image": "nginx:1.27"}}}
+        self.ps_entries: list[dict[str, object]] = [
+            {
+                "ID": "abc123def0",
+                "Names": ["/site-web-1"],
+                "Labels": (
+                    "com.docker.compose.project=site,"
+                    "com.docker.compose.service=web,"
+                    "com.docker.compose.project.config_files=/srv/site/compose.yaml"
+                ),
+            }
+        ]
+
+    async def open(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    def _inspect_payload(self) -> dict[str, object]:
+        if self.converged:
+            return {
+                "Id": "abc123def0",
+                "Image": self.image_digest,
+                "Config": {
+                    "Image": "nginx:1.27",
+                    "Cmd": None,
+                    "Entrypoint": None,
+                    "Env": None,
+                    "Labels": {
+                        "com.docker.compose.project": "site",
+                        "com.docker.compose.service": "web",
+                        "com.docker.compose.project.config_files": "/srv/site/compose.yaml",
+                    },
+                },
+                "HostConfig": {
+                    "RestartPolicy": {"Name": "", "MaximumRetryCount": 0},
+                    "PortBindings": {},
+                },
+                "State": {"Status": "running", "Running": True},
+                "NetworkSettings": {"Ports": {}, "Networks": {"site_default": {}}},
+                "Mounts": [],
+            }
+        return {
+            "Id": "abc123def0",
+            "Image": "sha256:" + "1" * 64,
+            "Config": {
+                "Image": "nginx:1.26",
+                "Cmd": ["nginx"],
+                "Entrypoint": None,
+                "Env": ["LOG_LEVEL=debug"],
+                "Labels": {
+                    "com.docker.compose.project": "site",
+                    "com.docker.compose.service": "web",
+                    "com.docker.compose.project.config_files": "/srv/site/compose.yaml",
+                },
+            },
+            "HostConfig": {
+                "RestartPolicy": {"Name": "always", "MaximumRetryCount": 0},
+                "PortBindings": {},
+            },
+            "State": {"Status": "running", "Running": True},
+            "NetworkSettings": {"Ports": {}, "Networks": {"site_default": {}}},
+            "Mounts": [],
+        }
+
+    async def docker_ps_filter(
+        self, *, service: str, project: str | None = None
+    ) -> dict[str, object]:
+        from mikrus_mcp.docker_ops import ps_labels
+
+        matches = [
+            item
+            for item in self.ps_entries
+            if ps_labels(item).get("com.docker.compose.service") == service
+            and (project is None or ps_labels(item).get("com.docker.compose.project") == project)
+        ]
+        return {"containers": matches}
+
+    async def docker_inspect(self, ids: list[str]) -> dict[str, object]:
+        return {"containers": [self._inspect_payload() for _ in ids], "stderr_tail": ""}
+
+    async def docker_compose_config(self, *, project: str, files: list[str]) -> dict[str, object]:
+        return {"config": self.compose_cfg}
+
+    async def docker_image_inspect(self, image: str) -> dict[str, object]:
+        return {"image": {"Id": self.image_digest, "RepoDigests": []}}
+
+    async def docker_compose_up(
+        self, *, project: str, files: list[str], service: str
+    ) -> dict[str, object]:
+        self.ups.append({"project": project, "files": list(files), "service": service})
+        return {"status": "APPLIED"}
+
+    async def docker_service_wait(
+        self, *, container_id: str, readiness: str, timeout_seconds: float
+    ) -> dict[str, object]:
+        self.waits.append({"readiness": readiness, "timeout_seconds": timeout_seconds})
+        return {"status": "READY", "state": "running", "health": None}
+
+
+def _docker_settings(client: FakeDockerComposeClient, *, store: Any = None) -> Settings:
+    values: dict[str, Any] = {
+        "targets": {"host": _ssh_target()},
+        "default_target": "host",
+        "allowed_scopes": frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        "write_enabled": True,
+    }
+    if store is not None:
+        values["docker_plan_store_file"] = store
+    return Settings(**values)
+
+
+@pytest.mark.asyncio
+async def test_docker_capabilities_are_ssh_only_and_unavailable_on_mikrus(tmp_path: Path) -> None:
+    from mikrus_mcp.manifests import active_names, inactive_reason
+
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    for name in (
+        "docker_runtime_snapshot",
+        "docker_recreate_plan",
+        "docker_recreate_apply",
+        "service_wait",
+    ):
+        assert name in active_names(settings)
+
+    no_store = _docker_settings(client)
+    assert "docker_recreate_plan" not in active_names(no_store)
+    assert "docker_recreate_apply" not in active_names(no_store)
+    assert "service_wait" not in active_names(no_store)
+    assert "docker_runtime_snapshot" in active_names(no_store)
+    assert inactive_reason("docker_recreate_apply", no_store) == (
+        "requires MCP_DOCKER_PLAN_STORE_FILE"
+    )
+
+    only_mikrus = Settings(
+        targets={"prod": _mikrus_target()},
+        default_target="prod",
+        allowed_scopes=frozenset({"tool:*", "target:*", "target-id:*", "resource:*", "data:*"}),
+    )
+    assert "docker_runtime_snapshot" not in active_names(only_mikrus)
+    assert inactive_reason("docker_recreate_apply", only_mikrus) == (
+        "requires at least one configured SSH target"
+    )
+
+    client = FakeDockerComposeClient(_ssh_target())
+    registry = TargetRegistry(
+        {"prod": _mikrus_target(), "host": _ssh_target()},
+        factory=lambda _: client,  # type: ignore[arg-type]
+    )
+    settings = Settings(
+        targets={"prod": _mikrus_target(), "host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+    )
+    kernel = InvocationKernel(settings, registry=registry)
+    result = await kernel.invoke(
+        "docker_runtime_snapshot",
+        {"server": "prod", "service": "web"},
+        CallerContext("principal", settings.allowed_scopes),
+    )
+    assert result["error"]["code"] == "UNAVAILABLE"
+    assert not client.ups
+
+
+@pytest.mark.asyncio
+async def test_docker_snapshot_requires_exactly_one_selector() -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client)
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    both = await kernel.invoke(
+        "docker_runtime_snapshot",
+        {"service": "web", "container": "abc123"},
+        caller,
+    )
+    assert both["error"]["code"] == "VALIDATION_FAILED"
+    neither = await kernel.invoke("docker_runtime_snapshot", {}, caller)
+    assert neither["error"]["code"] == "VALIDATION_FAILED"
+    snapshot = await kernel.invoke("docker_runtime_snapshot", {"service": "web"}, caller)
+    assert snapshot["success"] is True
+    assert snapshot["data"]["containers"][0]["service"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: Path) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+
+    plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    assert plan["success"] is True
+    plan_data = plan["data"]
+    assert plan_data["plan_receipt"].startswith("plan:v1:sha256:")
+    assert plan_data["project"] == "site"
+    assert plan_data["image_digest"] == client.image_digest
+    assert "image" in plan_data["proposed_differences"]
+
+    receipt = str(plan_data["plan_receipt"])
+
+    missing = await kernel.invoke(
+        "docker_recreate_apply", {"service": "web", "plan_receipt": receipt}, caller
+    )
+    assert missing["error"]["code"] == "AUTHORIZATION_FAILED"
+    assert not client.ups
+
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest({"service": "web", "plan_receipt": receipt}),
+    )
+    applied = await kernel.invoke(
+        "docker_recreate_apply", {"service": "web", "plan_receipt": receipt}, caller
+    )
+    assert applied["success"] is True
+    assert applied["data"]["status"] == "APPLIED"
+    assert client.ups == [
+        {"project": "site", "files": ["/srv/site/compose.yaml"], "service": "web"}
+    ]
+
+    arguments = {"service": "web", "plan_receipt": receipt}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    client.converged = True
+    already = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert already["success"] is True
+    assert already["data"]["status"] == "ALREADY_APPLIED"
+    assert len(client.ups) == 1
+
+    unknown = {"service": "web", "plan_receipt": "plan:v1:sha256:" + "0" * 64}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(unknown),
+    )
+    stale = await kernel.invoke("docker_recreate_apply", unknown, caller)
+    assert stale["error"]["code"] == "CONFLICT"
+    assert "PLAN_STALE" in stale["error"]["message"]
+
+    wrong_service = {"service": "api", "plan_receipt": receipt}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "api",
+        normalized_arguments_digest(wrong_service),
+    )
+    mismatch = await kernel.invoke("docker_recreate_apply", wrong_service, caller)
+    assert mismatch["error"]["code"] == "VALIDATION_FAILED"
+
+    client.image_digest = "sha256:" + "8" * 64
+    client.converged = False
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    drifted = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert drifted["error"]["code"] == "CONFLICT"
+    assert "IMAGE_DRIFT" in drifted["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_docker_apply_classification_derives_from_record(tmp_path: Path) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+
+    plan = await kernel.invoke(
+        "docker_recreate_plan",
+        {"service": "web", "desired_image": "nginx:1.27"},
+        caller,
+    )
+    assert plan["success"] is True
+    from mikrus_mcp.docker_ops import PlanRecordStore
+
+    store = PlanRecordStore(tmp_path / "plans.json")
+    record = store.get(receipt_digest_value(str(plan["data"]["plan_receipt"])))
+    assert record is not None
+    assert record.desired_image_explicit is True
+    assert record.desired_image == "nginx:1.27"
+    assert record.service == "web"
+    assert record.project == "site"
+
+    client.image_digest = "sha256:" + "7" * 64
+    arguments = {"service": "web", "plan_receipt": str(plan["data"]["plan_receipt"])}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    stale = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert stale["error"]["code"] == "CONFLICT"
+    assert "PLAN_STALE" in stale["error"]["message"]
+    assert not client.ups
+
+
+@pytest.mark.asyncio
+async def test_docker_apply_detects_compose_config_change_after_plan(tmp_path: Path) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    assert plan["success"] is True
+
+    client.compose_cfg = {"services": {"web": {"image": "nginx:1.28"}}}
+    arguments = {"service": "web", "plan_receipt": str(plan["data"]["plan_receipt"])}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert result["error"]["code"] == "CONFLICT"
+    assert "PLAN_STALE" in result["error"]["message"]
+    assert not client.ups
+
+
+def receipt_digest_value(receipt: str) -> str:
+    return receipt.split(":")[-1]
+
+
+@pytest.mark.asyncio
+async def test_docker_ambiguous_service_and_wait(tmp_path: Path) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    client.ps_entries.append(
+        {
+            "ID": "fff000",
+            "Names": ["/other-web-1"],
+            "Labels": (
+                "com.docker.compose.project=other,"
+                "com.docker.compose.service=web,"
+                "com.docker.compose.project.config_files=/srv/other/compose.yaml"
+            ),
+        }
+    )
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    ambiguous = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    assert ambiguous["error"]["code"] == "CONFLICT"
+    assert "AMBIGUOUS_SERVICE" in ambiguous["error"]["message"]
+
+    client.ps_entries = client.ps_entries[:1]
+    client.converged = True
+    plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    receipt = str(plan["data"]["plan_receipt"])
+    waited = await kernel.invoke(
+        "service_wait",
+        {"service": "web", "plan_receipt": receipt, "timeout_seconds": 5},
+        caller,
+    )
+    assert waited["success"] is True
+    assert waited["data"]["status"] == "READY"
+    assert client.waits[-1]["timeout_seconds"] == 5.0
+
+    client.image_digest = "sha256:" + "6" * 64
+    waited_again = await kernel.invoke(
+        "service_wait",
+        {"service": "web", "plan_receipt": receipt, "timeout_seconds": 5},
+        caller,
+    )
+    assert waited_again["success"] is True
