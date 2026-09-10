@@ -99,7 +99,7 @@ _PROGRAM_HELPER = textwrap.dedent(
 ).strip()
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import hashlib, json, os, re, signal, subprocess, sys, tempfile, time
+    import fcntl, hashlib, json, os, re, signal, subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
@@ -208,6 +208,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     )
                 )
         elif operation == "cancel":
+            lock_path = meta_path.with_name(meta_path.name + ".lock")
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            cancel_lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+            os.fchmod(cancel_lock_fd, 0o600)
+            fcntl.flock(cancel_lock_fd, fcntl.LOCK_EX)
+            record = read_record()
             identity = record.get("runtimeIdentity", {})
             pgid = identity.get("pgid") if isinstance(identity, dict) else None
             pid = identity.get("pid") if isinstance(identity, dict) else None
@@ -216,14 +222,32 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 numeric_pid = int(pid)
             except (TypeError, ValueError):
                 numeric_pid = None
-            if numeric_pid is not None and expected_ticks != start_ticks(numeric_pid):
-                print(json.dumps({"error": "CONFLICT"}))
-                raise SystemExit(0)
             try:
                 numeric_pgid = int(pgid)
             except (TypeError, ValueError):
                 numeric_pgid = None
-            if numeric_pgid is not None:
+            if record.get("state") == "queued" and identity == {}:
+                record["state"] = "cancelled"
+                write_record(record)
+                fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
+                os.close(cancel_lock_fd)
+                print(json.dumps(record))
+                raise SystemExit(0)
+            if (
+                numeric_pid is None
+                or numeric_pgid is None
+                or not isinstance(expected_ticks, str)
+            ):
+                fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
+                os.close(cancel_lock_fd)
+                print(json.dumps({"error": "CONFLICT", "detail": "malformed runtime identity"}))
+                raise SystemExit(0)
+            if expected_ticks != start_ticks(numeric_pid):
+                fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
+                os.close(cancel_lock_fd)
+                print(json.dumps({"error": "CONFLICT"}))
+                raise SystemExit(0)
+            if True:
                 try:
                     os.killpg(numeric_pgid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -281,11 +305,14 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             record["state"] = "cancelled"
             record["terminated"] = terminated
             write_record(record)
+            fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
+            os.close(cancel_lock_fd)
             print(json.dumps(record))
         else:
             print(json.dumps(record))
     elif operation == "wait":
         deadline = time.monotonic() + min(float(payload.get("timeout", 0)), 60.0)
+        record = read_record() if meta_path.is_file() else {"error": "NOT_FOUND"}
         while time.monotonic() < deadline:
             record = read_record() if meta_path.is_file() else {"error": "NOT_FOUND"}
             if record.get("state") in {"succeeded", "failed", "cancelled", "lost", "expired"}:
@@ -298,13 +325,23 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 ).strip()
 _REMOTE_JOB_WORKER = textwrap.dedent(
     """
-    import json, os, subprocess, tempfile
+    import fcntl, json, os, signal, subprocess, tempfile
     from pathlib import Path
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
     job_dir = meta_path.parent
-    record = json.loads(meta_path.read_text(encoding="utf-8"))
-    payload = record["payload"]
-    record.pop("payload", None)
+    lock_path = meta_path.with_name(meta_path.name + ".lock")
+    payload = None
+    def acquire_lock():
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return lock_fd
+    def release_lock(lock_fd):
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+    def read_record():
+        return json.loads(meta_path.read_text(encoding="utf-8"))
     def write_record(value):
         fd, name = tempfile.mkstemp(prefix=".record.", dir=job_dir)
         try:
@@ -321,6 +358,15 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             return fields[21]
         except (OSError, IndexError, ValueError):
             return None
+    lock_fd = acquire_lock()
+    try:
+        record = read_record()
+        if record.get("state") != "queued":
+            raise SystemExit(0)
+        payload = record["payload"]
+    finally:
+        release_lock(lock_fd)
+    record.pop("payload", None)
     record["state"] = "running"
     with (job_dir / "stdout").open("wb") as stdout, (job_dir / "stderr").open("wb") as stderr:
         child = subprocess.Popen(
@@ -331,20 +377,37 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             stderr=stderr,
             start_new_session=True,
         )
-        record["runtimeIdentity"] = {
-            "pid": str(child.pid),
-            "pgid": str(os.getpgid(child.pid)),
-            "startTicks": start_ticks(child.pid),
-        }
-        write_record(record)
+        lock_fd = acquire_lock()
+        try:
+            record = read_record()
+            if record.get("state") == "cancelled":
+                try:
+                    os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                raise SystemExit(0)
+            record["runtimeIdentity"] = {
+                "pid": str(child.pid),
+                "pgid": str(os.getpgid(child.pid)),
+                "startTicks": start_ticks(child.pid),
+            }
+            record.pop("payload", None)
+            write_record(record)
+        finally:
+            release_lock(lock_fd)
         if payload.get("stdin") is not None:
             child.stdin.write(payload["stdin"].encode()); child.stdin.close()
         code = child.wait()
-    record = json.loads(meta_path.read_text(encoding="utf-8"))
-    if record.get("state") != "cancelled":
-        record["state"] = "succeeded" if code == 0 else "failed"
-        record["exitCode"] = code
-    write_record(record)
+    lock_fd = acquire_lock()
+    try:
+        record = read_record()
+        if record.get("state") != "cancelled":
+            record["state"] = "succeeded" if code == 0 else "failed"
+            record["exitCode"] = code
+        record.pop("payload", None)
+        write_record(record)
+    finally:
+        release_lock(lock_fd)
     """
 ).strip()
 
@@ -802,7 +865,7 @@ _DOCKER_HELPER = textwrap.dedent(
             deadline_seconds = float(payload.get("timeout_seconds"))
         except (TypeError, ValueError):
             fail("VALIDATION_FAILED")
-        if not 1.0 <= deadline_seconds <= 25.0:
+        if not 0.0 <= deadline_seconds <= 25.0:
             fail("VALIDATION_FAILED")
         deadline = time.monotonic() + deadline_seconds
         last_state = None

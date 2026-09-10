@@ -333,3 +333,33 @@ def test_registry_expires_stale_queued_records_at_retention_horizon(
             state="running",
             now=datetime.now(UTC).isoformat(),
         )
+
+
+@pytest.mark.asyncio
+async def test_immediate_cancel_marks_terminal_without_waiting_for_start() -> None:
+    registry = ProgramJobRegistry()
+    client = FakeProgramClient()
+
+    submitted = await registry.submit(
+        principal="principal",
+        target="host",
+        target_identity=client.stable_identity,
+        client=client,
+        executable="/usr/bin/id",
+        argv=[],
+        cwd=None,
+        stdin=None,
+    )
+    cancelled = await registry.cancel(job_id=str(submitted["job_id"]), principal="principal")
+    assert cancelled["status"] == "cancelled"
+    await asyncio.wait_for(
+        asyncio.gather(
+            *[t for t in asyncio.all_tasks() if t is not asyncio.current_task()],
+            return_exceptions=True,
+        ),
+        2,
+    )
+    final = await registry.result(job_id=str(submitted["job_id"]), principal="principal")
+    assert final["status"] == "cancelled"
+    assert final["result_available"] is True
+    await registry.close()

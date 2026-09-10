@@ -12,7 +12,7 @@ import os
 import secrets
 import tempfile
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -223,13 +223,16 @@ class RemoteJobStore:
             raise ValueError("remote job store contains a non-object record")
         return [RemoteJobRecord.from_dict(item) for item in payload]
 
-    def replace_all(self, records: list[RemoteJobRecord]) -> None:
-        if len(records) > self.max_records:
-            raise ValueError("remote job store capacity is exceeded")
+    @contextmanager
+    def transaction(self) -> Iterator[list[RemoteJobRecord]]:
         with self._lock():
+            records = self._load_unlocked()
+            yield records
             self._replace_all_unlocked(records)
 
     def _replace_all_unlocked(self, records: list[RemoteJobRecord]) -> None:
+        if len(records) > self.max_records:
+            raise ValueError("remote job store capacity is exceeded")
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             os.fchmod(fd, 0o600)
@@ -242,9 +245,11 @@ class RemoteJobStore:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def transaction(self) -> AbstractContextManager[None]:
-        """Hold the store lock across a multi-step read-modify-replace sequence."""
-        return self._lock()
+    def replace_all(self, records: list[RemoteJobRecord]) -> None:
+        if len(records) > self.max_records:
+            raise ValueError("remote job store capacity is exceeded")
+        with self._lock():
+            self._replace_all_unlocked(records)
 
     def find_idempotent(
         self, *, principal: str, server_id: str, idempotency_key: str
@@ -345,9 +350,7 @@ class DurableRemoteJobRegistry:
     ) -> int:
         """Transition stale queued/running records to expired; returns the count."""
         horizon = now.timestamp() - max_age_seconds
-        with self.store.transaction():
-            records = self.store._load_unlocked()
-            changed = False
+        with self.store.transaction() as records:
             for record in records:
                 if record.state not in {"queued", "running"}:
                     continue
@@ -357,10 +360,7 @@ class DurableRemoteJobRegistry:
                     continue
                 if created.timestamp() <= horizon:
                     record.transition("expired", now=now.isoformat())
-                    changed = True
-            if changed:
-                self.store._replace_all_unlocked(records)
-        return sum(1 for record in records if record.state == "expired")
+            return sum(1 for record in records if record.state == "expired")
 
     def prune_on_read(self) -> None:
         self.expire_older_than(now=datetime.now(UTC))
@@ -413,6 +413,17 @@ class DurableRemoteJobRegistry:
             raise AppError(ErrorCode.NOT_FOUND, "remote job not found")
         return record
 
+    def _owned_unlocked(
+        self, records: list[RemoteJobRecord], *, job_id: str, principal: str
+    ) -> RemoteJobRecord:
+        record = next(
+            (item for item in records if item.job_id == job_id and item.principal == principal),
+            None,
+        )
+        if record is None:
+            raise AppError(ErrorCode.NOT_FOUND, "remote job not found")
+        return record
+
     def update(
         self,
         *,
@@ -424,15 +435,34 @@ class DurableRemoteJobRegistry:
         safe_to_retry: bool | None = None,
         error: str | None = None,
     ) -> RemoteJobRecord:
-        record = self.get(job_id=job_id, principal=principal)
-        record.transition(state, now=now)
-        if exit_code is not None:
-            record.exit_code = exit_code
-        if safe_to_retry is not None:
-            record.safe_to_retry = safe_to_retry
-        if error is not None:
-            record.error = error[:MAX_REMOTE_ERROR_BYTES]
-        self.store.save(record)
+        with self.store.transaction() as records:
+            record = self._owned_unlocked(records, job_id=job_id, principal=principal)
+            record.transition(state, now=now)
+            if exit_code is not None:
+                record.exit_code = exit_code
+            if safe_to_retry is not None:
+                record.safe_to_retry = safe_to_retry
+            if error is not None:
+                record.error = error[:MAX_REMOTE_ERROR_BYTES]
+        return record
+
+    def reconcile_observed_state(
+        self,
+        *,
+        principal: str,
+        server_id: str,
+        job_id: str,
+        observed_state: RemoteJobState,
+        now: str,
+    ) -> RemoteJobRecord:
+        """Persist a remote observation without reopening a terminal local state."""
+        with self.store.transaction() as records:
+            record = self._owned_unlocked(records, job_id=job_id, principal=principal)
+            if record.terminal:
+                return record
+            if record.server_id != server_id:
+                return record
+            record.transition(observed_state, now=now)
         return record
 
     def mark_lost(self, *, job_id: str, principal: str, now: str) -> RemoteJobRecord:

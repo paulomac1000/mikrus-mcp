@@ -750,3 +750,94 @@ def test_remote_job_helper_cancel_reports_terminated(tmp_path: Path) -> None:
     child.wait(timeout=5)
     with pytest.raises(ProcessLookupError):
         os.killpg(os.getpgid(child.pid), 0)
+
+
+def test_remote_job_helper_cancel_queued_without_identity_skips_signal(
+    tmp_path: Path,
+) -> None:
+    import os
+    import subprocess
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    home = tmp_path / "home"
+    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("q" * 32)
+    job_dir.mkdir(parents=True)
+    (job_dir / "record.json").write_text(json.dumps({"jobId": "q" * 32, "state": "queued"}))
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", ssh_module._REMOTE_JOB_HELPER],
+        input=json.dumps({"operation": "cancel", "job_id": "q" * 32, "reason": "t"}).encode(),
+        capture_output=True,
+        env=environment,
+        timeout=30,
+    )
+    payload = json.loads(completed.stdout.decode())
+    assert payload["state"] == "cancelled"
+    record = json.loads((job_dir / "record.json").read_text())
+    assert record["state"] == "cancelled"
+    assert "runtimeIdentity" not in record
+
+
+def test_remote_job_helper_cancel_with_malformed_identity_fails_without_cancel(
+    tmp_path: Path,
+) -> None:
+    import os
+    import subprocess
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    home = tmp_path / "home"
+    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("m" * 32)
+    job_dir.mkdir(parents=True)
+    (job_dir / "record.json").write_text(
+        json.dumps(
+            {
+                "jobId": "m" * 32,
+                "state": "running",
+                "runtimeIdentity": {"pid": "not-a-pid", "pgid": "", "startTicks": None},
+            }
+        )
+    )
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", ssh_module._REMOTE_JOB_HELPER],
+        input=json.dumps({"operation": "cancel", "job_id": "m" * 32, "reason": "t"}).encode(),
+        capture_output=True,
+        env=environment,
+        timeout=30,
+    )
+    payload = json.loads(completed.stdout.decode())
+    assert payload["error"] == "CONFLICT"
+    assert json.loads((job_dir / "record.json").read_text())["state"] == "running"
+
+
+def test_remote_job_helper_wait_accepts_zero_timeout(tmp_path: Path) -> None:
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"State": {"Status": "running", "Running": True}}))
+    snippet = (
+        'if [ "$1" = "inspect" ]; then python3 -c '
+        f"\"import json;print(json.dumps(json.load(open('{state_file}'))))\"; fi\n"
+    )
+    docker_stub = fake_bin / "docker"
+    docker_stub.write_text("#!/bin/sh\n" + snippet + "exit 0\n")
+    docker_stub.chmod(0o755)
+
+    ready = _run_helper(
+        ssh_module._DOCKER_HELPER,
+        {
+            "operation": "wait",
+            "container_id": "abc123",
+            "readiness": "running",
+            "timeout_seconds": 0,
+        },
+        env_path=str(fake_bin),
+    )
+    assert ready["status"] == "READY"
+    assert ready["state"] == "running"

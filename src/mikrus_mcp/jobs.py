@@ -98,6 +98,7 @@ class ProgramJobRegistry:
             task = job.task
             if task is None or task.done():
                 return self._status(job)
+            job.state = "cancelled"
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         async with self._lock:

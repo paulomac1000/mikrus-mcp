@@ -376,14 +376,12 @@ class ExecutionMixin:
                             "lost",
                             "expired",
                         }:
-                            self.remote_jobs.update(
-                                job_id=record.job_id,
+                            self.remote_jobs.reconcile_observed_state(
                                 principal=caller.principal,
-                                state=remote_state,
+                                server_id=target,
+                                job_id=record.job_id,
+                                observed_state=remote_state,
                                 now=datetime.now(UTC).isoformat(),
-                                exit_code=remote.get("exitCode")
-                                if isinstance(remote.get("exitCode"), int)
-                                else None,
                             )
                         return {
                             **remote,
@@ -432,17 +430,13 @@ class ExecutionMixin:
                 )
             state = remote.get("state")
             if state in {"running", "succeeded", "failed", "cancelled", "lost", "expired"}:
-                record = self.remote_jobs.get(job_id=job_id, principal=caller.principal)
-                if record.state != state:
-                    self.remote_jobs.update(
-                        job_id=job_id,
-                        principal=caller.principal,
-                        state=state,
-                        now=datetime.now(UTC).isoformat(),
-                        exit_code=remote.get("exitCode")
-                        if isinstance(remote.get("exitCode"), int)
-                        else None,
-                    )
+                self.remote_jobs.reconcile_observed_state(
+                    principal=caller.principal,
+                    server_id=target,
+                    job_id=job_id,
+                    observed_state=state,
+                    now=datetime.now(UTC).isoformat(),
+                )
             return remote
 
         if name == "file_patch_atomic":
