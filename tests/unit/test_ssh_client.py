@@ -841,3 +841,93 @@ def test_remote_job_helper_wait_accepts_zero_timeout(tmp_path: Path) -> None:
     )
     assert ready["status"] == "READY"
     assert ready["state"] == "running"
+
+
+def test_docker_ps_filter_honors_project_label_filter(tmp_path: Path) -> None:
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    entry_site = json.dumps(
+        {
+            "ID": "abc123",
+            "Names": ["/web-1"],
+            "Labels": ("com.docker.compose.project=site,com.docker.compose.service=web"),
+        }
+    )
+    entry_other = json.dumps(
+        {
+            "ID": "def456",
+            "Names": ["/web-2"],
+            "Labels": ("com.docker.compose.project=other,com.docker.compose.service=web"),
+        }
+    )
+    docker_stub = fake_bin / "docker"
+    docker_stub.write_text(
+        "#!/bin/sh\n"
+        'project=""\n'
+        'for argument in "$@"; do\n'
+        '  case "$argument" in\n'
+        "    label=com.docker.compose.project=*)\n"
+        '      project="${argument#label=com.docker.compose.project=}" ;;\n'
+        "  esac\n"
+        "done\n"
+        'if [ "$project" = "other" ]; then\n'
+        f"  echo '{entry_other}'\n"
+        'elif [ "$project" = "site" ]; then\n'
+        f"  echo '{entry_site}'\n"
+        "else\n"
+        f"  echo '{entry_site}'\n"
+        f"  echo '{entry_other}'\n"
+        "fi\n"
+    )
+    docker_stub.chmod(0o755)
+
+    filtered = _run_helper(
+        ssh_module._DOCKER_HELPER,
+        {"operation": "ps_filter", "service": "web", "project": "other"},
+        env_path=str(fake_bin),
+    )
+    assert [item["ID"] for item in filtered["containers"]] == ["def456"]
+
+    everything = _run_helper(
+        ssh_module._DOCKER_HELPER,
+        {"operation": "ps_filter", "service": "web"},
+        env_path=str(fake_bin),
+    )
+    assert [item["ID"] for item in everything["containers"]] == ["abc123", "def456"]
+
+
+def test_program_helper_survives_real_backpressure(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    child = (
+        "import sys\n"
+        "sys.stdout.write('o' * 400000)\n"
+        "sys.stdout.flush()\n"
+        "data = sys.stdin.read()\n"
+        "sys.stderr.write('i' + str(len(data)) + '\\n')\n"
+    )
+    big_input = "y" * 200000
+    payload = {
+        "executable": sys.executable,
+        "argv": ["-c", child],
+        "cwd": None,
+        "stdin": big_input,
+    }
+    environment = dict(os.environ)
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", ssh_module._PROGRAM_HELPER],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+        env=environment,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()[-400:]
+    result = json.loads(completed.stdout.decode())
+    assert result["exit_code"] == 0
+    assert result["truncated"] is False
+    assert str(len(big_input)) in result["stderr"]

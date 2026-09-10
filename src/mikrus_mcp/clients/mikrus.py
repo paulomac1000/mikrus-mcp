@@ -306,6 +306,8 @@ class MikrusClient:
             raw_processes = normalized.pop("ps", None)
             if isinstance(raw_processes, str):
                 normalized["processSnapshot"] = _parse_process_snapshot(raw_processes)
+            elif raw_processes is not None:
+                normalized["ps"] = raw_processes
             return normalized
         return result
 

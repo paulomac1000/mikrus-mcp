@@ -178,6 +178,11 @@ class ExecutionMixin:
         image_result = await client.docker_image_inspect(image_ref)
         image_payload = image_result.get("image") or {}
         image_digest = str(image_payload.get("Id") or "")
+        if not image_digest.startswith("sha256:"):
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                "docker image inspect returned no usable content digest (UPSTREAM_PROTOCOL)",
+            )
         desired = {**desired, "image_id": image_digest}
         return desired, str(image_ref), image_digest, files
 

@@ -59,17 +59,25 @@ _PROGRAM_HELPER = textwrap.dedent(
         raise SystemExit(143)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    if payload.get("stdin") is not None:
-        child.stdin.write(payload["stdin"].encode())
-    child.stdin.close()
+    os.set_blocking(child.stdin.fileno(), False)
+    os.set_blocking(child.stdout.fileno(), False)
+    os.set_blocking(child.stderr.fileno(), False)
+    stdin_data = (payload.get("stdin") or "").encode()
+    stdin_sent = 0
+    stdin_open = True
     streams = {child.stdout: "output", child.stderr: "stderr"}
     chunks = {"output": [], "stderr": []}
     total = 0
     truncated = False
-    while streams:
-        ready, _, _ = select.select(list(streams), [], [], 0.25)
+    while streams or stdin_open:
+        readable = list(streams)
+        writable = [child.stdin] if stdin_open else []
+        ready, writable_ready, _ = select.select(readable, writable, [], 0.25)
         for stream in ready:
-            data = stream.read(8192)
+            try:
+                data = stream.read(8192)
+            except (BlockingIOError, OSError):
+                continue
             if not data:
                 del streams[stream]
                 continue
@@ -88,6 +96,21 @@ _PROGRAM_HELPER = textwrap.dedent(
                     "truncated": True,
                 }))
                 raise SystemExit(0)
+        if child.stdin in writable_ready and stdin_sent < len(stdin_data):
+            try:
+                stdin_sent += os.write(
+                    child.stdin.fileno(), stdin_data[stdin_sent:stdin_sent + 8192]
+                )
+            except BlockingIOError:
+                pass
+            except OSError:
+                stdin_open = False
+            if stdin_sent >= len(stdin_data):
+                try:
+                    child.stdin.close()
+                except OSError:
+                    pass
+                stdin_open = False
     code = child.wait()
     print(json.dumps({
         "output": b"".join(chunks["output"]).decode(errors="replace"),
@@ -97,6 +120,7 @@ _PROGRAM_HELPER = textwrap.dedent(
     }))
     """
 ).strip()
+
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
     import fcntl, hashlib, json, os, re, signal, subprocess, sys, tempfile, time
@@ -1553,8 +1577,10 @@ class SshClient:
         try:
             result = json.loads(stdout.decode("utf-8", errors="replace"))
         except json.JSONDecodeError as exc:
+            stderr_tail = stderr.decode("utf-8", errors="replace")[-256:]
             raise AppError(
-                ErrorCode.UPSTREAM_PROTOCOL, "SSH program helper returned invalid JSON"
+                ErrorCode.UPSTREAM_PROTOCOL,
+                f"SSH program helper returned invalid JSON: {stderr_tail}",
             ) from exc
         if not isinstance(result, dict):
             raise AppError(ErrorCode.UPSTREAM_PROTOCOL, "SSH program helper returned invalid data")
