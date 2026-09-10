@@ -74,8 +74,8 @@ def test_content_limit_counts_encoded_bytes() -> None:
 
 
 def test_program_executable_is_allowlisted_and_shells_are_rejected() -> None:
-    assert validate_program_executable("ps") == "ps"
-    for value in ("/usr/bin/ps", "/tmp/ps", "docker", "sed", "/bin/sh"):
+    assert validate_program_executable("grep") == "grep"
+    for value in ("/usr/bin/ps", "/tmp/ps", "docker", "sed", "/bin/sh", "ps", "systemctl"):
         with pytest.raises(ValidationError, match="not permitted"):
             validate_program_executable(value)
     with pytest.raises(ValidationError, match="not permitted"):
@@ -170,3 +170,18 @@ def test_cron_environment_bounds_keys_values_and_size() -> None:
         validate_cron_environment({"OK": "x" * 1025})
     with pytest.raises(ValidationError):
         validate_cron_environment({f"K{i}": "v" for i in range(17)})
+
+
+def test_typed_program_allowlist_is_strict_and_argv_charset_is_bounded() -> None:
+    from mikrus_mcp.validators import validate_program_arguments, validate_program_executable
+
+    for removed in ("systemctl", "printf", "echo", "df", "du", "free", "ls", "ps"):
+        with pytest.raises(ValidationError, match="not permitted"):
+            validate_program_executable(removed)
+    for kept in ("cat", "grep", "ip", "journalctl", "ss", "sort", "tail"):
+        assert validate_program_executable(kept) == kept
+
+    assert validate_program_arguments(["--count", "pattern"]) == ["--count", "pattern"]
+    for argv in (["two words"], ["semi;colon"], ["pipe|x"], ["a" * 257], ["quoted'arg"]):
+        with pytest.raises(ValidationError, match="bounded typed arguments"):
+            validate_program_arguments(argv)

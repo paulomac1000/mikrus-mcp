@@ -54,25 +54,8 @@ _MAX_CRON_ENV_VALUE = 1_024
 _MAX_CRON_ENV_TOTAL = 8_192
 _MAX_CRON_FIELD_LENGTH = 100
 _MAX_CRON_FIELD_ELEMENTS = 24
-_PROGRAM_EXECUTABLES: Final = frozenset(
-    {
-        "cat",
-        "df",
-        "du",
-        "echo",
-        "free",
-        "grep",
-        "ip",
-        "journalctl",
-        "ls",
-        "ps",
-        "printf",
-        "sort",
-        "ss",
-        "systemctl",
-        "tail",
-    }
-)
+_PROGRAM_EXECUTABLES: Final = frozenset({"cat", "grep", "ip", "journalctl", "ss", "sort", "tail"})
+_PROGRAM_ARGV_ELEMENT: Final = re.compile(r"^[A-Za-z0-9_@%+=:,./-]{1,256}$")
 
 _READ_DENIED: Final = tuple(
     PurePosixPath(value)
@@ -201,8 +184,13 @@ def validate_program_arguments(argv: object) -> list[str]:
     result: list[str] = []
     total = 0
     for value in argv:
-        if not isinstance(value, str) or len(value) > 4_096 or _PROGRAM_CONTROL.search(value):
-            raise ValidationError("argv entries must be strings without control characters")
+        if (
+            not isinstance(value, str)
+            or len(value) > 4_096
+            or _PROGRAM_CONTROL.search(value)
+            or not _PROGRAM_ARGV_ELEMENT.fullmatch(value)
+        ):
+            raise ValidationError("argv entries must be bounded typed arguments")
         total += len(value.encode("utf-8"))
         if total > 100_000:
             raise ValidationError("argv exceeds the 100000-byte limit")

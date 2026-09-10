@@ -412,6 +412,15 @@ class PolicyMixin:
                 normalized["plan_receipt"] = validate_plan_receipt(
                     required_text("plan_receipt", maximum=100)
                 )
+                readiness = normalized.get("readiness")
+                if readiness is not None:
+                    if readiness not in {"running", "healthy"}:
+                        raise ValidationError("readiness must be running or healthy")
+                timeout = normalized.get("timeout_seconds")
+                if timeout is not None:
+                    if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
+                        raise ValidationError("timeout_seconds must be between 5 and 25")
+                    normalized["timeout_seconds"] = float(timeout)
             case "service_wait":
                 normalized["service"] = validate_compose_name(required_text("service"))
                 if normalized.get("plan_receipt") is not None:
@@ -423,16 +432,6 @@ class PolicyMixin:
                     raise ValidationError("readiness must be running or healthy")
                 normalized["readiness"] = readiness
                 timeout = normalized.get("timeout_seconds", 10)
-                if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
-                    raise ValidationError("timeout_seconds must be between 5 and 25")
-                normalized["timeout_seconds"] = float(timeout)
-            case "docker_recreate_apply":
-                readiness = normalized.get("readiness")
-                if readiness is not None:
-                    if readiness not in {"running", "healthy"}:
-                        raise ValidationError("readiness must be running or healthy")
-                    normalized["readiness"] = readiness
-                timeout = normalized.get("timeout_seconds", 15)
                 if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
                     raise ValidationError("timeout_seconds must be between 5 and 25")
                 normalized["timeout_seconds"] = float(timeout)

@@ -1284,7 +1284,7 @@ async def test_docker_apply_runs_inline_readiness_wait(tmp_path: Path) -> None:
         "service": "web",
         "plan_receipt": receipt,
         "readiness": "running",
-        "timeout_seconds": 8,
+        "timeout_seconds": 8.5,
     }
     approvals.issue_for_test(
         "docker_recreate_apply",
@@ -1302,7 +1302,7 @@ async def test_docker_apply_runs_inline_readiness_wait(tmp_path: Path) -> None:
         "state": "running",
         "health": None,
     }
-    assert client.waits[-1] == {"readiness": "running", "timeout_seconds": 8.0}
+    assert client.waits[-1] == {"readiness": "running", "timeout_seconds": 8.5}
 
 
 class AmbiguousStartClient(FakeDockerComposeClient):
@@ -1466,3 +1466,48 @@ async def test_remote_job_start_surfaces_ambiguity_when_lookup_fails(
     result = await kernel.invoke("remote_job_start", arguments, caller)
     assert result["error"]["code"] == "AMBIGUOUS_OUTCOME"
     assert "could not be reconciled" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_docker_apply_rejects_invalid_tuning_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    client.converged = True
+    plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    receipt = str(plan["data"]["plan_receipt"])
+
+    for arguments in (
+        {
+            "service": "web",
+            "plan_receipt": receipt,
+            "timeout_seconds": 900,
+        },
+        {
+            "service": "web",
+            "plan_receipt": receipt,
+            "readiness": "bogus",
+        },
+    ):
+        approvals.issue_for_test(
+            "docker_recreate_apply",
+            "principal",
+            client.stable_identity,
+            "web",
+            normalized_arguments_digest(arguments),
+        )
+        result = await kernel.invoke("docker_recreate_apply", arguments, caller)
+        assert result["error"]["code"] == "VALIDATION_FAILED"
+        assert not client.ups
+        assert not client.waits
