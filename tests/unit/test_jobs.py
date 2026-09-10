@@ -285,3 +285,51 @@ async def test_cancel_is_owner_scoped_and_returns_terminal_status() -> None:
     assert cancelled["status"] == "cancelled"
     assert cancelled["result_available"] is True
     await registry.close()
+
+
+def test_registry_expires_stale_queued_records_at_retention_horizon(
+    tmp_path: Path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from mikrus_mcp.remote_jobs import (
+        REMOTE_JOB_RETENTION_SECONDS,
+        DurableRemoteJobRegistry,
+        RemoteJobStore,
+    )
+
+    registry = DurableRemoteJobRegistry(RemoteJobStore(tmp_path / "jobs.json"))
+    stale_now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
+    stale, _ = registry.create_or_reuse(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host",
+        idempotency_key="stale",
+        request_digest_value="a" * 64,
+        now=stale_now.isoformat(),
+    )
+    fresh, _ = registry.create_or_reuse(
+        principal="principal",
+        server_id="host",
+        target_identity="ssh:host",
+        idempotency_key="fresh",
+        request_digest_value="b" * 64,
+        now=(stale_now + timedelta(seconds=REMOTE_JOB_RETENTION_SECONDS + 2)).isoformat(),
+    )
+
+    expired_count = registry.expire_older_than(
+        now=stale_now + timedelta(seconds=REMOTE_JOB_RETENTION_SECONDS + 1)
+    )
+
+    assert expired_count >= 1
+    loaded_stale = registry.store.load()
+    states = {item.job_id: item.state for item in loaded_stale}
+    assert states[stale.job_id] == "expired"
+    assert states[fresh.job_id] in {"queued", "running"}
+    with pytest.raises(ValueError, match="terminal"):
+        registry.update(
+            job_id=stale.job_id,
+            principal="principal",
+            state="running",
+            now=datetime.now(UTC).isoformat(),
+        )

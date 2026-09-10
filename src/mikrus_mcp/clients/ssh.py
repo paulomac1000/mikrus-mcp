@@ -228,7 +228,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     os.killpg(numeric_pgid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-            def group_alive():
+            def leader_alive():
                 if numeric_pid is None:
                     return False
                 try:
@@ -240,19 +240,44 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 if len(fields) <= 2:
                     return False
                 return fields[2] not in {"Z", "z", "X", "x"}
-            terminated = not group_alive()
+
+            def group_has_live_process():
+                try:
+                    entries = os.listdir("/proc")
+                except OSError:
+                    return leader_alive()
+                examined = 0
+                for entry in entries:
+                    if not entry.isdigit():
+                        continue
+                    examined += 1
+                    if examined >= 4096:
+                        break
+                    try:
+                        stat_text = PathLib(f"/proc/{entry}/stat").read_text(encoding="ascii")
+                        fields = stat_text.rsplit(")", 1)[1].split()
+                    except (OSError, ValueError, IndexError):
+                        continue
+                    if len(fields) < 3:
+                        continue
+                    if fields[0] in {"Z", "z", "X", "x"}:
+                        continue
+                    if fields[2] == str(numeric_pgid):
+                        return True
+                return False
+            terminated = not leader_alive()
             grace_deadline = time.monotonic() + 3.0
-            while group_alive() and time.monotonic() < grace_deadline:
+            while leader_alive() and time.monotonic() < grace_deadline:
                 time.sleep(0.1)
-            if group_alive():
+            if leader_alive():
                 try:
                     os.killpg(numeric_pgid, signal.SIGKILL)
                 except (ProcessLookupError, OSError):
                     pass
                 kill_deadline = time.monotonic() + 0.5
-                while group_alive() and time.monotonic() < kill_deadline:
+                while leader_alive() and time.monotonic() < kill_deadline:
                     time.sleep(0.05)
-            terminated = not group_alive()
+            terminated = not group_has_live_process()
             record["state"] = "cancelled"
             record["terminated"] = terminated
             write_record(record)

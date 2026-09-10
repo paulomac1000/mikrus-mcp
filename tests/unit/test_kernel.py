@@ -1034,8 +1034,8 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
         normalized_arguments_digest(arguments),
     )
     refused = await kernel.invoke("docker_recreate_apply", arguments, caller)
-    assert refused["error"]["code"] == "CONFLICT"
-    assert "RECREATE_CONFIG_DRIFT" in refused["error"]["message"]
+    assert refused["error"]["code"] == "RECREATE_CONFIG_DRIFT"
+    assert "allow_runtime_drift" in refused["error"]["message"]
     assert not client.ups
 
     unapproved = await kernel.invoke("docker_recreate_apply", arguments, caller)
@@ -1062,7 +1062,12 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
     applied = await kernel.invoke("docker_recreate_apply", arguments, caller)
     assert applied["success"] is True
     assert applied["data"]["status"] == "APPLIED"
-    assert applied["data"]["post_wait"] is None
+    assert applied["data"]["post_wait"] == {
+        "status": "READY",
+        "readiness": "running",
+        "state": "running",
+        "health": None,
+    }
     assert client.ups == [
         {"project": "site", "files": ["/srv/site/compose.yaml"], "service": "web"}
     ]
@@ -1293,6 +1298,7 @@ async def test_docker_apply_runs_inline_readiness_wait(tmp_path: Path) -> None:
     assert applied["data"]["status"] == "APPLIED"
     assert applied["data"]["post_wait"] == {
         "status": "READY",
+        "readiness": "running",
         "state": "running",
         "health": None,
     }
@@ -1412,3 +1418,51 @@ async def test_remote_job_cancel_reports_termination_field(tmp_path: Path) -> No
     assert "terminated" in result["data"]
     assert result["data"]["terminated"] is False
     assert result["data"]["state"] == "cancelled"
+
+
+class UnreconcilableStartClient(AmbiguousStartClient):
+    """Client whose reconciliation lookup also fails."""
+
+    async def remote_job_status(self, *, job_id: str) -> dict[str, object]:
+        raise AppError(ErrorCode.UPSTREAM, "connection lost during lookup")
+
+
+@pytest.mark.asyncio
+async def test_remote_job_start_surfaces_ambiguity_when_lookup_fails(
+    tmp_path: Path,
+) -> None:
+    client = UnreconcilableStartClient(_ssh_target())
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        remote_job_store_file=tmp_path / "jobs.json",
+    )
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "idempotency_key": "unreconcilable",
+        "executable": "tail",
+        "argv": ["-f", "/tmp/x"],
+    }
+    approvals.issue_for_test(
+        "remote_job_start",
+        "principal",
+        client.stable_identity,
+        "unreconcilable",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("remote_job_start", arguments, caller)
+    assert result["error"]["code"] == "AMBIGUOUS_OUTCOME"
+    assert "could not be reconciled" in result["error"]["message"]

@@ -1,6 +1,7 @@
 """Provider- or real-system-backed acceptance checks left for the deployment agent."""
 
 import os
+import uuid
 
 import pytest
 
@@ -98,8 +99,11 @@ def test_durable_remote_job_real_disconnect_reconciliation() -> None:
     async def scenario() -> None:
         await kernel.registry.get("real")
         start_identity = kernel.registry.resolved_identity("real")
+        # fresh key per run: a previous run leaves the key in a terminal state
+        # and durable idempotent reuse correctly refuses terminal records
+        idempotency_key = f"deferred-disconnect-{uuid.uuid4().hex[:12]}"
         start_arguments = {
-            "idempotency_key": "deferred-disconnect-reconciliation",
+            "idempotency_key": idempotency_key,
             "executable": "tail",
             "argv": ["-f", "/etc/hostname"],
         }
@@ -107,7 +111,7 @@ def test_durable_remote_job_real_disconnect_reconciliation() -> None:
             "remote_job_start",
             "posix-uid-real",
             start_identity,
-            "deferred-disconnect-reconciliation",
+            idempotency_key,
             normalized_arguments_digest(start_arguments),
         )
         started = await kernel.invoke("remote_job_start", start_arguments, caller)
@@ -142,7 +146,7 @@ def test_durable_remote_job_real_disconnect_reconciliation() -> None:
         cancelled = await reopened.invoke("remote_job_cancel", cancel_arguments, caller)
         assert cancelled["success"] is True, cancelled.get("error")
         assert cancelled["data"]["state"] == "cancelled"
-        assert "terminated" in cancelled["data"]
+        assert cancelled["data"]["terminated"] is True
         await reopened.close()
 
     asyncio.run(scenario())

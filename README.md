@@ -267,7 +267,10 @@ The capability remains inactive when this setting is absent or when no SSH targe
 configured. Do not place the store in a shared or symlinked directory. Cancellation
 verifies descendant termination after the kill and reports an honest `terminated`
 field; a start whose outcome was ambiguous is reconciled once against the remote
-record instead of surfacing the raw timeout.
+record instead of surfacing the raw timeout (an unrecoverable lookup surfaces
+`AMBIGUOUS_OUTCOME`). Job records expire after a 7-day retention horizon
+(`REMOTE_JOB_RETENTION_SECONDS = 604800`); expired records are cleaned on the next
+registry read.
 
 ### Cron profiles
 
@@ -328,9 +331,11 @@ Behavior is identical fail-closed: re-plan required. When the live semantic stat
 already equals the compose-desired state the apply reports `ALREADY_APPLIED` without
 recreating. The apply itself is the bounded argv sequence
 `docker compose -p <project> -f <files>... up -d --no-deps --force-recreate <service>`;
-a single inspect re-check follows, and optional `readiness` (`running` or `healthy`)
-with `timeout_seconds` (5–25, default 15) runs the bounded wait inline and reports the
-result as `post_wait` without affecting desired state. `service_wait` polls
+a single inspect re-check follows, and a readiness wait is mandatory: the default is
+`healthy` when the recreated container defines a healthcheck and `running` otherwise,
+with a 15-second budget; `readiness` and `timeout_seconds` (5–25) are tuning-only. A
+failed wait surfaces its typed error with `applied=true` in the message — the recreate
+executed, so reconcile rather than blind-retry. `service_wait` polls
 `docker inspect` inside one bounded helper invocation and reports `READINESS_TIMEOUT`
 or `HEALTH_FAILED` as read-class errors; with a `plan_receipt` it verifies the record
 exists before waiting.

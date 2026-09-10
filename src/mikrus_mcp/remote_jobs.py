@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -23,6 +24,7 @@ RemoteJobState = Literal["queued", "running", "succeeded", "failed", "cancelled"
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "lost", "expired"})
 MAX_REMOTE_OUTPUT_BYTES = 1_000_000
 MAX_REMOTE_ERROR_BYTES = 8_192
+REMOTE_JOB_RETENTION_SECONDS = 604_800
 
 
 def request_digest(payload: object) -> str:
@@ -221,6 +223,22 @@ class RemoteJobStore:
             raise ValueError("remote job store contains a non-object record")
         return [RemoteJobRecord.from_dict(item) for item in payload]
 
+    def replace_all(self, records: list[RemoteJobRecord]) -> None:
+        if len(records) > self.max_records:
+            raise ValueError("remote job store capacity is exceeded")
+        with self._lock():
+            fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump([item.as_dict() for item in records], stream, ensure_ascii=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
     def find_idempotent(
         self, *, principal: str, server_id: str, idempotency_key: str
     ) -> RemoteJobRecord | None:
@@ -312,6 +330,33 @@ class DurableRemoteJobRegistry:
     def __init__(self, store: RemoteJobStore) -> None:
         self.store = store
 
+    def expire_older_than(
+        self,
+        *,
+        now: datetime,
+        max_age_seconds: int = REMOTE_JOB_RETENTION_SECONDS,
+    ) -> int:
+        """Transition stale queued/running records to expired; returns the count."""
+        horizon = now.timestamp() - max_age_seconds
+        records = self.store.load()
+        changed = False
+        for record in records:
+            if record.state not in {"queued", "running"}:
+                continue
+            try:
+                created = datetime.fromisoformat(record.created_at)
+            except ValueError:
+                continue
+            if created.timestamp() <= horizon:
+                record.transition("expired", now=now.isoformat())
+                changed = True
+        if changed:
+            self.store.replace_all(records)
+        return sum(1 for record in records if record.state == "expired")
+
+    def prune_on_read(self) -> None:
+        self.expire_older_than(now=datetime.now(UTC))
+
     def create_or_reuse(
         self,
         *,
@@ -322,6 +367,7 @@ class DurableRemoteJobRegistry:
         request_digest_value: str,
         now: str,
     ) -> tuple[RemoteJobRecord, bool]:
+        self.prune_on_read()
         candidate = RemoteJobRecord.create(
             principal=principal,
             server_id=server_id,
@@ -346,6 +392,7 @@ class DurableRemoteJobRegistry:
         return existing, True
 
     def get(self, *, job_id: str, principal: str) -> RemoteJobRecord:
+        self.prune_on_read()
         record = next(
             (
                 item

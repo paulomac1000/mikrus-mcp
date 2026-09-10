@@ -29,13 +29,13 @@ def copy_package(tmp_path: Path) -> Path:
     return package_dir
 
 
-def stamp(package_dir: Path) -> None:
+def stamp(package_dir: Path, *, source_revision: str = SOURCE_REVISION) -> None:
     subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts" / "stamp_build_provenance.py"),
             "--source-revision",
-            SOURCE_REVISION,
+            source_revision,
             "--build-id",
             BUILD_ID,
             "--built-at",
@@ -229,29 +229,53 @@ def test_absent_deployment_receipt_is_missing(tmp_path: Path) -> None:
 def test_stamped_revision_rejects_deployment_receipt_of_other_revision(
     tmp_path: Path,
 ) -> None:
-    package_dir = copy_package(tmp_path)
-    stamp(package_dir)
-    embedded = capture_runtime_provenance(package_dir=package_dir, environ={})
-    assert embedded.source_revision == SOURCE_REVISION
+    revision_a = SOURCE_REVISION
+    revision_b = "c" * 40
+    package_a = copy_package(tmp_path / "pkg-a")
+    package_b = copy_package(tmp_path / "pkg-b")
+    stamp(package_a, source_revision=revision_a)
+    stamp(package_b, source_revision=revision_b)
+    embedded_a = capture_runtime_provenance(package_dir=package_a, environ={})
+    embedded_b = capture_runtime_provenance(package_dir=package_b, environ={})
+    assert embedded_a.source_revision == revision_a
+    assert embedded_b.source_revision == revision_b
 
-    other_revision = "c" * 40
-    for receipt_revision in (other_revision, SOURCE_REVISION):
-        receipt = tmp_path / f"receipt-{receipt_revision[:4]}.json"
-        write_receipt(
-            receipt,
-            package_content_digest=embedded.package_content_digest,
-            source_revision=receipt_revision,
-        )
-        snapshot = capture_runtime_provenance(
-            package_dir=package_dir,
-            receipt_path=receipt,
-            environ={},
-        )
-        if receipt_revision == SOURCE_REVISION:
-            assert snapshot.deployment.binding == "verified"
-        else:
-            assert snapshot.deployment.binding == "invalid"
-            assert snapshot.deployment.image_digest == "unknown"
-            assert snapshot.deployment.release_manifest_digest == "unknown"
-            serialized = json.dumps(snapshot.as_dict())
-            assert other_revision not in serialized
+    receipt_a = tmp_path / "receipt-a.json"
+    receipt_b = tmp_path / "receipt-b.json"
+    write_receipt(
+        receipt_a,
+        package_content_digest=embedded_a.package_content_digest,
+        source_revision=revision_a,
+    )
+    write_receipt(
+        receipt_b,
+        package_content_digest=embedded_b.package_content_digest,
+        source_revision=revision_b,
+    )
+
+    wrong_receipt_for_a = capture_runtime_provenance(
+        package_dir=package_a,
+        receipt_path=receipt_b,
+        environ={},
+    )
+    assert wrong_receipt_for_a.deployment.binding == "invalid"
+    assert wrong_receipt_for_a.deployment.image_digest == "unknown"
+    assert wrong_receipt_for_a.deployment.release_manifest_digest == "unknown"
+    assert revision_b not in json.dumps(wrong_receipt_for_a.as_dict())
+
+    wrong_receipt_for_b = capture_runtime_provenance(
+        package_dir=package_b,
+        receipt_path=receipt_a,
+        environ={},
+    )
+    assert wrong_receipt_for_b.deployment.binding == "invalid"
+    assert wrong_receipt_for_b.deployment.image_digest == "unknown"
+    assert wrong_receipt_for_b.deployment.release_manifest_digest == "unknown"
+    assert revision_a not in json.dumps(wrong_receipt_for_b.as_dict())
+
+    matching_a = capture_runtime_provenance(
+        package_dir=package_a,
+        receipt_path=receipt_a,
+        environ={},
+    )
+    assert matching_a.deployment.binding == "verified"
