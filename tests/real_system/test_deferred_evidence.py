@@ -32,6 +32,30 @@ def test_remote_filesystem_symlink_race() -> None:
     pass
 
 
+@pytest.mark.real_backend
+@pytest.mark.skip(
+    reason=(
+        "TODO(real-system): run a durable remote job longer than one connection "
+        "timeout on a dedicated SSH target and reconcile status/wait/result/output "
+        "across a real disconnect, worker restart, and owner-scoped cancel"
+    )
+)
+def test_durable_remote_job_real_disconnect_reconciliation() -> None:
+    pass
+
+
+@pytest.mark.artifact
+@pytest.mark.skip(
+    reason=(
+        "TODO(provider): obtain a deployment receipt binding exact source SHA, "
+        "package content digest, and image digest, then verify it with "
+        "scripts/verify_deployed_release.py against the running instance"
+    )
+)
+def test_deployed_release_receipt() -> None:
+    pass
+
+
 @pytest.mark.artifact
 @pytest.mark.skip(
     reason=("TODO(provider): install and test exact wheels on macOS arm64 and Windows x64")

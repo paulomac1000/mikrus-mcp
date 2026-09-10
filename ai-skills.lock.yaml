@@ -1,24 +1,24 @@
 schema_version: 1
 repository: paulomac1000/ai-skills
-revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+revision: 435061ad67ee36d77e01a993bc4f9e4379a29666
 skills:
   afds-doc-writer:
-    version: 1.2.0
-    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    version: 1.4.0
+    revision: 435061ad67ee36d77e01a993bc4f9e4379a29666
     normative_entrypoint: skills/afds-doc-writer/STANDARD.md
-    content_digest: sha256:d2519eae2fd304b06610e41dfcb38eb2ce552f3b273a383c146e91cb94ff6af8
+    content_digest: sha256:5c74773f366099a235f807a7f664a080bcd5d81d4ec7b9b337bf7c976ab4884d
   agents-md-architect:
-    version: 1.2.0
-    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    version: 1.4.0
+    revision: 435061ad67ee36d77e01a993bc4f9e4379a29666
     normative_entrypoint: skills/agents-md-architect/STANDARD.md
-    content_digest: sha256:22e4bac1e86dc524ff6a53f885ed34df90e36269384bfebc05c4bb08cf41e342
+    content_digest: sha256:b1c8c7962eea0237c129c4b926e94adbdbbf30449aafd682dcb22ff6c8d5a314
   ci-cd-architect:
-    version: 1.2.0
-    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    version: 1.4.0
+    revision: 435061ad67ee36d77e01a993bc4f9e4379a29666
     normative_entrypoint: skills/ci-cd-architect/STANDARD.md
-    content_digest: sha256:c505ba83d9d4eadab0e4b28e568a8750c01f6282352cd256174197435a6e8920
+    content_digest: sha256:181a56d08b9387158ca22c6d81325f1022d5ffec9303bc034e73beb0e96b45fb
   mcp-server-architect:
-    version: 1.2.0
-    revision: 661ff01a5e70d58d6c94a12545b24647e52063ed
+    version: 1.4.0
+    revision: 435061ad67ee36d77e01a993bc4f9e4379a29666
     normative_entrypoint: skills/mcp-server-architect/STANDARD.md
-    content_digest: sha256:7028ab59a9b9c0b00658aac25c961137e3d2eb25d54386a34e0d96a85237c623
+    content_digest: sha256:376cbebfe70e0f6b76f2d89c18fad71f7aebe34b62d5602bce518283e2b0153d

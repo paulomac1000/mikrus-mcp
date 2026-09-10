@@ -15,12 +15,21 @@ verification:
 
 ## Assessment boundary
 
-This repository pins AI Skills `1.2.0` at revision
-`661ff01a5e70d58d6c94a12545b24647e52063ed` — the current `main` of
+This repository pins AI Skills `1.4.0` at revision
+`435061ad67ee36d77e01a993bc4f9e4379a29666` — the current `main` of
 `paulomac1000/ai-skills` and the sole contract authority for adoption claims. The pin is
 recorded in `ai-skills.lock.yaml` with per-skill normative entrypoints and content
 digests. The implementation targets the `mcp-server`, single-repository application
 profile at maturity level L2.
+
+At `1.4.0` the `mcp-server-architect` rule catalog expands from twelve stable rule
+families to twenty-seven. All twelve families previously assessed against `1.2.0`
+remain normative and unchanged in identifier; the fifteen additional families are
+assessed in the rule summary below. Because the pin migration and the remaining
+capability work are implementation changes, the prior assessment binding
+(`assessed_revision` `89ff9b1`) is historical: a new independent review bound to the
+exact final revision is required before any adoption claim under the `1.4.0`
+authority.
 
 Some repository controls deliberately exceed what `main` requires; they are labeled
 *local hardening* below and are never presented as upstream requirements. Candidate-only
@@ -42,8 +51,8 @@ approval.
 
 ## Implemented contract changes
 
-Measured against the twelve stable `mcp-server-architect` rules on `main`, the repository
-now provides:
+Measured against the twenty-seven stable `mcp-server-architect` rules at `1.4.0`
+(`contracts/rule-catalog.yaml` at the pinned revision), the repository now provides:
 
 - one transport-independent invocation kernel owning validation, authorization, target
   binding, deadlines, concurrency, execution, sanitization, provenance, and structured
@@ -124,6 +133,39 @@ for the revision recorded by the corresponding evidence object.
 | mcp.artifact.exact | implemented structurally | exact wheel and Linux/amd64 image build/smoke gates must be green for the tagged revision |
 | mcp.migration.accounted | implemented | `MIGRATION.md`, rollback, residual risks, and this document |
 | mcp.verification.layered | implemented | layered gates composed by `scripts/ci.py` plus provider lanes |
+| mcp.sdk.compatibility-isolation | implemented structurally | official SDK registration isolated in `server.py`; MCP-independent adapters in `client.py` |
+| mcp.configuration.lifecycle | implemented structurally | frozen immutable settings snapshot; atomic reload path exists only for the approval registry, not the main configuration |
+| mcp.components.public-contract | implemented | public schemas exclude internal authorization inputs; registration is manifest-derived and parity-tested |
+| mcp.discovery.progressive | implemented structurally | capability catalog separates supported from active with machine-readable inactive reasons |
+| mcp.transport.remote-hardening | not-applicable | remote/public HTTP exposure is deliberately unsupported; Streamable HTTP remains authenticated loopback-only |
+| mcp.filesystem.containment | implemented | component-aware no-follow path validation, protected secret tree, symlink rejection; `file_patch_atomic` adds digest-CAS replacement anchored to the same opened descriptor |
+| mcp.artifact.ownership | implemented structurally | build provenance stamping, exact-artifact smoke, durable-job output cursors keep artifacts owner-bound |
+| mcp.task.supervision | implemented structurally | typed program jobs, durable remote jobs, and Docker/Compose recreate plans with receipts; bounded cleanup, PID identity validation, `lost`/`expired` states; cron projections guarded by `CONCURRENT_MODIFICATION` re-read checks |
+| mcp.browser.profile-isolation | not-applicable | the server exposes no browser-automation capability |
+| mcp.backends.identity | implemented | no target substitution on failure; resolved identity includes stable mikr.us server ID and SSH peer fingerprint |
+| mcp.embedded.host-ownership | not-applicable | no embedded/hosted-device capability exists |
+| mcp.authorization.resource-isolation | implemented structurally | per-resource digest scope axis with explicit `resource:*` wildcard profile; data-classification axis gates sensitive reads |
+| mcp.abuse.controls | single-operator profile | bounded request/response/output/concurrency/deadline limits exist; multi-tenant abuse controls are not claimed |
+| mcp.health.readiness | implemented | `health://ready` requires a connected default target; lazy startup is explicit |
+| mcp.operations.recovery-drills | incomplete | deployment audit/metrics/SLO and recovery drills remain deferred external evidence |
+
+The per-rule `1.4.0` assessment above is structural self-measurement, not an adoption
+decision; the independent-review requirement in the acceptance gate continues to apply
+to the exact final revision.
+
+## Provider review of the capability delta
+
+A provider review (ChatGPT, session of 2026-09-10) covered the durable remote-job,
+`file_patch_atomic`, cron-profile, and Docker/Compose capability work implemented on top
+of parent revision `1785719` as an uncommitted working tree. Round 1 returned
+`REQUEST_CHANGES` with two findings on the Docker plan/apply contract (apply-time
+desired-state parameters; invocation-derived rather than plan-derived drift
+classification). The fix introduced expiring server-side plan records bound to the
+receipt digest; round 2 returned `APPROVE` on the described contract. This review
+addressed design conformance of the described delta, not the exact final commit: the
+repository requirement that review bind to the exact final revision still applies once
+the tree is committed, and it does not substitute for real-system deployment evidence
+or final adoption approval.
 
 ## Deferred external evidence
 
@@ -132,7 +174,38 @@ The following cannot be established by repository mocks or self-review:
 - SSH fingerprint enrollment, rotation, and address-to-identity revalidation on real target classes;
 - one execution and postcondition reconciliation for every real mikr.us mutation;
 - remote filesystem symlink-swap behavior on each deployed filesystem/backend combination;
+- durable remote job disconnect/restart reconciliation (a longer-than-timeout job on a
+  dedicated SSH target, with owner-scoped cancel and output-cursor continuity) — the local
+  durable-job implementation is covered by credential-free gates only;
+- a deployment receipt binding exact source SHA, package content digest, and image
+  digest, verified by `scripts/verify_deployed_release.py` against a running instance;
 - published-image digest smoke for any release platform actually promoted;
+
+## Real-system evidence recorded 2026-09-10
+
+The following evidence was recorded against live systems with explicit operator
+authorization; it is session evidence, not a durable CI gate:
+
+- real mikr.us API (read-only): live `real_backend` suite passed 4/4 — `get_server_info`
+  shape, `get_ports`, `list_servers` containing the configured identity, and sequential
+  rate-limiter behavior against `https://api.mikr.us`;
+- SSH platform limitation recorded: the configured mikr.us VPS runs `sshd` on
+  `0.0.0.0:22` internally, but the platform port-forward set does not expose TCP/22
+  externally (all assigned forwards refused from two independent networks); SSH-backed
+  real-system evidence was therefore collected on a dedicated operator-directed target;
+- real SSH target, full kernel path with trusted-operator approvals bound to the
+  verified ED25519 host fingerprint: durable remote jobs (start, cross-invocation
+  idempotent reuse returning the same job id, bounded wait, output cursors,
+  owner-scoped cancel to terminal `cancelled`, completion to `succeeded` with result
+  retrieval); `file_patch_atomic` replace with matching digest plus a stale-digest
+  attempt rejected `CONFLICT` without writing; cron profile upsert → `IN_SYNC`,
+  exact-pair remove, and empty listing afterwards with the installed crontab otherwise
+  byte-preserved; Docker `runtime_snapshot` (service-scoped, image digest evidence),
+  `recreate_plan` receipt, receipt-bound `recreate_apply` (recreation observed via new
+  container id), and bounded `service_wait` reaching `READY`;
+- the deferred `TODO(real-system)` tests (symlink-swap race with a concurrent adversary,
+  host-key rotation revalidation, mikr.us mutation reconciliation) and the deployment
+  receipt remain open and still require dedicated evidence.
 - deployment-specific audit sink, metrics/SLO definition, and recovery exercises;
 - an independent review bound to the exact final revision, required before
   `migration-assessment.yaml` can be regenerated as a schema-valid assessment under

@@ -15,7 +15,7 @@ verification:
 ## Current authority
 
 This repository pins `main` of `paulomac1000/ai-skills` at
-`661ff01a5e70d58d6c94a12545b24647e52063ed` (release 1.2.0) as the sole contract
+`435061ad67ee36d77e01a993bc4f9e4379a29666` (release 1.4.0) as the sole contract
 authority. Upstream hardening branches are review input only; this consumer does not
 repin to a candidate branch unless a deliberate adoption decision is recorded.
 
