@@ -12,7 +12,7 @@ import os
 import secrets
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,17 +227,24 @@ class RemoteJobStore:
         if len(records) > self.max_records:
             raise ValueError("remote job store capacity is exceeded")
         with self._lock():
-            fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
-            try:
-                os.fchmod(fd, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    json.dump([item.as_dict() for item in records], stream, ensure_ascii=False)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            self._replace_all_unlocked(records)
+
+    def _replace_all_unlocked(self, records: list[RemoteJobRecord]) -> None:
+        fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump([item.as_dict() for item in records], stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def transaction(self) -> AbstractContextManager[None]:
+        """Hold the store lock across a multi-step read-modify-replace sequence."""
+        return self._lock()
 
     def find_idempotent(
         self, *, principal: str, server_id: str, idempotency_key: str
@@ -338,20 +345,21 @@ class DurableRemoteJobRegistry:
     ) -> int:
         """Transition stale queued/running records to expired; returns the count."""
         horizon = now.timestamp() - max_age_seconds
-        records = self.store.load()
-        changed = False
-        for record in records:
-            if record.state not in {"queued", "running"}:
-                continue
-            try:
-                created = datetime.fromisoformat(record.created_at)
-            except ValueError:
-                continue
-            if created.timestamp() <= horizon:
-                record.transition("expired", now=now.isoformat())
-                changed = True
-        if changed:
-            self.store.replace_all(records)
+        with self.store.transaction():
+            records = self.store._load_unlocked()
+            changed = False
+            for record in records:
+                if record.state not in {"queued", "running"}:
+                    continue
+                try:
+                    created = datetime.fromisoformat(record.created_at)
+                except ValueError:
+                    continue
+                if created.timestamp() <= horizon:
+                    record.transition("expired", now=now.isoformat())
+                    changed = True
+            if changed:
+                self.store._replace_all_unlocked(records)
         return sum(1 for record in records if record.state == "expired")
 
     def prune_on_read(self) -> None:

@@ -701,41 +701,44 @@ class ExecutionMixin:
                     client, service=service, project=str(output["project"])
                 )
                 post_state = project_inspect(post_inspected)
-            except AppError:
-                post_state = None
-                post_inspected = {}
+            except AppError as verify_error:
+                raise AppError(
+                    verify_error.code,
+                    "the recreate executed but post-apply verification failed; "
+                    "applied=true; reconcile target state before retry "
+                    f"({verify_error.code.value})",
+                ) from verify_error
             recreated_config = post_inspected.get("Config") or {}
             readiness = arguments.get("readiness") or (
                 "healthy" if recreated_config.get("Healthcheck") else "running"
             )
             timeout_seconds = float(arguments.get("timeout_seconds", 15))
-            if post_state is not None:
-                try:
-                    waited = await client.docker_service_wait(
-                        container_id=str(post_inspected.get("Id") or ""),
-                        readiness=str(readiness),
-                        timeout_seconds=timeout_seconds,
-                    )
-                    post_wait = {
-                        "status": "READY",
-                        "readiness": str(readiness),
-                        "state": str(waited.get("state") or ""),
-                        "health": waited.get("health"),
-                    }
-                except AppError as wait_error:
-                    raise AppError(
-                        wait_error.code,
-                        f"the recreate executed but the readiness wait failed; "
-                        f"applied=true; reconcile target state before retry "
-                        f"({wait_error.code.value})",
-                    ) from wait_error
+            try:
+                waited = await client.docker_service_wait(
+                    container_id=str(post_inspected.get("Id") or ""),
+                    readiness=str(readiness),
+                    timeout_seconds=timeout_seconds,
+                )
+                post_wait = {
+                    "status": "READY",
+                    "readiness": str(readiness),
+                    "state": str(waited.get("state") or ""),
+                    "health": waited.get("health"),
+                }
+            except AppError as wait_error:
+                raise AppError(
+                    wait_error.code,
+                    f"the recreate executed but the readiness wait failed; "
+                    f"applied=true; reconcile target state before retry "
+                    f"({wait_error.code.value})",
+                ) from wait_error
             return {
                 "status": "APPLIED",
                 "plan_receipt": output["plan_receipt"],
                 "service": service,
                 "project": output["project"],
                 "post_state": post_state,
-                "post_verified": post_state is not None,
+                "post_verified": True,
                 "post_wait": post_wait,
             }
 
