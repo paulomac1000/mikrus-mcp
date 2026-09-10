@@ -541,9 +541,13 @@ class ExecutionMixin:
                     and persisted.target_identity == profile.target_identity
                 )
 
+            profile_registry = self.cron_profiles
+            if profile_registry is None:
+                raise AppError(ErrorCode.UNAVAILABLE, "cron profiles are not configured")
+
             def rollback_candidate() -> None:
                 try:
-                    persisted = self.cron_profiles.store.get(
+                    persisted = profile_registry.store.get(
                         profile_id=profile.profile_id,
                         principal=caller.principal,
                         server_id=target,
@@ -553,23 +557,23 @@ class ExecutionMixin:
                 if not matches_candidate(persisted):
                     return
                 if previous is None:
-                    self.cron_profiles.store.delete(
+                    profile_registry.store.delete(
                         profile_id=profile.profile_id,
                         principal=caller.principal,
                         server_id=target,
                     )
                 else:
-                    self.cron_profiles.store.upsert(previous)
+                    profile_registry.store.upsert(previous)
 
             try:
-                previous = self.cron_profiles.store.get(
+                previous = profile_registry.store.get(
                     profile_id=profile.profile_id,
                     principal=caller.principal,
                     server_id=target,
                 )
             except AppError:
                 previous = None
-            self.cron_profiles.store.upsert(profile)
+            profile_registry.store.upsert(profile)
             try:
                 await client.cron_install(
                     expected_hash=str(installed.get("hash", "")), new_text=new_text
@@ -716,7 +720,7 @@ class ExecutionMixin:
                 desired_image=plan_record.desired_image,
                 allow_runtime_drift=plan_record.allow_runtime_drift,
             )
-            if plan_record.has_runtime_drift and not plan_record.allow_runtime_drift:
+            if bool(output["has_runtime_only_drift"]) and not plan_record.allow_runtime_drift:
                 raise AppError(
                     ErrorCode.RECREATE_CONFIG_DRIFT,
                     "the live state carries runtime-only drift that the plan did not "

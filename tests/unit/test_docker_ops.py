@@ -468,3 +468,20 @@ def test_plan_store_missing_record_is_none(tmp_path: Path) -> None:
 
     store = PlanRecordStore(tmp_path / "absent.json")
     assert store.get("a" * 64) is None
+
+
+def test_receipt_binds_allow_runtime_drift_decision() -> None:
+    base = receipt_payload(
+        service="web",
+        project="site",
+        compose_files=["/srv/site/compose.yaml"],
+        desired_image_explicit=False,
+        desired=desired_state(),
+        image_digest="sha256:" + "9" * 64,
+        allow_runtime_drift=False,
+    )
+    accepted = {
+        **base,
+        "allow_runtime_drift": True,
+    }
+    assert encode_receipt(base) != encode_receipt(accepted)

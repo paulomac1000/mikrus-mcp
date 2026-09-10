@@ -548,10 +548,13 @@ Run a focused test:
 .venv/bin/python -m pytest tests/unit/test_kernel.py -q
 ```
 
-Build the wheel:
+Build the wheel (stamped builds refuse to run when sources are newer than the
+embedded build stamp; unstamped builds strip the stamp first):
 
 ```bash
-.venv/bin/python -m build --wheel
+.venv/bin/python scripts/build_wheel.py --provenance stamped
+# or, for an unstamped local wheel:
+.venv/bin/python scripts/build_wheel.py --provenance unstamped
 ```
 
 `requirements-runtime.in` and `requirements-dev.in` are human-edited inputs. `requirements-*-linux-x64-py3*.lock` files are generated exact hashed graphs and should not be hand-edited.

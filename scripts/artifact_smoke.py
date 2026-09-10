@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -13,19 +12,6 @@ import venv
 from pathlib import Path
 
 RUNTIME_LOCK = Path("requirements-runtime-linux-x64-py312.lock")
-_LOCK_ENTRY = re.compile(r"^([A-Za-z0-9._-]+)==([0-9A-Za-z.+-]+) --hash=")
-
-
-def runtime_requirements(lock_path: Path) -> tuple[str, ...]:
-    """Derive the smoke dependency set from the authoritative runtime lock."""
-    entries: list[str] = []
-    for line in lock_path.read_text(encoding="utf-8").splitlines():
-        match = _LOCK_ENTRY.match(line)
-        if match is not None:
-            entries.append(f"{match.group(1)}=={match.group(2)}")
-    if not entries:
-        raise SystemExit(f"runtime lock contains no pinned requirements: {lock_path}")
-    return tuple(entries)
 
 
 TRANSPORT_SMOKE_CODE = r"""
@@ -307,16 +293,40 @@ def main() -> int:
     args = parser().parse_args()
     wheel = args.wheel.resolve(strict=True)
     wheelhouse = args.wheelhouse.resolve(strict=True)
-    requirements = runtime_requirements(args.runtime_lock.resolve(strict=True))
+    runtime_lock = args.runtime_lock.resolve(strict=True)
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="mikrus-wheel-smoke-") as directory:
         root = Path(directory)
         environment = root / "venv"
         venv.EnvBuilder(with_pip=True, clear=True).create(environment)
         python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-        base = [str(python), "-m", "pip", "install", "--no-index", f"--find-links={wheelhouse}"]
-        subprocess.run([*base, *requirements], check=True)
-        subprocess.run([*base, "--no-deps", str(wheel)], check=True)
+        subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                f"--find-links={wheelhouse}",
+                "--require-hashes",
+                "-r",
+                str(runtime_lock),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                f"--find-links={wheelhouse}",
+                "--no-deps",
+                str(wheel),
+            ],
+            check=True,
+        )
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
         subprocess.run([str(python), "-c", TRANSPORT_SMOKE_CODE], check=True)
     print(f"Exact wheel transport smoke passed: {wheel.name} sha256={digest}")

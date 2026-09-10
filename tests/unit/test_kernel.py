@@ -1114,7 +1114,6 @@ async def test_docker_plan_hides_env_values_and_apply_is_record_bound(tmp_path: 
     assert mismatch["error"]["code"] == "VALIDATION_FAILED"
 
     client.image_digest = "sha256:" + "8" * 64
-    client.converged = False
     approvals.issue_for_test(
         "docker_recreate_apply",
         "principal",
@@ -1666,3 +1665,37 @@ async def test_cron_upsert_ambiguous_reconciles_against_installed_projection(
     with pytest.raises(AppError):
         store.get(profile_id="second", principal="principal", server_id="host")
     assert marker_line("second", unused) not in client.crontab
+
+
+@pytest.mark.asyncio
+async def test_docker_apply_requires_acceptance_for_drift_appearing_after_plan(
+    tmp_path: Path,
+) -> None:
+    client = FakeDockerComposeClient(_ssh_target())
+    settings = _docker_settings(client, store=tmp_path / "plans.json")
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    client.converged = True
+    plan = await kernel.invoke("docker_recreate_plan", {"service": "web"}, caller)
+    assert plan["data"]["has_runtime_only_drift"] is False
+
+    client.converged = False
+    arguments = {"service": "web", "plan_receipt": str(plan["data"]["plan_receipt"])}
+    approvals.issue_for_test(
+        "docker_recreate_apply",
+        "principal",
+        client.stable_identity,
+        "web",
+        normalized_arguments_digest(arguments),
+    )
+    refused = await kernel.invoke("docker_recreate_apply", arguments, caller)
+    assert refused["error"]["code"] == "RECREATE_CONFIG_DRIFT"
+    assert client.ups == []

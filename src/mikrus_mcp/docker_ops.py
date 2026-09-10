@@ -522,6 +522,7 @@ def receipt_payload(
     desired_image_explicit: bool,
     desired: dict[str, Any],
     image_digest: str | None,
+    allow_runtime_drift: bool = False,
 ) -> dict[str, Any]:
     """Canonical plan payload bound by the receipt.
 
@@ -534,6 +535,7 @@ def receipt_payload(
         "project": project,
         "compose_files": list(compose_files),
         "desired_image_explicit": bool(desired_image_explicit),
+        "allow_runtime_drift": bool(allow_runtime_drift),
         "image_digest": image_digest,
         "modeled_fields": list(_MODELLED_FIELDS),
         "desired": {
