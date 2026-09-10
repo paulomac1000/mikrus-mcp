@@ -375,9 +375,20 @@ _FILE_PATCH_HELPER = textwrap.dedent(
             except OSError:
                 fail(error_code)
             try:
-                fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=state_fd)
-            except OSError:
-                fail(error_code)
+                try:
+                    os.mkdir("locks", 0o700, dir_fd=state_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    locks_fd = os.open("locks", dir_flags, dir_fd=state_fd)
+                except OSError:
+                    fail(error_code)
+                try:
+                    fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=locks_fd)
+                except OSError:
+                    fail(error_code)
+                finally:
+                    os.close(locks_fd)
             finally:
                 os.close(state_fd)
         finally:
@@ -549,9 +560,20 @@ _CRON_HELPER = textwrap.dedent(
             except OSError:
                 fail(error_code)
             try:
-                fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=state_fd)
-            except OSError:
-                fail(error_code)
+                try:
+                    os.mkdir("locks", 0o700, dir_fd=state_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    locks_fd = os.open("locks", dir_flags, dir_fd=state_fd)
+                except OSError:
+                    fail(error_code)
+                try:
+                    fd = os.open(name, os.O_RDWR | os.O_CREAT | no_follow, 0o600, dir_fd=locks_fd)
+                except OSError:
+                    fail(error_code)
+                finally:
+                    os.close(locks_fd)
             finally:
                 os.close(state_fd)
         finally:
