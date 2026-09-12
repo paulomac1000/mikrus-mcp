@@ -35,6 +35,34 @@ MIKRUS_ONLY = frozenset(
         "assign_domain",
     }
 )
+SSH_ONLY = frozenset(
+    {
+        "execute_program",
+        "start_program",
+        "cancel_program",
+        "remote_job_start",
+        "file_patch_atomic",
+        "cron_list",
+        "cron_upsert",
+        "cron_remove",
+        "docker_runtime_snapshot",
+        "docker_recreate_plan",
+        "docker_recreate_apply",
+        "service_wait",
+    }
+)
+REMOTE_JOB_NAMES = frozenset(
+    {
+        "remote_job_start",
+        "remote_job_status",
+        "remote_job_wait",
+        "remote_job_result",
+        "remote_job_output",
+        "remote_job_cancel",
+    }
+)
+CRON_NAMES = frozenset({"cron_list", "cron_upsert", "cron_remove"})
+DOCKER_PLAN_NAMES = frozenset({"docker_recreate_plan", "docker_recreate_apply", "service_wait"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +100,7 @@ class CapabilityManifest:
         self,
         *,
         active_state: Literal["active", "inactive", "deprecated"] = "active",
-        inactive_reason: str | None = None,
+        inactive_reason: dict[str, str] | None = None,
     ) -> dict[str, object]:
         # Advertise exactly what the runtime enforces: concurrent-safe reads run
         # unlocked, everything else serializes on one lock per scope key. Scope
@@ -172,6 +200,7 @@ def _mutation(
     destructive: bool = False,
     impact: str = "persistent",
     timeout_ms: int = DEFAULT_MUTATION_TIMEOUT_MS,
+    target_required: bool = True,
     resource_argument: str | None = None,
 ) -> CapabilityManifest:
     return CapabilityManifest(
@@ -192,6 +221,7 @@ def _mutation(
         requires_approval=True,
         required_scopes=(f"tool:{name}", "write:server"),
         target_binding="verified backend identity plus approval-bound resource",
+        target_required=target_required,
         resource_argument=resource_argument,
     )
 
@@ -245,6 +275,63 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_journal_logs": _read("get_journal_logs", "sensitive", resource_argument="unit"),
     "find_system_errors": _read("find_system_errors", "sensitive"),
     "search_journal_logs": _read("search_journal_logs", "sensitive"),
+    "execute_program": _mutation("execute_program", impact="process execution"),
+    "start_program": _mutation("start_program", impact="process execution"),
+    "get_program_status": _read(
+        "get_program_status",
+        timeout_ms=1_000,
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "get_program_result": _read(
+        "get_program_result",
+        timeout_ms=1_000,
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "cancel_program": _mutation(
+        "cancel_program",
+        impact="process execution",
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "remote_job_start": _mutation(
+        "remote_job_start", impact="process execution", resource_argument="idempotency_key"
+    ),
+    "remote_job_status": _read(
+        "remote_job_status", timeout_ms=1_000, target_required=False, resource_argument="job_id"
+    ),
+    "remote_job_wait": _read(
+        "remote_job_wait", timeout_ms=65_000, target_required=False, resource_argument="job_id"
+    ),
+    "remote_job_result": _read(
+        "remote_job_result", timeout_ms=1_000, target_required=False, resource_argument="job_id"
+    ),
+    "remote_job_output": _read(
+        "remote_job_output", timeout_ms=1_000, target_required=False, resource_argument="job_id"
+    ),
+    "remote_job_cancel": _mutation(
+        "remote_job_cancel",
+        impact="process execution",
+        resource_argument="job_id",
+        target_required=False,
+    ),
+    "file_patch_atomic": _mutation("file_patch_atomic", resource_argument="path"),
+    "cron_list": _read("cron_list", timeout_ms=30_000),
+    "cron_upsert": _mutation("cron_upsert", resource_argument="profile_id"),
+    "cron_remove": _mutation("cron_remove", resource_argument="profile_id"),
+    "docker_runtime_snapshot": _read(
+        "docker_runtime_snapshot", "sensitive", timeout_ms=30_000, resource_argument="service"
+    ),
+    "docker_recreate_plan": _read(
+        "docker_recreate_plan", "sensitive", timeout_ms=45_000, resource_argument="service"
+    ),
+    "docker_recreate_apply": _mutation(
+        "docker_recreate_apply",
+        impact="service outage during recreate",
+        resource_argument="service",
+    ),
+    "service_wait": _read("service_wait", timeout_ms=30_000, resource_argument="service"),
     "list_configured_servers": _read(
         "list_configured_servers", "sensitive", timeout_ms=1_000, target_required=False
     ),
@@ -254,14 +341,53 @@ MANIFESTS: dict[str, CapabilityManifest] = {
 }
 
 
-def inactive_reason(name: str, settings: Settings) -> str | None:
+def _reason(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def inactive_reason(name: str, settings: Settings) -> dict[str, str] | None:
     manifest = MANIFESTS[name]
     if name in MIKRUS_ONLY and not any(
         target.type == "mikrus" for target in settings.targets.values()
     ):
-        return "requires at least one configured mikr.us target"
+        return _reason(
+            "MIKRUS_TARGET_REQUIRED",
+            "requires at least one configured mikr.us target",
+        )
+    if name in SSH_ONLY and not any(target.type == "ssh" for target in settings.targets.values()):
+        return _reason(
+            "SSH_TARGET_REQUIRED",
+            "requires at least one configured SSH target",
+        )
+    if name in REMOTE_JOB_NAMES:
+        if settings.remote_job_store_file is None:
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_REMOTE_JOB_STORE_FILE")
+        if not any(target.type == "ssh" for target in settings.targets.values()):
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
+    if name in CRON_NAMES:
+        if settings.cron_profile_store_file is None:
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_CRON_PROFILE_STORE_FILE")
+        if not any(target.type == "ssh" for target in settings.targets.values()):
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
+    if name in DOCKER_PLAN_NAMES:
+        if settings.docker_plan_store_file is None:
+            return _reason("STORE_NOT_CONFIGURED", "requires MCP_DOCKER_PLAN_STORE_FILE")
+        if not any(target.type == "ssh" for target in settings.targets.values()):
+            return _reason(
+                "SSH_TARGET_REQUIRED",
+                "requires at least one configured SSH target",
+            )
     if manifest.side_effects != "read" and not settings.write_enabled:
-        return "write operations are disabled by process policy"
+        return _reason(
+            "WRITE_OPERATIONS_DISABLED",
+            "write operations are disabled by process policy",
+        )
     return None
 
 

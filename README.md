@@ -3,14 +3,14 @@
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
 [![AI Skills](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml)
 [![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue)](https://www.python.org/)
-[![Version 2.0.0](https://img.shields.io/badge/version-2.0.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
+[![Version 2.1.0](https://img.shields.io/badge/version-2.1.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for managing [mikr.us](https://mikr.us/) VPS instances and remote Linux hosts over SSH.
 
 `mikrus-mcp` exposes a bounded set of administration capabilities through one policy-enforced invocation path. It supports local `stdio` and authenticated loopback-only Streamable HTTP, separates read operations from mutations, binds privileged actions to an exact target identity and resource, and keeps raw shell execution out of the public MCP surface.
 
-> **Version 2.0 is intentionally stricter than 1.x.** Python 3.12+ is required, legacy HTTP+SSE is removed, SSH host verification is enabled by default, mutations require explicit write enablement and short-lived server-side approvals, and broad legacy management tools have been replaced with operation-specific capabilities.
+> **Version 2.1 adds typed SSH program execution and bounded process jobs.** Version 2.0 remains intentionally stricter than 1.x: Python 3.12+ is required, legacy HTTP+SSE is removed, SSH host verification is enabled by default, mutations require explicit write enablement and short-lived server-side approvals, and broad legacy management tools have been replaced with operation-specific capabilities.
 
 ## Contents
 
@@ -40,6 +40,8 @@ A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for
 - **No public raw shell tool** — privileged operations are exposed as bounded, operation-specific tools with validation.
 - **Reproducible builds** — committed hashed dependency locks are maintained for Linux x64 on CPython 3.12, 3.13, and 3.14.
 - **Exact artifact verification** — CI builds and exercises the exact wheel and Linux/amd64 container artifact.
+- **Runtime provenance** — capability discovery and successful results expose version, source/build,
+  artifact, configuration, and instance-generation fields when supplied by the build/deployment profile.
 - **Pinned standards authority** — repository contracts are aligned with the pinned `ai-skills@main` stable revision recorded in `ai-skills.lock.yaml`.
 
 ## Requirements
@@ -87,12 +89,12 @@ The single-server form is the smallest configuration. For SSH or multiple target
 ### 4. Build and run with Docker
 
 ```bash
-docker build -t mikrus-mcp:2.0.0 .
+docker build -t mikrus-mcp:2.1.0 .
 
 docker run --rm \
   -e MIKRUS_API_KEY='replace-me' \
   -e MIKRUS_SERVER_NAME='srv123' \
-  mikrus-mcp:2.0.0
+  mikrus-mcp:2.1.0
 ```
 
 Published release images are promoted by immutable digest. Prefer a release tag or digest over an unpinned moving tag in production.
@@ -122,7 +124,7 @@ For Docker-based clients, point the MCP command at `docker run` and pass credent
 
 ## Available tools
 
-The supported catalog contains **34 application-owned capabilities**. Runtime registration is configuration-aware: tools that do not apply to any configured backend, or mutations disabled by policy, are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
+The supported catalog is configuration-aware. Tools that do not apply to any configured backend, lack the durable-job store, or are mutations disabled by policy are omitted from the public tool list and remain visible in the capability catalog with an inactive reason.
 
 ### Discovery
 
@@ -167,6 +169,25 @@ These capabilities operate through the configured backend abstraction and are av
 | `list_directory` | Sensitive read | List a validated directory. |
 | `tail_file` | Sensitive read | Read the bounded tail of a text file. |
 | `search_in_files` | Sensitive read | Search within a validated path. |
+| `execute_program` | Mutation | Run an approved executable with typed `argv`, optional `cwd`, and optional stdin through an SSH target. |
+| `start_program` | Mutation | Start an approved typed program and return a bounded in-process job handle. |
+| `get_program_status` | Read | Inspect the status of an owned typed program job. |
+| `get_program_result` | Read | Retrieve the terminal result of an owned typed program job. |
+| `cancel_program` | Mutation | Cancel an owned queued or running typed program job. |
+| `remote_job_start` | Mutation | Start an SSH-backed durable job using an idempotency key. |
+| `remote_job_status` | Read | Inspect a durable remote job by owner-bound job ID. |
+| `remote_job_wait` | Read | Wait server-side for bounded remote job progress or terminal state. |
+| `remote_job_result` | Read | Retrieve a durable remote job result. |
+| `remote_job_output` | Read | Read bounded stdout or stderr using an explicit cursor. |
+| `remote_job_cancel` | Mutation | Cancel the exact remote process group after PID identity validation and report whether termination was verified. |
+| `file_patch_atomic` | Mutation | Replace a regular file only when its current SHA-256 digest matches `expected_digest` (compare-and-swap; binary-safe via base64; serialized by a host-local advisory lock across mikrus-mcp writers). |
+| `cron_list` | Read | Report owned cron profiles with their installed crontab state and marker digest. |
+| `cron_upsert` | Mutation | Idempotently project one owned cron profile into the installed crontab. |
+| `cron_remove` | Mutation | Remove exactly the marker and generated line pair for one owned cron profile. |
+| `docker_runtime_snapshot` | Sensitive read | Return a bounded semantic snapshot of one compose service or container. |
+| `docker_recreate_plan` | Sensitive read | Compute a canonical semantic recreate plan with a bound plan receipt and an expiring server-side record. |
+| `docker_recreate_apply` | Mutation | Apply a verified recreate plan; reports `ALREADY_APPLIED` when state already matches. |
+| `service_wait` | Read | Wait server-side for bounded compose service readiness. |
 | `get_memory_info` | Read | Show memory usage. |
 | `get_network_info` | Sensitive read | Show network interfaces and listening sockets. |
 | `get_process_tree` | Sensitive read | Show the process tree. |
@@ -231,6 +252,93 @@ export MCP_DEFAULT_SERVER='vps'
 | `verify_host_key` | no | `true` | Host-key verification is enabled by default. |
 
 Disabling SSH host verification requires `MCP_ALLOW_INSECURE_SSH=1` and is limited to read-only development use. Startup fails if writes are enabled while an SSH target has host verification disabled.
+
+### Durable remote jobs
+
+Set an absolute owner-controlled store path to activate the `remote_job_*` capability
+family. The file is created with private permissions and updated through bounded atomic
+replacement:
+
+```bash
+export MCP_REMOTE_JOB_STORE_FILE="$PWD/.mikrus-remote-jobs.json"
+```
+
+The capability remains inactive when this setting is absent or when no SSH target is
+configured. Do not place the store in a shared or symlinked directory. Cancellation
+verifies descendant termination after the kill and reports an honest `terminated`
+field; a start whose outcome was ambiguous is reconciled once against the remote
+record instead of surfacing the raw timeout (an unrecoverable lookup surfaces
+`AMBIGUOUS_OUTCOME`). Job records expire after a 7-day retention horizon
+(`REMOTE_JOB_RETENTION_SECONDS = 604800`); expired records are cleaned on the next
+registry read.
+
+### Cron profiles
+
+Set an absolute owner-controlled store path to activate the `cron_list`, `cron_upsert`,
+and `cron_remove` capability family:
+
+```bash
+export MCP_CRON_PROFILE_STORE_FILE="$PWD/.mikrus-cron-profiles.json"
+export MCP_DOCKER_PLAN_STORE_FILE="$PWD/.mikrus-docker-plans.json"
+```
+
+Profiles are owner-bound durable records with a typed five-field schedule, an
+allowlisted executable, typed arguments, and optional bounded environment assignments.
+Projection into the installed crontab uses one marker comment line
+(`# mikrus-mcp:<profile_id>:sha256=<digest>`) followed by exactly one generated cron
+line whose arguments are strictly single-quote escaped; arbitrary command strings are
+never serialized. Crontab updates re-read the file immediately before install and fail
+with `CONCURRENT_MODIFICATION` when it changed concurrently. All non-profile crontab
+lines are preserved byte-for-byte, and cron capabilities remain inactive when the
+setting is absent or no SSH target is configured. Crontab installs and reads are
+serialized through a host-local advisory lock (`~/.mikrus-mcp/locks/crontab.lock`) so
+mikrus-mcp writers never interleave; concurrent non-mikrus writers stay outside that
+guarantee and are still caught by the immediate pre-install re-read
+(`CONCURRENT_MODIFICATION`).
+
+The same advisory-lock family (`~/.mikrus-mcp/locks/cas.lock`) covers
+`file_patch_atomic`: the digest read, comparison, temp-file write, and rename all hold
+the lock, making the compare-and-swap atomic across every mikrus-mcp writer on the
+host. Non-mikrus writers are outside the guarantee; the digest precondition still
+detects them at operation start.
+
+### Docker and Compose
+
+The `docker_runtime_snapshot`, `docker_recreate_plan`, `docker_recreate_apply`, and
+`service_wait` capabilities manage compose services over an SSH target without a shell.
+`docker_recreate_plan` resolves the compose project identity from the live container
+labels (never a directory basename), reads the desired state through
+`docker compose config`, and returns a canonical semantic plan bound by a
+`plan:v1:sha256:...` receipt. The plan persists in a durable server-side record store
+(enabled by `MCP_DOCKER_PLAN_STORE_FILE`, an absolute operator-controlled path with
+private permissions; records expire after 300 seconds), so apply derives every
+desired-state input from the stored record rather than from invocation arguments.
+Environment values are used for apply comparison but are never returned to the model —
+only environment keys are visible.
+
+`docker_recreate_plan` additionally records whether the live container carries
+runtime-only drift relative to compose (fields such as runtime-applied environment or
+labels that the compose file does not declare). Planning with
+`allow_runtime_drift=true` records explicit acceptance; otherwise
+`docker_recreate_apply` refuses the mutation with `RECREATE_CONFIG_DRIFT` and the
+operator must re-plan to accept losing that runtime-only configuration.
+
+`docker_recreate_apply` takes only the service and `plan_receipt`; a missing or expired
+record is `PLAN_STALE`. The stored record classifies drift: compose-desired fields
+changed since planning → `PLAN_STALE`; the image digest moved on an implicitly pinned
+tag → `IMAGE_DRIFT`; the digest moved under an explicitly pinned image → `PLAN_STALE`.
+Behavior is identical fail-closed: re-plan required. When the live semantic state
+already equals the compose-desired state the apply reports `ALREADY_APPLIED` without
+recreating. The apply itself is the bounded argv sequence
+`docker compose -p <project> -f <files>... up -d --no-deps --force-recreate <service>`;
+a single inspect re-check follows, and a readiness wait is mandatory: the default is
+`healthy` when the recreated container defines a healthcheck and `running` otherwise,
+with a 15-second budget; `readiness` and `timeout_seconds` (5–25) are tuning-only. A
+failed wait surfaces its typed error with `applied=true` in the message — the recreate
+executed, so reconcile rather than blind-retry. `service_wait` polls
+`docker inspect` inside one bounded helper invocation and reports `READINESS_TIMEOUT`
+or `HEALTH_FAILED` as read-class errors; with a `plan_receipt` it verifies the record
+exists before waiting.
 
 ### mikr.us target fields
 
@@ -345,9 +453,9 @@ Representative success:
   "_meta": {
     "request_id": "6a5c...",
     "capability": "get_server_info",
-    "capability_version": "2.0.0",
+    "capability_version": "2.1.0",
     "source": "mikrus-mcp",
-    "artifact": "mikrus-mcp==2.0.0",
+    "artifact": "mikrus-mcp==2.1.0",
     "target": "srv123",
     "target_identity": "mikrus:srv123",
     "backend": "mikrus",
@@ -377,11 +485,29 @@ Representative failure:
 
 Metadata is only included when it is safe and actually known. For example, a pre-resolution authorization failure does not disclose the backend's resolved identity.
 
+Build and deployment profiles provide immutable provenance through the embedded
+`_build_provenance.json` stamp, written by `scripts/stamp_build_provenance.py` from the
+inputs `--source-revision`, `--build-id`, `--built-at`, and `--config-revision`;
+`packageContentDigest` is computed from the stamped package during stamping. At runtime
+only two environment variables are read: `MIKRUS_MCP_CONFIG_REVISION` (overrides the
+stamped `configRevision`) and `MIKRUS_MCP_DEPLOYMENT_RECEIPT_FILE` (deployment receipt
+path). The stamped `sourceRevision`, `buildId`, `packageContentDigest`, and `builtAt`
+are reported in capability discovery and successful result metadata; they cannot be
+injected through environment variables or inferred from a mounted checkout. Build
+wheels through `scripts/build_wheel.py --provenance stamped|unstamped` so the stamp
+cannot silently go stale.
+
 Result limits are enforced against the serialized application envelope, including metadata, rather than only the nested `data` value.
 
 ## Security model
 
 `mikrus-mcp` is a privileged administration service. Treat its process environment, bearer-token file, SSH keys, approval registry, and target credentials as secrets.
+
+Typed program jobs remain bounded and process-local. When `MCP_REMOTE_JOB_STORE_FILE` is
+configured, the `remote_job_*` tools use a durable owner-bound receipt and an SSH-side
+JSON-stdin helper; status, wait, result, output cursors, and cancel do not require model-side
+`sleep` loops or PID archaeology. The store path must be an absolute operator-controlled
+file path. Remote-job mutations still require write enablement and one-time approval.
 
 Key defaults:
 
@@ -392,6 +518,7 @@ Key defaults:
 - one-time server-side approvals for every public mutation;
 - no automatic mutation retries after timeout, disconnect, rate limit, or ambiguous completion;
 - no public arbitrary-command tool;
+- typed program execution is SSH-only, approval-bound, and sends user-controlled values as helper stdin rather than shell command text;
 - component-safe no-follow remote file writes;
 - bounded request, response, output, concurrency, and deadline behavior;
 - sensitive response fields sanitized before model-visible serialization.
@@ -427,10 +554,13 @@ Run a focused test:
 .venv/bin/python -m pytest tests/unit/test_kernel.py -q
 ```
 
-Build the wheel:
+Build the wheel (stamped builds refuse to run when sources are newer than the
+embedded build stamp; unstamped builds strip the stamp first):
 
 ```bash
-.venv/bin/python -m build --wheel
+.venv/bin/python scripts/build_wheel.py --provenance stamped
+# or, for an unstamped local wheel:
+.venv/bin/python scripts/build_wheel.py --provenance unstamped
 ```
 
 `requirements-runtime.in` and `requirements-dev.in` are human-edited inputs. `requirements-*-linux-x64-py3*.lock` files are generated exact hashed graphs and should not be hand-edited.

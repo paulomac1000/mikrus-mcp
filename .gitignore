@@ -19,3 +19,7 @@ evidence/
 # tooling sidecar data
 *.py,cover
 .omo/
+.codegraph/
+
+# Local build provenance stamps (CI stamps during exact-wheel build)
+src/mikrus_mcp/_build_provenance.json

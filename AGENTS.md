@@ -88,9 +88,9 @@ Complete local gate:
 Build and inspect the exact wheel:
 
 ```bash
-.venv/bin/python -m build --wheel
+.venv/bin/python scripts/build_wheel.py --provenance stamped
 .venv/bin/python scripts/artifact_smoke.py \
-  --wheel dist/mikrus_mcp-2.0.0-py3-none-any.whl \
+  --wheel dist/mikrus_mcp-2.1.0-py3-none-any.whl \
   --wheelhouse wheelhouse
 ```
 

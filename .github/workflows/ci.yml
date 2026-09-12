@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PIP_VERSION: "26.1.2"
-  AI_SKILLS_REVISION: "661ff01a5e70d58d6c94a12545b24647e52063ed"
+  PIP_VERSION: "26.2.1"
+  AI_SKILLS_REVISION: "435061ad67ee36d77e01a993bc4f9e4379a29666"
 
 jobs:
   quality:
@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          from mikrus_mcp.manifests import MANIFESTS, validate_manifests
+          from mikrus_mcp.manifests import MANIFESTS, active_names, validate_manifests
           from mikrus_mcp.config import Settings, TargetConfig
 
           target = TargetConfig(
@@ -69,7 +69,7 @@ jobs:
                   {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
               ),
           )
-          validate_manifests(set(MANIFESTS), settings)
+          validate_manifests(active_names(settings), settings)
           for name, manifest in sorted(MANIFESTS.items()):
               projection = manifest.as_dict()
               concurrency = projection["concurrency"]
@@ -172,7 +172,7 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python }}
         run: |
           set -euo pipefail
-          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.0"
+          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.1"
           lock_id="linux-x64-py${PYTHON_VERSION//./}"
           mkdir -p compiled lock-output runtime-wheelhouse dev-wheelhouse
           python -m piptools compile \
@@ -238,6 +238,10 @@ jobs:
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION" "build==1.5.0" \
             "setuptools==84.0.0" "wheel==0.48.0"
+          candidate="${{ github.event.pull_request.head.sha || github.sha }}"
+          python scripts/stamp_build_provenance.py \
+            --source-revision "$candidate" \
+            --build-id "github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           python -m build --wheel --no-isolation
           mkdir -p wheelhouse
           python -m pip download \
@@ -246,6 +250,28 @@ jobs:
             --dest wheelhouse \
             -r requirements-runtime-linux-x64-py312.lock
           cp dist/mikrus_mcp-*.whl wheelhouse/
+      - name: Guard immutable exact-wheel provenance
+        shell: bash
+        env:
+          EXPECTED_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_BUILD_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          wheel="$(find dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)"
+          test -n "$wheel"
+          python -m venv .provenance-guard
+          .provenance-guard/bin/python -m pip install --no-deps "$wheel"
+          .provenance-guard/bin/python - <<'PY'
+          import os
+
+          from mikrus_mcp.provenance import runtime_provenance
+
+          provenance = runtime_provenance()
+          assert provenance["sourceRevision"] == os.environ["EXPECTED_SOURCE_REVISION"]
+          assert provenance["buildId"] == os.environ["EXPECTED_BUILD_ID"]
+          assert provenance["packageIntegrity"] == "verified"
+          assert provenance["artifactDigest"] == provenance["packageContentDigest"]
+          PY
       - name: Smoke exact wheel through real advertised transports
         shell: bash
         run: |
@@ -309,10 +335,16 @@ jobs:
         run: |
           set -euo pipefail
           image="mikrus-mcp:${{ github.event.pull_request.head.sha || github.sha }}"
-          docker run --rm --entrypoint python "$image" -c \
-            "import os; from mikrus_mcp import __version__; assert __version__ == '2.0.0'; assert os.getuid() == 10001"
+          expected_source="${{ github.event.pull_request.head.sha || github.sha }}"
+          docker run --rm \
+            --entrypoint python \
+            -e "EXPECTED_SOURCE_REVISION=$expected_source" \
+            "$image" -c \
+            "import os; from mikrus_mcp import __version__; from mikrus_mcp.provenance import runtime_provenance; p = runtime_provenance(); assert __version__ == '2.1.0'; assert os.getuid() == 10001; assert p['sourceRevision'] == os.environ['EXPECTED_SOURCE_REVISION']; assert p['packageIntegrity'] == 'verified'; assert p['artifactDigest'] == p['packageContentDigest']"
           python -m venv .container-smoke
-          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "mcp==2.0.0"
+          mcp_pin="$(grep -oE '^mcp==[0-9.]+' requirements-runtime-linux-x64-py312.lock | head -1)"
+          test -n "$mcp_pin"
+          .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "$mcp_pin"
           .container-smoke/bin/python scripts/container_smoke.py --image "$image"
           mkdir -p release
           docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt

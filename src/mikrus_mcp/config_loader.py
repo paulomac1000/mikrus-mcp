@@ -16,6 +16,7 @@ from mikrus_mcp.config_models import (
     _default_stdio_principal,
     _integer,
     _optional_regular_file,
+    _optional_store_path,
     _secret_text_file,
 )
 
@@ -141,6 +142,15 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         max_result_bytes=_integer(env, "MCP_MAX_RESULT_BYTES", 1_000_000, 1_024, 16_777_216),
         approval_file=_optional_regular_file(
             env.get("MCP_APPROVAL_FILE"), name="MCP_APPROVAL_FILE", secret=True
+        ),
+        remote_job_store_file=_optional_store_path(
+            env.get("MCP_REMOTE_JOB_STORE_FILE"), name="MCP_REMOTE_JOB_STORE_FILE"
+        ),
+        cron_profile_store_file=_optional_store_path(
+            env.get("MCP_CRON_PROFILE_STORE_FILE"), name="MCP_CRON_PROFILE_STORE_FILE"
+        ),
+        docker_plan_store_file=_optional_store_path(
+            env.get("MCP_DOCKER_PLAN_STORE_FILE"), name="MCP_DOCKER_PLAN_STORE_FILE"
         ),
         http_bearer_token=_secret_text_file(
             env.get("MCP_HTTP_BEARER_TOKEN_FILE"), name="MCP_HTTP_BEARER_TOKEN_FILE"

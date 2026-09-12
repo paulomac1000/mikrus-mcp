@@ -59,16 +59,19 @@ first migration pass.
 ```bash
 .venv/bin/python scripts/core_gate.py
 .venv/bin/python scripts/ci.py
-.venv/bin/python -m build --wheel
+.venv/bin/python scripts/build_wheel.py --provenance stamped
 .venv/bin/python scripts/artifact_smoke.py \
-  --wheel dist/mikrus_mcp-2.0.0-py3-none-any.whl \
+--wheel dist/mikrus_mcp-2.1.0-py3-none-any.whl \
   --wheelhouse wheelhouse
 ```
 
 Verify that tool discovery contains no legacy mixed-risk names, does not expose
-`execute_command`, and omits capabilities which are inactive for the configured backend
-or current write policy. Inspect `capabilities://catalog` for the corresponding inactive
-reasons. Verify `health://ready` remains false until the configured default dependency has
+`execute_command`, exposes typed `execute_program` and bounded `start_program` only for
+configured SSH targets, and omits capabilities which are inactive for the configured
+backend. Job handles are process-local and are not durable across a server restart;
+`cancel_program` cancels only an owned queued or running job.
+Inspect `capabilities://catalog` for the corresponding inactive reasons, including any
+capability left inactive by the current write policy. Verify `health://ready` remains false until the configured default dependency has
 connected successfully.
 
 ## Rollback
