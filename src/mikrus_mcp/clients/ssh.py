@@ -1037,22 +1037,33 @@ class SshClient:
             self._connection = None
 
     @staticmethod
-    async def _terminate_process(process: Any) -> None:
-        """Terminate and escalate without allowing cleanup failures to escape."""
+    @staticmethod
+    async def _terminate_process(process: Any, *, deadline: float | None = None) -> None:
+        """Terminate and escalate without exceeding the caller's deadline budget."""
+        loop = asyncio.get_running_loop()
+
+        def wait_budget() -> float:
+            wait = SSH_TERMINATE_WAIT_SECONDS
+            if deadline is not None:
+                wait = min(wait, max(0.0, deadline - loop.time()))
+            return wait
+
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
             try:
                 terminate()
             except Exception as exc:
                 logger.warning("SSH process terminate failed: %s", type(exc).__name__)
-        try:
-            await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
-            return
-        except asyncio.CancelledError:
-            raise
-        except (TimeoutError, OSError) as exc:
-            if not isinstance(exc, TimeoutError):
-                logger.warning("SSH process wait failed: %s", type(exc).__name__)
+        first_wait = wait_budget()
+        if first_wait > 0:
+            try:
+                await asyncio.wait_for(process.wait(), first_wait)
+                return
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, OSError) as exc:
+                if not isinstance(exc, TimeoutError):
+                    logger.warning("SSH process wait failed: %s", type(exc).__name__)
 
         close = getattr(process, "close", None)
         if callable(close):
@@ -1060,12 +1071,14 @@ class SshClient:
                 close()
             except Exception as exc:
                 logger.warning("SSH process close failed: %s", type(exc).__name__)
-        try:
-            await asyncio.wait_for(process.wait(), SSH_TERMINATE_WAIT_SECONDS)
-        except asyncio.CancelledError:
-            raise
-        except (TimeoutError, OSError):
-            logger.warning("SSH process channel did not close cleanly")
+        second_wait = wait_budget()
+        if second_wait > 0:
+            try:
+                await asyncio.wait_for(process.wait(), second_wait)
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, OSError):
+                logger.warning("SSH process channel did not close cleanly")
 
     async def _run(
         self, command: str, *, timeout: float | None = None, mutation: bool = False
@@ -1581,21 +1594,23 @@ class SshClient:
                         raise AppError(ErrorCode.UPSTREAM, "SSH output exceeds size limit")
                 chunks.append(data)
 
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(max(0.0, timeout - 2 * SSH_TERMINATE_WAIT_SECONDS)):
                 stdout, stderr = await asyncio.gather(
                     collect(process.stdout), collect(process.stderr)
                 )
                 await process.wait()
         except TimeoutError as exc:
-            await self._terminate_process(process)
+            await self._terminate_process(process, deadline=deadline)
             code = ErrorCode.AMBIGUOUS if mutation else ErrorCode.TIMEOUT
             raise AppError(code, "SSH program outcome is unknown after timeout") from exc
         except asyncio.CancelledError:
-            await self._terminate_process(process)
+            await self._terminate_process(process, deadline=deadline)
             raise
         except AppError:
-            await self._terminate_process(process)
+            await self._terminate_process(process, deadline=deadline)
             raise
         try:
             result = json.loads(stdout.decode("utf-8", errors="replace"))

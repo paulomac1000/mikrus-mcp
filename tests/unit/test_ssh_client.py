@@ -1071,3 +1071,48 @@ def test_remote_job_worker_survives_child_that_never_reads_stdin(
     assert final["state"] in {"succeeded", "failed"}
     assert final["state"] != "running"
     assert "payload" not in final
+
+
+@pytest.mark.asyncio
+async def test_collect_process_termination_fits_inside_caller_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time as time_module
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    monkeypatch.setattr(ssh_module, "SSH_TERMINATE_WAIT_SECONDS", 0.05)
+
+    class BackpressuredStubbornProcess:
+        """Stubborn wait() plus valid empty output streams."""
+
+        def __init__(self) -> None:
+            self.stdout = FakeStream([b""])
+            self.stderr = FakeStream([b""])
+            self.terminated = False
+            self.closed = False
+            self._closed_event = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def close(self) -> None:
+            self.closed = True
+            self._closed_event.set()
+
+        async def wait(self) -> None:
+            await self._closed_event.wait()
+
+    process = BackpressuredStubbornProcess()
+    client = SshClient(ssh_target())
+    client._connection = FakeConnection(process)
+
+    started = time_module.monotonic()
+    with pytest.raises(AppError) as outcome:
+        await client._collect_process(process, timeout=0.15, mutation=True)
+    elapsed = time_module.monotonic() - started
+
+    assert outcome.value.code == ErrorCode.AMBIGUOUS
+    assert process.terminated is True
+    assert process.closed is True
+    assert elapsed < 0.35, f"termination exceeded caller deadline: {elapsed:.3f}s"
