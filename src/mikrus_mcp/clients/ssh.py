@@ -423,15 +423,34 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             write_record(record)
         finally:
             release_lock(lock_fd)
-        if payload.get("stdin") is not None:
-            child.stdin.write(payload["stdin"].encode()); child.stdin.close()
-        code = child.wait()
+        worker_failed = False
+        try:
+            child.communicate(
+                input=payload["stdin"].encode()
+                if payload.get("stdin") is not None
+                else None
+            )
+        except Exception:
+            worker_failed = True
+            try:
+                os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                child.wait()
+            except OSError:
+                pass
+        code = child.returncode
     lock_fd = acquire_lock()
     try:
         record = read_record()
         if record.get("state") != "cancelled":
-            record["state"] = "succeeded" if code == 0 else "failed"
-            record["exitCode"] = code
+            if worker_failed or code != 0:
+                record["state"] = "failed"
+            else:
+                record["state"] = "succeeded"
+            if code is not None:
+                record["exitCode"] = code
         record.pop("payload", None)
         write_record(record)
     finally:

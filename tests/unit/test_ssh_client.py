@@ -1026,3 +1026,48 @@ def test_remote_job_helper_cancel_survives_killpg_permission_error(
             original_killpg(os_module.getpgid(child.pid), signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, ChildProcessError):
             os_module.waitpid(child.pid, 0)
+
+
+def test_remote_job_worker_survives_child_that_never_reads_stdin(
+    tmp_path: Path,
+) -> None:
+    import os
+    import subprocess
+    import time
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    home = tmp_path / "home"
+    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("w" * 32)
+    job_dir.mkdir(parents=True)
+    record = {
+        "jobId": "w" * 32,
+        "state": "queued",
+        "payload": {
+            "executable": sys.executable,
+            "argv": ["-c", "import os; os.close(0)"],
+            "cwd": None,
+            "stdin": "x" * 100_000,
+        },
+    }
+    record_path = job_dir / "record.json"
+    record_path.write_text(json.dumps(record))
+
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    environment["MIKRUS_REMOTE_JOB_META"] = str(record_path)
+    started = time.monotonic()
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", ssh_module._REMOTE_JOB_WORKER],
+        capture_output=True,
+        env=environment,
+        timeout=30,
+    )
+    elapsed = time.monotonic() - started
+
+    assert completed.returncode == 0, completed.stderr.decode()[-400:]
+    assert elapsed < 25, f"worker hung for {elapsed:.1f}s"
+    final = json.loads(record_path.read_text())
+    assert final["state"] in {"succeeded", "failed"}
+    assert final["state"] != "running"
+    assert "payload" not in final
