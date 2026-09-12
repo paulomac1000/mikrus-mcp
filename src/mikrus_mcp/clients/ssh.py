@@ -275,7 +275,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             if True:
                 try:
                     os.killpg(numeric_pgid, signal.SIGTERM)
-                except ProcessLookupError:
+                except OSError:
                     pass
             def leader_alive():
                 if numeric_pid is None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import signal
 import sys
 import types
 from collections import deque
@@ -955,3 +956,73 @@ def test_program_helper_survives_real_backpressure(tmp_path: Path) -> None:
     assert result["exit_code"] == 0
     assert result["truncated"] is False
     assert str(len(big_input)) in result["stderr"]
+
+
+def test_remote_job_helper_cancel_survives_killpg_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import contextlib
+    import io
+    import os as os_module
+    import subprocess
+    import time
+    from pathlib import Path as PathLib
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    os = os_module
+
+    home = tmp_path / "home"
+    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("p" * 32)
+    job_dir.mkdir(parents=True)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.2)
+        stat_fields = PathLib(f"/proc/{child.pid}/stat").read_text("ascii").split()
+        record = {
+            "jobId": "p" * 32,
+            "state": "running",
+            "runtimeIdentity": {
+                "pid": str(child.pid),
+                "pgid": str(os.getpgid(child.pid)),
+                "startTicks": stat_fields[21],
+            },
+        }
+        (job_dir / "record.json").write_text(json.dumps(record))
+
+        original_killpg = os_module.killpg
+
+        def denied_killpg(pgid: int, sig: int) -> None:
+            raise PermissionError(f"killpg denied for {pgid}")
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(os_module, "killpg", denied_killpg)
+        namespace: dict[str, Any] = {"__name__": "remote_job_helper_under_test"}
+        stdin_payload = json.dumps(
+            {"operation": "cancel", "job_id": "p" * 32, "reason": "permission test"}
+        )
+        stdout_capture = io.StringIO()
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin_payload))
+        with contextlib.redirect_stdout(stdout_capture):
+            with contextlib.suppress(SystemExit):
+                exec(  # noqa: S102
+                    compile(ssh_module._REMOTE_JOB_HELPER, "<remote-job-helper>", "exec"),
+                    namespace,
+                )
+        payload = json.loads(stdout_capture.getvalue())
+        assert payload["state"] == "cancelled"
+        assert "terminated" in payload
+        assert payload["terminated"] is False
+        persisted = json.loads((job_dir / "record.json").read_text())
+        assert persisted["state"] == "cancelled"
+    finally:
+        monkeypatch.undo()
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            original_killpg(os_module.getpgid(child.pid), signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError, ChildProcessError):
+            os_module.waitpid(child.pid, 0)
