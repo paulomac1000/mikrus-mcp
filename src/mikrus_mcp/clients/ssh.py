@@ -895,7 +895,7 @@ _DOCKER_HELPER = textwrap.dedent(
         for item in files:
             argv.extend(["-f", item])
         argv.extend(["up", "-d", "--no-deps", "--force-recreate", service])
-        result = capture(argv, 60)
+        result = capture(argv, 55)
         if result is None:
             fail("DOCKER_FAILED")
         if result.returncode != 0:
