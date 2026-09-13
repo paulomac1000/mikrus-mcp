@@ -11,16 +11,22 @@ import uuid
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from mikrus_mcp import __version__
 from mikrus_mcp.approvals import ApprovalRegistry, normalized_arguments_digest
 from mikrus_mcp.client import Client
 from mikrus_mcp.config import Settings, TargetConfig
+from mikrus_mcp.cron_profiles import CronProfileRegistry, CronProfileStore
+from mikrus_mcp.docker_ops import PlanRecordStore
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.jobs import ProgramJobRegistry
 from mikrus_mcp.kernel_execution import ExecutionMixin
 from mikrus_mcp.kernel_policy import PolicyMixin
 from mikrus_mcp.manifests import MANIFESTS, CapabilityManifest, active_names, inactive_reason
+from mikrus_mcp.provenance import capture_runtime_provenance
+from mikrus_mcp.remote_jobs import DurableRemoteJobRegistry, RemoteJobStore
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 from mikrus_mcp.validators import ValidationError
@@ -59,6 +65,31 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             "assign_domain",
         }
     )
+    _SSH_ONLY = frozenset(
+        {
+            "execute_program",
+            "start_program",
+            "cancel_program",
+            "remote_job_start",
+            "file_patch_atomic",
+            "cron_list",
+            "cron_upsert",
+            "cron_remove",
+            "docker_runtime_snapshot",
+            "docker_recreate_plan",
+            "docker_recreate_apply",
+            "service_wait",
+        }
+    )
+    _REMOTE_JOB_LOOKUP = frozenset(
+        {
+            "remote_job_status",
+            "remote_job_wait",
+            "remote_job_result",
+            "remote_job_output",
+            "remote_job_cancel",
+        }
+    )
 
     def __init__(
         self,
@@ -73,6 +104,23 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             weakref.WeakValueDictionary()
         )
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+        self.program_jobs = ProgramJobRegistry()
+        self.remote_jobs = (
+            DurableRemoteJobRegistry(RemoteJobStore(self.settings.remote_job_store_file))
+            if self.settings.remote_job_store_file is not None
+            else None
+        )
+        self.cron_profiles = (
+            CronProfileRegistry(CronProfileStore(self.settings.cron_profile_store_file))
+            if self.settings.cron_profile_store_file is not None
+            else None
+        )
+        self.docker_plans = (
+            PlanRecordStore(self.settings.docker_plan_store_file)
+            if self.settings.docker_plan_store_file is not None
+            else None
+        )
+        self._provenance = capture_runtime_provenance()
 
     @property
     def active_names(self) -> set[str]:
@@ -80,15 +128,16 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
 
     def catalog(self, *, active_only: bool = False) -> list[dict[str, object]]:
         names = self.active_names if active_only else set(MANIFESTS)
+        config_generation = self._provenance.config_revision or self._provenance.instance_generation
         result: list[dict[str, object]] = []
         for name in sorted(names):
             reason = inactive_reason(name, self.settings)
-            result.append(
-                MANIFESTS[name].as_dict(
-                    active_state="active" if reason is None else "inactive",
-                    inactive_reason=reason,
-                )
+            entry = MANIFESTS[name].as_dict(
+                active_state="active" if reason is None else "inactive",
+                inactive_reason=reason,
             )
+            entry["config_generation"] = config_generation
+            result.append(entry)
         return result
 
     def health(self) -> dict[str, object]:
@@ -140,6 +189,24 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                 raise AppError(ErrorCode.NOT_FOUND, f"unknown or inactive capability: {name}")
             normalized = self._validate_arguments(name, arguments, manifest)
             target = str(normalized.get("server") or self.settings.default_target)
+            if name in {"get_program_status", "get_program_result", "cancel_program"}:
+                target, target_identity = await self.program_jobs.target_binding(
+                    job_id=str(normalized["job_id"]), principal=caller.principal
+                )
+                target_config = self.registry.config(target)
+            if name in self._REMOTE_JOB_LOOKUP:
+                if self.remote_jobs is None:
+                    raise AppError(ErrorCode.UNAVAILABLE, "durable remote jobs are not configured")
+                record = self.remote_jobs.get(
+                    job_id=str(normalized["job_id"]), principal=caller.principal
+                )
+                target, target_identity = record.server_id, record.target_identity
+                target_config = self.registry.config(target)
+                if target_config.type != "ssh":
+                    raise AppError(
+                        ErrorCode.UNAVAILABLE,
+                        "durable remote jobs require an SSH target",
+                    )
             self._authorize_selector(caller, manifest, target)
             self._authorize_data_classification(caller, manifest)
             self._authorize_mutation(manifest)
@@ -153,6 +220,11 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                         ErrorCode.VALIDATION,
                         f"target '{target}' is not a mikr.us target",
                     )
+                if name in self._SSH_ONLY and target_config.type != "ssh":
+                    raise AppError(
+                        ErrorCode.UNAVAILABLE,
+                        f"capability '{name}' is unavailable for mikr.us targets",
+                    )
                 prepared_client = await self.registry.get(target)
                 target_identity = prepared_client.stable_identity
                 self._authorize_resolved_target(
@@ -162,6 +234,16 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     target_identity,
                     resource,
                 )
+            elif target_identity is not None:
+                self._authorize_resolved_target(
+                    caller,
+                    manifest,
+                    target_config,
+                    target_identity,
+                    resource,
+                )
+                if name in self._REMOTE_JOB_LOOKUP:
+                    prepared_client = await self.registry.get(target)
             if manifest.requires_approval and not self.approvals.has_matching(
                 manifest.name,
                 caller.principal,
@@ -226,6 +308,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     target,
                     normalized,
                     client=prepared_client,
+                    caller=caller,
                     expires_at=expires_at,
                 )
 
@@ -253,6 +336,7 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
                     "target_identity": target_identity if manifest.target_required else None,
                     "backend": target_config.type if target_config is not None else None,
                     "duration_ms": int((time.monotonic() - started) * 1000),
+                    "provenance": self._provenance.as_dict(),
                 },
             }
             encoded = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
@@ -310,4 +394,5 @@ class InvocationKernel(PolicyMixin, ExecutionMixin):
             _request_id.reset(token)
 
     async def close(self) -> None:
+        await self.program_jobs.close()
         await self.registry.close()

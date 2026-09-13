@@ -46,6 +46,11 @@ SYSTEM_CASES = [
     ("get_journal_logs", {"unit": "nginx"}),
     ("find_system_errors", {}),
     ("search_journal_logs", {"term": "failure"}),
+    ("execute_program", {"executable": "echo"}),
+    ("start_program", {"executable": "echo"}),
+    ("get_program_status", {"job_id": "a" * 32}),
+    ("get_program_result", {"job_id": "a" * 32}),
+    ("cancel_program", {"job_id": "a" * 32}),
 ]
 
 CASES = [

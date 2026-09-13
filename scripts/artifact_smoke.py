@@ -11,13 +11,8 @@ import tempfile
 import venv
 from pathlib import Path
 
-RUNTIME_REQUIREMENTS = (
-    "mcp==2.0.0",
-    "httpx==0.28.1",
-    "asyncssh==2.24.0",
-    "uvicorn==0.52.1",
-    "cryptography==50.0.0",
-)
+RUNTIME_LOCK = Path("requirements-runtime-linux-x64-py312.lock")
+
 
 TRANSPORT_SMOKE_CODE = r"""
 import asyncio
@@ -31,7 +26,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import httpx2
+import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -242,7 +237,7 @@ async def smoke_http(api_url, cert_file, upstream):
         )
         try:
             await wait_for_port(port, process)
-            async with httpx2.AsyncClient(
+            async with httpx.AsyncClient(
                 headers={"Authorization": f"Bearer {token}"}
             ) as http_client:
                 async with streamable_http_client(
@@ -285,6 +280,12 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--wheel", type=Path, required=True)
     value.add_argument("--wheelhouse", type=Path, required=True)
+    value.add_argument(
+        "--runtime-lock",
+        type=Path,
+        default=RUNTIME_LOCK,
+        help="authoritative runtime lock used to derive smoke dependencies",
+    )
     return value
 
 
@@ -292,15 +293,40 @@ def main() -> int:
     args = parser().parse_args()
     wheel = args.wheel.resolve(strict=True)
     wheelhouse = args.wheelhouse.resolve(strict=True)
+    runtime_lock = args.runtime_lock.resolve(strict=True)
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="mikrus-wheel-smoke-") as directory:
         root = Path(directory)
         environment = root / "venv"
         venv.EnvBuilder(with_pip=True, clear=True).create(environment)
         python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-        base = [str(python), "-m", "pip", "install", "--no-index", f"--find-links={wheelhouse}"]
-        subprocess.run([*base, *RUNTIME_REQUIREMENTS], check=True)
-        subprocess.run([*base, "--no-deps", str(wheel)], check=True)
+        subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                f"--find-links={wheelhouse}",
+                "--require-hashes",
+                "-r",
+                str(runtime_lock),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                f"--find-links={wheelhouse}",
+                "--no-deps",
+                str(wheel),
+            ],
+            check=True,
+        )
         subprocess.run([str(python), "-m", "pip", "check"], check=True)
         subprocess.run([str(python), "-c", TRANSPORT_SMOKE_CODE], check=True)
     print(f"Exact wheel transport smoke passed: {wheel.name} sha256={digest}")

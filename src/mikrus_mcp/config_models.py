@@ -53,6 +53,21 @@ def _optional_regular_file(raw: object, *, name: str, secret: bool = False) -> P
     return path.resolve()
 
 
+def _optional_store_path(raw: object, *, name: str) -> Path | None:
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise ValueError(f"{name} must be a path string")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{name} must be an absolute path")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"{name} must be a regular non-symlink file when present")
+    if path.parent.is_symlink():
+        raise ValueError(f"{name} parent must not be a symlink")
+    return path
+
+
 def _secret_text_file(raw: object, *, name: str) -> str | None:
     path = _optional_regular_file(raw, name=name, secret=True)
     if path is None:
@@ -129,6 +144,9 @@ class Settings:
     max_request_body_bytes: int = 1_048_576
     max_result_bytes: int = 1_000_000
     approval_file: Path | None = None
+    remote_job_store_file: Path | None = None
+    cron_profile_store_file: Path | None = None
+    docker_plan_store_file: Path | None = None
     http_bearer_token: str | None = None
     allow_insecure_ssh: bool = False
 

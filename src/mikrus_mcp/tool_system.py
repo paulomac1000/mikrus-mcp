@@ -204,3 +204,265 @@ async def search_journal_logs(
         "search_journal_logs",
         {"server": server, "term": term, "lines": lines},
     )
+
+
+async def execute_program(
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    cwd: str | None = None,
+    stdin: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Run an approved typed program request without exposing a shell command string."""
+    return await _invoke(
+        ctx,
+        "execute_program",
+        {
+            "server": server,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "cwd": cwd,
+            "stdin": stdin,
+        },
+    )
+
+
+async def start_program(
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    cwd: str | None = None,
+    stdin: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Start an approved typed program and return a bounded in-process job handle."""
+    return await _invoke(
+        ctx,
+        "start_program",
+        {
+            "server": server,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "cwd": cwd,
+            "stdin": stdin,
+        },
+    )
+
+
+async def get_program_status(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Return the status of a typed program job owned by the calling principal."""
+    return await _invoke(ctx, "get_program_status", {"job_id": job_id})
+
+
+async def get_program_result(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Return a terminal result, or the current status, for an owned program job."""
+    return await _invoke(ctx, "get_program_result", {"job_id": job_id})
+
+
+async def cancel_program(
+    job_id: str,
+    ctx: Context[AppContext],
+) -> ToolResult:
+    """Cancel an owned typed program job without exposing a remote shell."""
+    return await _invoke(ctx, "cancel_program", {"job_id": job_id})
+
+
+async def remote_job_start(
+    idempotency_key: str,
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    cwd: str | None = None,
+    stdin: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    return await _invoke(
+        ctx,
+        "remote_job_start",
+        {
+            "server": server,
+            "idempotency_key": idempotency_key,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "cwd": cwd,
+            "stdin": stdin,
+        },
+    )
+
+
+async def remote_job_status(job_id: str, ctx: Context[AppContext]) -> ToolResult:
+    return await _invoke(ctx, "remote_job_status", {"job_id": job_id})
+
+
+async def remote_job_wait(
+    job_id: str, ctx: Context[AppContext], timeout_seconds: float = 30
+) -> ToolResult:
+    return await _invoke(
+        ctx, "remote_job_wait", {"job_id": job_id, "timeout_seconds": timeout_seconds}
+    )
+
+
+async def remote_job_result(job_id: str, ctx: Context[AppContext]) -> ToolResult:
+    return await _invoke(ctx, "remote_job_result", {"job_id": job_id})
+
+
+async def remote_job_output(
+    job_id: str,
+    stream: str,
+    ctx: Context[AppContext],
+    offset: int = 0,
+    max_bytes: int = 65_536,
+) -> ToolResult:
+    return await _invoke(
+        ctx,
+        "remote_job_output",
+        {"job_id": job_id, "stream": stream, "offset": offset, "max_bytes": max_bytes},
+    )
+
+
+async def remote_job_cancel(
+    job_id: str, ctx: Context[AppContext], reason: str = "operator request"
+) -> ToolResult:
+    return await _invoke(ctx, "remote_job_cancel", {"job_id": job_id, "reason": reason})
+
+
+async def file_patch_atomic(
+    path: str,
+    expected_digest: str,
+    content_b64: str,
+    ctx: Context[AppContext],
+    server: str | None = None,
+) -> ToolResult:
+    """Replace one regular file only when its current digest matches expected_digest."""
+    return await _invoke(
+        ctx,
+        "file_patch_atomic",
+        {
+            "server": server,
+            "path": path,
+            "expected_digest": expected_digest,
+            "content_b64": content_b64,
+        },
+    )
+
+
+async def cron_list(ctx: Context[AppContext], server: str | None = None) -> ToolResult:
+    """Report owned cron profiles against the installed crontab state."""
+    return await _invoke(ctx, "cron_list", {"server": server})
+
+
+async def cron_upsert(
+    profile_id: str,
+    schedule: dict[str, str],
+    executable: str,
+    ctx: Context[AppContext],
+    argv: list[str] | None = None,
+    environment: dict[str, str] | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Idempotently project one owned cron profile into the installed crontab."""
+    return await _invoke(
+        ctx,
+        "cron_upsert",
+        {
+            "server": server,
+            "profile_id": profile_id,
+            "schedule": schedule,
+            "executable": executable,
+            "argv": [] if argv is None else argv,
+            "environment": {} if environment is None else environment,
+        },
+    )
+
+
+async def cron_remove(
+    profile_id: str,
+    ctx: Context[AppContext],
+    server: str | None = None,
+) -> ToolResult:
+    """Remove exactly the marker and generated line pair for one owned profile."""
+    return await _invoke(
+        ctx,
+        "cron_remove",
+        {"server": server, "profile_id": profile_id},
+    )
+
+
+async def docker_runtime_snapshot(
+    ctx: Context[AppContext],
+    service: str | None = None,
+    container: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Return a bounded semantic snapshot of one compose service or container."""
+    return await _invoke(
+        ctx,
+        "docker_runtime_snapshot",
+        {"server": server, "service": service, "container": container},
+    )
+
+
+async def docker_recreate_plan(
+    service: str,
+    ctx: Context[AppContext],
+    compose_project: str | None = None,
+    compose_files: list[str] | None = None,
+    desired_image: str | None = None,
+    server: str | None = None,
+) -> ToolResult:
+    """Compute a canonical semantic recreate plan and its bound receipt."""
+    return await _invoke(
+        ctx,
+        "docker_recreate_plan",
+        {
+            "server": server,
+            "service": service,
+            "compose_project": compose_project,
+            "compose_files": compose_files,
+            "desired_image": desired_image,
+        },
+    )
+
+
+async def docker_recreate_apply(
+    service: str,
+    plan_receipt: str,
+    ctx: Context[AppContext],
+    server: str | None = None,
+) -> ToolResult:
+    """Apply a verified plan record; reports ALREADY_APPLIED when state matches."""
+    return await _invoke(
+        ctx,
+        "docker_recreate_apply",
+        {"server": server, "service": service, "plan_receipt": plan_receipt},
+    )
+
+
+async def service_wait(
+    service: str,
+    ctx: Context[AppContext],
+    plan_receipt: str | None = None,
+    readiness: str = "running",
+    timeout_seconds: float = 10,
+    server: str | None = None,
+) -> ToolResult:
+    """Wait server-side for bounded readiness of one compose service."""
+    """Wait server-side for bounded readiness of one compose service."""
+    return await _invoke(
+        ctx,
+        "service_wait",
+        {
+            "server": server,
+            "service": service,
+            "plan_receipt": plan_receipt,
+            "readiness": readiness,
+            "timeout_seconds": timeout_seconds,
+        },
+    )

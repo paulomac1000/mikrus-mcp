@@ -17,14 +17,26 @@ from mikrus_mcp.manifests import CapabilityManifest
 from mikrus_mcp.targets import TargetRegistry
 from mikrus_mcp.validators import (
     ValidationError,
+    validate_compose_files,
+    validate_compose_name,
     validate_container_name,
+    validate_cron_environment,
+    validate_cron_profile_id,
+    validate_cron_schedule,
+    validate_content_b64,
     validate_content_size,
+    validate_desired_image,
     validate_domain,
+    validate_expected_digest,
     validate_hours_param,
     validate_lines_param,
     validate_path,
+    validate_plan_receipt,
     validate_port,
     validate_process_target,
+    validate_program_arguments,
+    validate_program_executable,
+    validate_program_job_id,
     validate_search_pattern,
     validate_service_action,
     validate_service_name,
@@ -51,6 +63,7 @@ class PolicyMixin:
             arguments: dict[str, Any],
             *,
             client: Client | None = None,
+            caller: CallerContext | None = None,
         ) -> Any: ...
 
     @staticmethod
@@ -191,6 +204,41 @@ class PolicyMixin:
             "get_journal_logs": {"unit", "lines"},
             "find_system_errors": {"hours"},
             "search_journal_logs": {"term", "lines"},
+            "execute_program": {"executable", "argv", "cwd", "stdin"},
+            "start_program": {"executable", "argv", "cwd", "stdin"},
+            "get_program_status": {"job_id"},
+            "get_program_result": {"job_id"},
+            "cancel_program": {"job_id"},
+            "remote_job_start": {"idempotency_key", "executable", "argv", "cwd", "stdin"},
+            "remote_job_status": {"job_id"},
+            "remote_job_wait": {"job_id", "timeout_seconds"},
+            "remote_job_result": {"job_id"},
+            "remote_job_output": {"job_id", "stream", "offset", "max_bytes"},
+            "remote_job_cancel": {"job_id", "reason"},
+            "file_patch_atomic": {"path", "expected_digest", "content_b64"},
+            "cron_list": set(),
+            "cron_upsert": {"profile_id", "schedule", "executable", "argv", "environment"},
+            "cron_remove": {"profile_id"},
+            "docker_runtime_snapshot": {"service", "container"},
+            "docker_recreate_plan": {
+                "service",
+                "compose_project",
+                "compose_files",
+                "desired_image",
+                "allow_runtime_drift",
+            },
+            "docker_recreate_apply": {
+                "service",
+                "plan_receipt",
+                "readiness",
+                "timeout_seconds",
+            },
+            "service_wait": {
+                "service",
+                "plan_receipt",
+                "readiness",
+                "timeout_seconds",
+            },
         }
         expected = allowed.get(name)
         if expected is None:
@@ -219,7 +267,7 @@ class PolicyMixin:
                     raise ValidationError("Invalid log ID")
             case "assign_domain":
                 port = normalized.get("port")
-                if not isinstance(port, (str, int)):
+                if not isinstance(port, str | int):
                     raise ValidationError("port must be a string or integer")
                 normalized["port"] = str(validate_port(port))
                 normalized["domain"] = validate_domain(required_text("domain", maximum=253))
@@ -241,7 +289,7 @@ class PolicyMixin:
                 normalized["action"] = action
             case "check_port":
                 port = normalized.get("port")
-                if not isinstance(port, (str, int)):
+                if not isinstance(port, str | int):
                     raise ValidationError("port must be a string or integer")
                 normalized["port"] = str(validate_port(port))
             case "terminate_process":
@@ -265,6 +313,128 @@ class PolicyMixin:
             case "search_journal_logs":
                 normalized["term"] = validate_search_pattern(required_text("term"))
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
+            case "execute_program" | "start_program":
+                normalized["executable"] = validate_program_executable(
+                    required_text("executable", maximum=255)
+                )
+                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
+                if "cwd" in normalized and normalized["cwd"] is not None:
+                    normalized["cwd"] = validate_path(required_text("cwd"))
+                if "stdin" in normalized and normalized["stdin"] is not None:
+                    validate_content_size(normalized["stdin"])
+            case "get_program_status" | "get_program_result" | "cancel_program":
+                normalized["job_id"] = validate_program_job_id(required_text("job_id", maximum=64))
+            case "remote_job_start":
+                normalized["idempotency_key"] = required_text("idempotency_key", maximum=128)
+                normalized["executable"] = validate_program_executable(
+                    required_text("executable", maximum=255)
+                )
+                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
+                if normalized.get("cwd") is not None:
+                    normalized["cwd"] = validate_path(required_text("cwd"))
+                if normalized.get("stdin") is not None:
+                    validate_content_size(normalized["stdin"])
+            case "remote_job_status" | "remote_job_result" | "remote_job_cancel":
+                normalized["job_id"] = required_text("job_id", maximum=128)
+            case "remote_job_wait":
+                normalized["job_id"] = required_text("job_id", maximum=128)
+                timeout = normalized.get("timeout_seconds", 30)
+                if not isinstance(timeout, int | float) or not 0 <= timeout <= 60:
+                    raise ValidationError("timeout_seconds must be between 0 and 60")
+                normalized["timeout_seconds"] = float(timeout)
+            case "remote_job_output":
+                normalized["job_id"] = required_text("job_id", maximum=128)
+                stream = normalized.get("stream")
+                if stream not in {"stdout", "stderr"}:
+                    raise ValidationError("stream must be stdout or stderr")
+                offset = normalized.get("offset", 0)
+                maximum = normalized.get("max_bytes", 65_536)
+                if not isinstance(offset, int) or offset < 0:
+                    raise ValidationError("offset must be a non-negative integer")
+                if not isinstance(maximum, int) or not 1 <= maximum <= 1_000_000:
+                    raise ValidationError("max_bytes must be between 1 and 1000000")
+                normalized["offset"] = offset
+                normalized["max_bytes"] = maximum
+                normalized["stream"] = stream
+            case "file_patch_atomic":
+                normalized["path"] = validate_path(required_text("path"), for_write=True)
+                normalized["expected_digest"] = validate_expected_digest(
+                    required_text("expected_digest", maximum=71)
+                )
+                normalized["content_b64"] = validate_content_b64(normalized.get("content_b64"))
+            case "cron_upsert":
+                normalized["profile_id"] = validate_cron_profile_id(
+                    required_text("profile_id", maximum=64)
+                )
+                normalized["schedule"] = validate_cron_schedule(normalized.get("schedule"))
+                normalized["executable"] = validate_program_executable(
+                    required_text("executable", maximum=255)
+                )
+                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
+                normalized["environment"] = validate_cron_environment(
+                    normalized.get("environment", {})
+                )
+            case "cron_remove":
+                normalized["profile_id"] = validate_cron_profile_id(
+                    required_text("profile_id", maximum=64)
+                )
+            case "docker_runtime_snapshot":
+                service = normalized.get("service")
+                container = normalized.get("container")
+                if (service is None) == (container is None):
+                    raise ValidationError("exactly one of service or container is required")
+                if service is not None:
+                    normalized["service"] = validate_compose_name(required_text("service"))
+                if container is not None:
+                    normalized["container"] = validate_container_name(
+                        required_text("container", maximum=128)
+                    )
+            case "docker_recreate_plan":
+                normalized["service"] = validate_compose_name(required_text("service"))
+                if normalized.get("compose_project") is not None:
+                    normalized["compose_project"] = validate_compose_name(
+                        required_text("compose_project")
+                    )
+                if normalized.get("compose_files") is not None:
+                    normalized["compose_files"] = validate_compose_files(
+                        normalized["compose_files"]
+                    )
+                if normalized.get("desired_image") is not None:
+                    normalized["desired_image"] = validate_desired_image(
+                        required_text("desired_image", maximum=254)
+                    )
+                allow_runtime_drift = normalized.get("allow_runtime_drift", False)
+                if type(allow_runtime_drift) is not bool:
+                    raise ValidationError("allow_runtime_drift must be a boolean")
+                normalized["allow_runtime_drift"] = allow_runtime_drift
+            case "docker_recreate_apply":
+                normalized["service"] = validate_compose_name(required_text("service"))
+                normalized["plan_receipt"] = validate_plan_receipt(
+                    required_text("plan_receipt", maximum=100)
+                )
+                readiness = normalized.get("readiness")
+                if readiness is not None:
+                    if readiness not in {"running", "healthy"}:
+                        raise ValidationError("readiness must be running or healthy")
+                timeout = normalized.get("timeout_seconds")
+                if timeout is not None:
+                    if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
+                        raise ValidationError("timeout_seconds must be between 5 and 25")
+                    normalized["timeout_seconds"] = float(timeout)
+            case "service_wait":
+                normalized["service"] = validate_compose_name(required_text("service"))
+                if normalized.get("plan_receipt") is not None:
+                    normalized["plan_receipt"] = validate_plan_receipt(
+                        required_text("plan_receipt", maximum=100)
+                    )
+                readiness = normalized.get("readiness", "running")
+                if readiness not in {"running", "healthy"}:
+                    raise ValidationError("readiness must be running or healthy")
+                normalized["readiness"] = readiness
+                timeout = normalized.get("timeout_seconds", 10)
+                if not isinstance(timeout, int | float) or not 5 <= timeout <= 25:
+                    raise ValidationError("timeout_seconds must be between 5 and 25")
+                normalized["timeout_seconds"] = float(timeout)
         return normalized
 
     def _authorize_mutation(
@@ -333,12 +503,13 @@ class PolicyMixin:
         arguments: dict[str, Any],
         *,
         client: Client | None = None,
+        caller: CallerContext | None = None,
         expires_at: float | None = None,
     ) -> Any:
         maximum_attempts = 3 if manifest.retry_conditions else 1
         for attempt in range(maximum_attempts):
             try:
-                return await self._execute(name, target, arguments, client=client)
+                return await self._execute(name, target, arguments, client=client, caller=caller)
             except AppError as exc:
                 condition = self._retry_condition(exc)
                 allowed = (

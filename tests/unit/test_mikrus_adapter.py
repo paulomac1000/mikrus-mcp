@@ -7,7 +7,8 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from mikrus_mcp.clients.mikrus import MikrusClient
+from mikrus_mcp.clients.mikrus import MikrusClient, _redact_process_command
+from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.validators import ValidationError
 
 
@@ -166,3 +167,90 @@ async def test_get_docker_stats_parses_jsonl_snapshot() -> None:
             "PIDs": "5",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_docker_containers_decodes_html_entities_before_json_parsing() -> None:
+    output = "{&quot;ID&quot;:&quot;abc&quot;,&quot;Names&quot;:&quot;/nginx&quot;}"
+    result, _ = await call_exec(lambda client: client.list_docker_containers(), output=output)
+
+    assert result["containers"] == [{"ID": "abc", "Names": "/nginx"}]
+
+
+@pytest.mark.asyncio
+async def test_exec_failure_raises_upstream_app_error() -> None:
+    with pytest.raises(AppError) as exc_info:
+        await call_exec(
+            lambda client: client.analyze_disk("/var"),
+            output="błąd wykonania polecenia",
+        )
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "błąd wykonania polecenia" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_get_server_stats_decodes_html_entities() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/stats"
+        return httpx.Response(
+            200,
+            json={
+                "ps": "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\n"
+                "app 123 2.5 1.0 10 20 ? S 10:00 00:01 /usr/bin/app --token=secret",
+                "uptime": "10 dni",
+            },
+            request=request,
+        )
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "test-key",
+        "abc123",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        stats = await client.get_server_stats()
+
+    assert stats["uptime"] == "10 dni"
+    assert stats["processSnapshot"]["state"] == "complete"
+    assert stats["processSnapshot"]["processes"] == [
+        {
+            "pid": 123,
+            "ppid": None,
+            "user": "app",
+            "cpuPercent": 2.5,
+            "memoryPercent": 1.0,
+            "rssBytes": 20 * 1024,
+            "state": "S",
+            "executable": "/usr/bin/app",
+            "command": "/usr/bin/app --token=<REDACTED>",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_server_stats_marks_wrapper_only_process_output_partial() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ps": "bash -c 'ps aux'"}, request=request)
+
+    client = MikrusClient(
+        "https://api.mikr.us",
+        "test-key",
+        "abc123",
+        requests_per_minute=100_000,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        stats = await client.get_server_stats()
+
+    assert stats["processSnapshot"]["state"] == "partial"
+    assert stats["processSnapshot"]["processes"] == []
+    assert stats["processSnapshot"]["error"]["code"] == "PROCESS_SNAPSHOT_UNAVAILABLE"
+
+
+def test_process_command_redaction_fails_closed_for_split_and_malformed_secrets() -> None:
+    assert _redact_process_command("app --token secret --cookie=crumb") == (
+        "app --token <REDACTED> --cookie=<REDACTED>"
+    )
+    assert _redact_process_command("app --authorization 'unterminated") == "<REDACTED>"

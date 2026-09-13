@@ -12,7 +12,7 @@ ARG APP_WHEEL_SHA256
 COPY wheelhouse/ /wheelhouse/
 RUN set -eu; \
     test -n "$APP_WHEEL_SHA256"; \
-    wheel="$(find /wheelhouse -maxdepth 1 -name 'mikrus_mcp-2.0.0-*.whl' -print -quit)"; \
+    wheel="$(find /wheelhouse -maxdepth 1 -name 'mikrus_mcp-2.1.0-*.whl' -print -quit)"; \
     test -n "$wheel"; \
     printf '%s  %s\n' "$APP_WHEEL_SHA256" "$wheel" | sha256sum --check -; \
     python -m pip install --no-cache-dir --no-index --find-links=/wheelhouse "$wheel"; \
