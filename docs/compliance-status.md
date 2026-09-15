@@ -244,3 +244,22 @@ this document bound to a revision whose only descendants are evidence-only. Prod
 acceptance additionally requires real-system deployment evidence and an independent
 review of the exact final revision. No local result, intermediate branch SHA, badge, or
 self-authored assessment is final AI Skills adoption approval.
+
+## Reconciliation notes (2026-09)
+
+- Issue #22 compose capability equivalence: `docker_recreate_plan`/`docker_recreate_apply`
+  plus `docker_runtime_snapshot` and `service_wait` cover the compose diff/apply scope
+  requested by #22. The plan derives canonical compose-desired state via
+  `docker compose config`, diffs runtime versus declared state semantically, and apply
+  mutates only through the stored plan receipt — diff and apply are composed rather than
+  exposed as separate raw compose wrappers. Raw `compose_diff`/`compose_apply` capability
+  names are intentionally not added.
+- Residual real-system gaps stay deferred with concrete reasons:
+  - `TODO(real-system)`: recreate lifecycle against a live compose service (plan →
+    refusal on undeclared runtime config → accepted re-plan → apply → readiness wait).
+  - `TODO(provider)`: deployed-image identity proof for the release receipt (#20); the
+    provider/deployment gate is unavailable to repository-only work.
+  - `TODO(real-system)`: durable-job runtime beyond the 60-second API budget on a live
+    host (#19).
+- Partial verification evidence for #19/#22 lives in unit suites: `test_jobs.py`,
+  `test_docker_ops.py`, `test_manifests.py`, and `test_remote_jobs_acceptance.py`.
