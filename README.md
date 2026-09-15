@@ -554,6 +554,10 @@ Run a focused test:
 .venv/bin/python -m pytest tests/unit/test_kernel.py -q
 ```
 
+When a hosted-CI or bot-review gate fails, consult the
+[CI friction runbook](docs/ci-troubleshooting.md) for the recurring failure
+modes and their verified mitigations before regenerating locks or re-pushing.
+
 Build the wheel (stamped builds refuse to run when sources are newer than the
 embedded build stamp; unstamped builds strip the stamp first):
 
