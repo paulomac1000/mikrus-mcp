@@ -183,7 +183,18 @@ def test_typed_program_executables_admit_diagnostic_programs_per_issue_27() -> N
     for removed in ("printf", "echo", "df", "du", "free", "ls", "ps"):
         with pytest.raises(ValidationError, match="not permitted"):
             validate_program_executable(removed)
-    for kept in ("cat", "grep", "ip", "journalctl", "ss", "sort", "tail", "docker", "curl", "systemctl"):
+    for kept in (
+        "cat",
+        "grep",
+        "ip",
+        "journalctl",
+        "ss",
+        "sort",
+        "tail",
+        "docker",
+        "curl",
+        "systemctl",
+    ):
         assert validate_program_executable(kept) == kept
 
 
@@ -231,9 +242,12 @@ def test_typed_program_argv_admits_bounded_literal_strings_per_issue_27() -> Non
 def test_program_invocation_admits_diagnostic_subcommands_per_issue_27() -> None:
     from mikrus_mcp.validators import validate_program_invocation
 
-    assert validate_program_invocation(
-        "docker", ["inspect", "--format", "{{.Id}}", "abc123"]
-    ) == ["inspect", "--format", "{{.Id}}", "abc123"]
+    assert validate_program_invocation("docker", ["inspect", "--format", "{{.Id}}", "abc123"]) == [
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        "abc123",
+    ]
     for argv in (
         ["ps", "-a"],
         ["images"],

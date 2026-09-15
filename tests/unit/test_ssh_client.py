@@ -334,9 +334,7 @@ async def test_analyze_disk_complete_result_has_typed_sections_and_time() -> Non
 
 @pytest.mark.asyncio
 async def test_analyze_disk_partial_when_large_files_phase_fails() -> None:
-    client = _analyze_process(
-        (DF_SECTION + "\n---TOP20---\n" + PHASE_DU_FAILED).encode("utf-8")
-    )
+    client = _analyze_process((DF_SECTION + "\n---TOP20---\n" + PHASE_DU_FAILED).encode("utf-8"))
     result = await client.analyze_disk("/")
     assert result["state"] == "partial"
     assert result["filesystemSummary"]["state"] == "complete"
@@ -349,9 +347,7 @@ async def test_analyze_disk_partial_when_large_files_phase_fails() -> None:
 @pytest.mark.asyncio
 async def test_analyze_disk_command_failure_is_remote_command_failed() -> None:
     client = _analyze_process(
-        (DF_SECTION + "\n---TOP20---\n" + "\n---PHASE---fs:1\n---PHASE---du:1\n").encode(
-            "utf-8"
-        ),
+        (DF_SECTION + "\n---TOP20---\n" + "\n---PHASE---fs:1\n---PHASE---du:1\n").encode("utf-8"),
         stderr=[b"df: cannot access"],
         status=1,
     )
@@ -389,7 +385,7 @@ async def test_docker_listing_decodes_entities_and_round_trips_values() -> None:
 
 @pytest.mark.asyncio
 async def test_docker_listing_never_reports_success_on_unparsable_output() -> None:
-    client = _analyze_process(b"{}dangling{\" broken\nnot json\n")
+    client = _analyze_process(b'{}dangling{" broken\nnot json\n')
     with pytest.raises(AppError) as exc_info:
         await client.list_docker_containers()
     assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
@@ -495,9 +491,7 @@ async def test_list_processes_failure_is_typed_not_raw_text() -> None:
         await client.list_processes()
     assert exc_info.value.code == ErrorCode.UPSTREAM
     assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
-    assert "hunter2" not in exc_info.value.message or "hunter2" not in str(
-        exc_info.value.message
-    )
+    assert "hunter2" not in exc_info.value.message or "hunter2" not in str(exc_info.value.message)
 
 
 def _run_helper(

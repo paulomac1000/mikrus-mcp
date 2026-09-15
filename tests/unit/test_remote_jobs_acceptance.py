@@ -34,7 +34,9 @@ def _job_root(home: Path) -> Path:
     return home / ".cache" / "mikrus-mcp" / "remote-jobs"
 
 
-def _run_helper(home: Path, payload: dict[str, object], *, timeout: float = 30.0) -> dict[str, object]:
+def _run_helper(
+    home: Path, payload: dict[str, object], *, timeout: float = 30.0
+) -> dict[str, object]:
     environment = dict(os.environ)
     environment["HOME"] = str(home)
     completed = subprocess.run(  # noqa: S603
@@ -97,9 +99,7 @@ def test_remote_job_helper_issues_durable_id_and_retry_has_no_duplicate(
         assert again.get("runtimeIdentity") == identity
         assert [entry.name for entry in _job_root(home).iterdir()] == [job_id]
 
-        cancelled = _run_helper(
-            home, {"operation": "cancel", "job_id": job_id, "reason": "test"}
-        )
+        cancelled = _run_helper(home, {"operation": "cancel", "job_id": job_id, "reason": "test"})
         assert cancelled["state"] == "cancelled"
         assert cancelled["terminated"] is True
     finally:
@@ -131,9 +131,7 @@ def test_remote_job_helper_cancel_rejects_reused_pid_identity(tmp_path: Path) ->
         }
         (job_dir / "record.json").write_text(json.dumps(record))
 
-        payload = _run_helper(
-            home, {"operation": "cancel", "job_id": job_id, "reason": "test"}
-        )
+        payload = _run_helper(home, {"operation": "cancel", "job_id": job_id, "reason": "test"})
         assert payload["error"] == "CONFLICT"
         assert child.poll() is None
         assert json.loads((job_dir / "record.json").read_text())["state"] == "running"
@@ -227,9 +225,7 @@ def test_remote_job_helper_wait_is_bounded_and_terminal_returns_fast(
     running_id = "u" * 32
     running_dir = _job_root(home) / running_id
     running_dir.mkdir(parents=True)
-    (running_dir / "record.json").write_text(
-        json.dumps({"jobId": running_id, "state": "running"})
-    )
+    (running_dir / "record.json").write_text(json.dumps({"jobId": running_id, "state": "running"}))
     began = time.monotonic()
     payload = _run_helper(
         home, {"operation": "wait", "job_id": running_id, "timeout": 1}, timeout=15
@@ -241,13 +237,9 @@ def test_remote_job_helper_wait_is_bounded_and_terminal_returns_fast(
     done_id = "v" * 32
     done_dir = _job_root(home) / done_id
     done_dir.mkdir(parents=True)
-    (done_dir / "record.json").write_text(
-        json.dumps({"jobId": done_id, "state": "succeeded"})
-    )
+    (done_dir / "record.json").write_text(json.dumps({"jobId": done_id, "state": "succeeded"}))
     began = time.monotonic()
-    payload = _run_helper(
-        home, {"operation": "wait", "job_id": done_id, "timeout": 5}, timeout=15
-    )
+    payload = _run_helper(home, {"operation": "wait", "job_id": done_id, "timeout": 5}, timeout=15)
     elapsed = time.monotonic() - began
     assert payload["state"] == "succeeded"
     assert elapsed < 1.0

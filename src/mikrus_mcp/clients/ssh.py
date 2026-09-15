@@ -108,6 +108,8 @@ def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
         "largeFiles": {"state": "complete", "output": files_text},
         "observedAt": _utc_now_iso(),
     }
+
+
 _PROGRAM_HELPER = textwrap.dedent(
     """
     import json, os, select, signal, subprocess, sys
@@ -1743,11 +1745,12 @@ class SshClient:
             timeout=20,
         )
         if result.get("exit_code", 0) != 0:
+            stderr = result.get("stderr")
             raise AppError(
                 ErrorCode.UPSTREAM,
                 "process snapshot failed "
-                f"({_failure_class(result.get('stderr'))}) "
-                f"exit_code={result.get('exit_code')} stderr={_failure_excerpt(result.get('stderr'))}",
+                f"({_failure_class(stderr)}) "
+                f"exit_code={result.get('exit_code')} stderr={_failure_excerpt(stderr)}",
                 retryable=False,
             )
         raw = "\n".join(
