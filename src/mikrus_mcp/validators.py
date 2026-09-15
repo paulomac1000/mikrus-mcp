@@ -24,6 +24,18 @@ class WriteOperationsDisabledError(ValidationError):
     """Compatibility exception retained for callers of the old write gate."""
 
 
+class ProgramPolicyError(ValidationError):
+    """Typed program invocation violates the per-executable admission policy.
+
+    The policy_code is prefixed to the rendered message so the public error
+    envelope remains machine-readable without expanding the error taxonomy.
+    """
+
+    def __init__(self, policy_code: str, message: str) -> None:
+        super().__init__(f"{policy_code}: {message}")
+        self.policy_code = policy_code
+
+
 _PATH_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f]")
 _SERVICE: Final = re.compile(r"^[A-Za-z0-9_@.-]{1,255}$")
 _CONTAINER: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -61,8 +73,79 @@ _MAX_CRON_ENV_VALUE = 1_024
 _MAX_CRON_ENV_TOTAL = 8_192
 _MAX_CRON_FIELD_LENGTH = 100
 _MAX_CRON_FIELD_ELEMENTS = 24
-_PROGRAM_EXECUTABLES: Final = frozenset({"cat", "grep", "ip", "journalctl", "ss", "sort", "tail"})
-_PROGRAM_ARGV_ELEMENT: Final = re.compile(r"^[A-Za-z0-9_@%+=:,./-]{1,256}$")
+# Issue #27 intentionally widens typed-program admission: bounded literal
+# strings replace the argv charset whitelist, and per-executable subcommand
+# policies below gate the newly admitted executables.
+_PROGRAM_EXECUTABLES: Final = frozenset(
+    {
+        "cat",
+        "grep",
+        "ip",
+        "journalctl",
+        "ss",
+        "sort",
+        "tail",
+        "docker",
+        "curl",
+        "systemctl",
+    }
+)
+_MAX_PROGRAM_ARGV_ENTRIES = 128
+_MAX_PROGRAM_ARGV_ELEMENT = 4_096
+_MAX_PROGRAM_ARGV_TOTAL = 100_000
+
+_DOCKER_READ_SUBCOMMANDS: Final = frozenset(
+    {"inspect", "ps", "images", "logs", "version", "info", "stats", "top"}
+)
+_DOCKER_READ_SUBCOMMAND_PHRASES: Final = frozenset(
+    {"network inspect", "volume ls", "volume inspect"}
+)
+_DOCKER_GLOBAL_FLAGS: Final = frozenset({"--debug", "-D", "--help", "--version", "-v"})
+
+_CURL_UPLOAD_FLAGS: Final = frozenset(
+    {
+        "-T",
+        "--upload-file",
+        "-F",
+        "--form",
+        "--form-string",
+        "-O",
+        "--remote-name",
+        "--remote-name-all",
+        "-J",
+        "--remote-header-name",
+    }
+)
+_CURL_UPLOAD_LONG_FLAGS: Final = ("--upload-file=", "--form=", "--form-string=")
+_CURL_DATA_FLAGS: Final = frozenset(
+    {
+        "-d",
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+    }
+)
+_CURL_OUTPUT_FLAGS: Final = frozenset({"-o", "--output"})
+_CURL_NULL_OUTPUT: Final = "/dev/null"
+
+_SYSTEMCTL_READ_SUBCOMMANDS: Final = frozenset(
+    {
+        "status",
+        "list-units",
+        "list-unit-files",
+        "is-active",
+        "is-enabled",
+        "show",
+        "cat",
+        "list-timers",
+        "is-failed",
+    }
+)
+_SYSTEMCTL_GLOBAL_FLAGS: Final = frozenset(
+    {"--no-pager", "-l", "--full", "-a", "--all", "-q", "--quiet", "--no-legend", "--plain"}
+)
 
 _READ_DENIED: Final = tuple(
     PurePosixPath(value)
@@ -186,23 +269,128 @@ def validate_program_executable(executable: str) -> str:
 
 
 def validate_program_arguments(argv: object) -> list[str]:
-    if not isinstance(argv, list) or len(argv) > 128:
+    if not isinstance(argv, list) or len(argv) > _MAX_PROGRAM_ARGV_ENTRIES:
         raise ValidationError("argv must be a list containing at most 128 strings")
     result: list[str] = []
     total = 0
     for value in argv:
         if (
             not isinstance(value, str)
-            or len(value) > 4_096
+            or len(value) > _MAX_PROGRAM_ARGV_ELEMENT
             or _PROGRAM_CONTROL.search(value)
-            or not _PROGRAM_ARGV_ELEMENT.fullmatch(value)
         ):
             raise ValidationError("argv entries must be bounded typed arguments")
         total += len(value.encode("utf-8"))
-        if total > 100_000:
+        if total > _MAX_PROGRAM_ARGV_TOTAL:
             raise ValidationError("argv exceeds the 100000-byte limit")
         result.append(value)
     return result
+
+
+def _enforce_docker_program_policy(argv: list[str]) -> None:
+    index = 0
+    while index < len(argv) and argv[index] in _DOCKER_GLOBAL_FLAGS:
+        index += 1
+    if index >= len(argv):
+        raise ProgramPolicyError(
+            "PROGRAM_SUBCOMMAND_NOT_PERMITTED",
+            "docker requires an admitted read-only subcommand",
+        )
+    phrase = " ".join(argv[index : index + 2])
+    if phrase in _DOCKER_READ_SUBCOMMAND_PHRASES:
+        return
+    subcommand = argv[index]
+    if subcommand in _DOCKER_READ_SUBCOMMANDS:
+        return
+    raise ProgramPolicyError(
+        "PROGRAM_SUBCOMMAND_NOT_PERMITTED",
+        f"docker subcommand '{subcommand}' is not permitted by the read-only docker policy",
+    )
+
+
+def _curl_option_value(argv: list[str], index: int) -> tuple[str | None, int]:
+    """Return the option value (or None) and the next unconsumed index."""
+    token = argv[index]
+    if token.startswith("--"):
+        if "=" in token:
+            return token.partition("=")[2], index + 1
+        return (argv[index + 1] if index + 1 < len(argv) else None, index + 2)
+    if len(token) > 2:
+        return token[2:], index + 1
+    return (argv[index + 1] if index + 1 < len(argv) else None, index + 2)
+
+
+def _enforce_curl_program_policy(argv: list[str]) -> None:
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in _CURL_UPLOAD_FLAGS or token.startswith(_CURL_UPLOAD_LONG_FLAGS):
+            raise ProgramPolicyError(
+                "PROGRAM_ARGUMENT_NOT_PERMITTED",
+                f"curl option '{token}' enables upload or file-write mode and is not "
+                "permitted by the diagnostic curl policy",
+            )
+        if token.startswith(("-T", "-F")):
+            raise ProgramPolicyError(
+                "PROGRAM_ARGUMENT_NOT_PERMITTED",
+                f"curl option '{token}' enables upload mode and is not permitted by "
+                "the diagnostic curl policy",
+            )
+        if token in _CURL_OUTPUT_FLAGS or token.startswith(("-o", "--output=")):
+            value, index = _curl_option_value(argv, index)
+            if value != _CURL_NULL_OUTPUT:
+                raise ProgramPolicyError(
+                    "PROGRAM_ARGUMENT_NOT_PERMITTED",
+                    f"curl output target '{value}' is not permitted; only "
+                    f"'{_CURL_NULL_OUTPUT}' is admitted by the diagnostic curl policy",
+                )
+            continue
+        if token in _CURL_DATA_FLAGS or token.startswith(("-d", "--data")):
+            value, index = _curl_option_value(argv, index)
+            if value is not None and value.startswith("@"):
+                raise ProgramPolicyError(
+                    "PROGRAM_ARGUMENT_NOT_PERMITTED",
+                    "curl request-body file references are not permitted by the "
+                    "diagnostic curl policy",
+                )
+            continue
+        index += 1
+
+
+def _enforce_systemctl_program_policy(argv: list[str]) -> None:
+    index = 0
+    while index < len(argv) and argv[index] in _SYSTEMCTL_GLOBAL_FLAGS:
+        index += 1
+    if index >= len(argv):
+        raise ProgramPolicyError(
+            "PROGRAM_SUBCOMMAND_NOT_PERMITTED",
+            "systemctl requires an admitted read-only subcommand",
+        )
+    subcommand = argv[index]
+    if subcommand in _SYSTEMCTL_READ_SUBCOMMANDS:
+        return
+    raise ProgramPolicyError(
+        "PROGRAM_SUBCOMMAND_NOT_PERMITTED",
+        f"systemctl subcommand '{subcommand}' is not permitted by the read-only "
+        "systemctl policy; service mutations use the dedicated "
+        "change_service_state capability",
+    )
+
+
+_PROGRAM_POLICIES: Final = {
+    "docker": _enforce_docker_program_policy,
+    "curl": _enforce_curl_program_policy,
+    "systemctl": _enforce_systemctl_program_policy,
+}
+
+
+def validate_program_invocation(executable: str, argv: object) -> list[str]:
+    executable = validate_program_executable(executable)
+    arguments = validate_program_arguments(argv)
+    policy = _PROGRAM_POLICIES.get(executable)
+    if policy is not None:
+        policy(arguments)
+    return arguments
 
 
 def validate_program_job_id(job_id: str) -> str:

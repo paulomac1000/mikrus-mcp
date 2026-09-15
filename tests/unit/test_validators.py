@@ -74,8 +74,10 @@ def test_content_limit_counts_encoded_bytes() -> None:
 
 
 def test_program_executable_is_allowlisted_and_shells_are_rejected() -> None:
+    # Issue #27 intentionally admits docker/systemctl/curl behind per-executable
+    # subcommand policies; shells, paths, and unmanaged tools stay rejected.
     assert validate_program_executable("grep") == "grep"
-    for value in ("/usr/bin/ps", "/tmp/ps", "docker", "sed", "/bin/sh", "ps", "systemctl"):
+    for value in ("/usr/bin/ps", "/tmp/ps", "sed", "/bin/sh", "ps", "sh", "bash"):
         with pytest.raises(ValidationError, match="not permitted"):
             validate_program_executable(value)
     with pytest.raises(ValidationError, match="not permitted"):
@@ -172,19 +174,161 @@ def test_cron_environment_bounds_keys_values_and_size() -> None:
         validate_cron_environment({f"K{i}": "v" for i in range(17)})
 
 
-def test_typed_program_allowlist_is_strict_and_argv_charset_is_bounded() -> None:
-    from mikrus_mcp.validators import validate_program_arguments, validate_program_executable
+def test_typed_program_executables_admit_diagnostic_programs_per_issue_27() -> None:
+    """Issue #27 intentionally transitions executable admission to include
+    docker, curl, and systemctl behind per-executable read-only policies;
+    unrelated interpreters and general tools stay outside the allowlist."""
+    from mikrus_mcp.validators import validate_program_executable
 
-    for removed in ("systemctl", "printf", "echo", "df", "du", "free", "ls", "ps"):
+    for removed in ("printf", "echo", "df", "du", "free", "ls", "ps"):
         with pytest.raises(ValidationError, match="not permitted"):
             validate_program_executable(removed)
-    for kept in ("cat", "grep", "ip", "journalctl", "ss", "sort", "tail"):
+    for kept in ("cat", "grep", "ip", "journalctl", "ss", "sort", "tail", "docker", "curl", "systemctl"):
         assert validate_program_executable(kept) == kept
 
-    assert validate_program_arguments(["--count", "pattern"]) == ["--count", "pattern"]
-    for argv in (["two words"], ["semi;colon"], ["pipe|x"], ["a" * 257], ["quoted'arg"]):
+
+def test_typed_program_argv_admits_bounded_literal_strings_per_issue_27() -> None:
+    """Issue #27 intentionally replaces the argv charset whitelist with bounded
+    literal-string admission: any string up to 4096 characters without control
+    characters is admitted unchanged, because argv is dispatched without a
+    shell. Control-character rejection and size bounds remain mandatory."""
+    from mikrus_mcp.validators import validate_program_arguments
+
+    passthrough = [
+        "two words",
+        "semi;colon",
+        "pipe|x",
+        "quoted'arg",
+        '(dq")',
+        "(paren)",
+        "{{.Id}}",
+        "%{http_code}",
+        "--format=short",
+    ]
+    assert validate_program_arguments(passthrough) == passthrough
+
+    for rejected in (["a\x00b"], ["a\x1fb"], ["a\x7fb"], ["a" * 4_097]):
         with pytest.raises(ValidationError, match="bounded typed arguments"):
-            validate_program_arguments(argv)
+            validate_program_arguments(rejected)
+    assert validate_program_arguments(["a" * 4_096]) == ["a" * 4_096]
+
+    with pytest.raises(ValidationError, match="at most 128"):
+        validate_program_arguments(["x"] * 129)
+    with pytest.raises(ValidationError, match="100000-byte"):
+        validate_program_arguments(["x" * 4_096] * 25)
+    with pytest.raises(ValidationError, match="bounded typed arguments"):
+        validate_program_arguments(["ok", 42])
+
+
+def test_program_invocation_admits_diagnostic_subcommands_per_issue_27() -> None:
+    from mikrus_mcp.validators import validate_program_invocation
+
+    assert validate_program_invocation(
+        "docker", ["inspect", "--format", "{{.Id}}", "abc123"]
+    ) == ["inspect", "--format", "{{.Id}}", "abc123"]
+    for argv in (
+        ["ps", "-a"],
+        ["images"],
+        ["logs", "--tail", "10", "web"],
+        ["version"],
+        ["info"],
+        ["stats"],
+        ["top"],
+        ["--debug", "network", "inspect", "bridge"],
+        ["volume", "ls"],
+        ["volume", "inspect", "data"],
+    ):
+        assert validate_program_invocation("docker", argv) == argv
+
+    for argv in (
+        ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://example.com"],
+        ["-sI", "http://example.com"],
+        ["-L", "-s", "http://example.com"],
+        ["--max-time", "5", "http://example.com"],
+        ["-H", "X-Test: 1", "-X", "GET", "http://example.com"],
+        ["-d", "inline=body", "http://example.com"],
+    ):
+        assert validate_program_invocation("curl", argv) == argv
+
+    for argv in (
+        ["status", "nginx"],
+        ["--no-pager", "status", "nginx"],
+        ["is-active", "nginx"],
+        ["is-enabled", "nginx"],
+        ["list-units"],
+        ["list-unit-files"],
+        ["show", "nginx"],
+        ["cat", "nginx"],
+        ["list-timers"],
+        ["is-failed", "nginx"],
+    ):
+        assert validate_program_invocation("systemctl", argv) == argv
+
+    assert validate_program_invocation("cat", ["two words"]) == ["two words"]
+
+
+def test_program_invocation_rejects_mutations_with_policy_codes_per_issue_27() -> None:
+    from mikrus_mcp.validators import ProgramPolicyError, validate_program_invocation
+
+    for argv in (
+        ["rm", "foo"],
+        ["run", "nginx"],
+        ["exec", "web", "sh"],
+        ["rmi", "nginx"],
+        ["kill", "web"],
+        ["stop", "web"],
+        ["start", "web"],
+        ["restart", "web"],
+        ["build", "."],
+        ["push", "image"],
+        ["pull", "image"],
+        ["cp", "a", "b"],
+        ["compose", "up", "-d"],
+        ["compose", "down"],
+        ["compose", "rm"],
+        ["system", "prune"],
+    ):
+        with pytest.raises(ProgramPolicyError) as docker_error:
+            validate_program_invocation("docker", argv)
+        assert docker_error.value.policy_code == "PROGRAM_SUBCOMMAND_NOT_PERMITTED"
+        assert "docker" in str(docker_error.value)
+        assert f"'{argv[0]}'" in str(docker_error.value)
+
+    for argv in (
+        ["-T", "backup.tar", "http://example.com"],
+        ["--upload-file", "big.bin", "http://example.com"],
+        ["-F", "a=b", "http://example.com"],
+        ["--form", "a=b", "http://example.com"],
+        ["-O", "http://example.com"],
+        ["-J", "-s", "http://example.com"],
+        ["-o", "/etc/passwd", "http://example.com"],
+        ["--output", "/tmp/payload", "http://example.com"],
+        ["-ofile", "http://example.com"],
+        ["--output=/tmp/payload", "http://example.com"],
+        ["-d", "@payload.json", "http://example.com"],
+        ["--data", "@payload.json", "http://example.com"],
+        ["--data=@payload.json", "http://example.com"],
+    ):
+        with pytest.raises(ProgramPolicyError) as curl_error:
+            validate_program_invocation("curl", argv)
+        assert curl_error.value.policy_code == "PROGRAM_ARGUMENT_NOT_PERMITTED"
+        assert "curl" in str(curl_error.value)
+
+    for argv in (
+        ["restart", "nginx"],
+        ["stop", "nginx"],
+        ["start", "nginx"],
+        ["enable", "nginx"],
+        ["disable", "nginx"],
+        ["mask", "nginx"],
+        ["kill", "nginx"],
+        ["reload-or-restart", "nginx"],
+    ):
+        with pytest.raises(ProgramPolicyError) as systemctl_error:
+            validate_program_invocation("systemctl", argv)
+        assert systemctl_error.value.policy_code == "PROGRAM_SUBCOMMAND_NOT_PERMITTED"
+        assert "systemctl" in str(systemctl_error.value)
+        assert f"'{argv[0]}'" in str(systemctl_error.value)
 
 
 def test_cron_numeric_fields_reject_unicode_digits() -> None:

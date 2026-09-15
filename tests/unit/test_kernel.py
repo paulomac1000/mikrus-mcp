@@ -1702,3 +1702,102 @@ async def test_docker_apply_requires_acceptance_for_drift_appearing_after_plan(
     refused = await kernel.invoke("docker_recreate_apply", arguments, caller)
     assert refused["error"]["code"] == "RECREATE_CONFIG_DRIFT"
     assert client.ups == []
+
+
+class RecordingProgramClient:
+    """Kernel-level double recording the exact typed program payload."""
+
+    def __init__(self, config: TargetConfig) -> None:
+        self.config = config
+        self.stable_identity = f"{config.stable_identity}#host-key=SHA256:dk"
+        self.calls: list[dict[str, object]] = []
+
+    async def open(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def execute_program(
+        self,
+        executable: str,
+        argv: list[str],
+        cwd: str | None = None,
+        stdin: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(
+            {"executable": executable, "argv": list(argv), "cwd": cwd, "stdin": stdin}
+        )
+        return {"exitCode": 0, "stdoutTail": "", "stderrTail": "", "durationMs": 1}
+
+
+def _program_kernel(client: RecordingProgramClient) -> tuple[InvocationKernel, ApprovalRegistry]:
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+    )
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    return kernel, approvals
+
+
+@pytest.mark.asyncio
+async def test_execute_program_reaches_client_with_byte_for_byte_argv() -> None:
+    """Issue #27: {{.Id}} and %{http_code} must survive the public
+    execute_program path unchanged; argv arrives at the client exactly."""
+    client = RecordingProgramClient(_ssh_target())
+    kernel, approvals = _program_kernel(client)
+    caller = CallerContext("principal", kernel.settings.allowed_scopes)
+
+    acceptance_invocations = [
+        ("docker", ["inspect", "--format", "{{.Id}}", "abc123"]),
+        ("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://example.com"]),
+    ]
+    for executable, argv in acceptance_invocations:
+        arguments = {"executable": executable, "argv": argv}
+        approvals.issue_for_test(
+            "execute_program",
+            "principal",
+            client.stable_identity,
+            "<target>",
+            normalized_arguments_digest(arguments),
+        )
+        result = await kernel.invoke("execute_program", arguments, caller)
+        assert result["success"] is True, result
+        assert client.calls[-1]["executable"] == executable
+        assert client.calls[-1]["argv"] == argv
+
+
+@pytest.mark.asyncio
+async def test_execute_program_rejects_disallowed_subcommands_before_dispatch() -> None:
+    client = RecordingProgramClient(_ssh_target())
+    kernel, approvals = _program_kernel(client)
+    caller = CallerContext("principal", kernel.settings.allowed_scopes)
+
+    for arguments in (
+        {"executable": "docker", "argv": ["rm", "abc123"]},
+        {"executable": "systemctl", "argv": ["restart", "nginx"]},
+    ):
+        approvals.issue_for_test(
+            "execute_program",
+            "principal",
+            client.stable_identity,
+            "<target>",
+            normalized_arguments_digest(arguments),
+        )
+        result = await kernel.invoke("execute_program", arguments, caller)
+        assert result["success"] is False
+        assert result["error"]["code"] == "VALIDATION_FAILED"
+        assert "PROGRAM_SUBCOMMAND_NOT_PERMITTED" in result["error"]["message"]
+    assert client.calls == []

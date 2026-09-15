@@ -214,7 +214,14 @@ async def execute_program(
     stdin: str | None = None,
     server: str | None = None,
 ) -> ToolResult:
-    """Run an approved typed program request without exposing a shell command string."""
+    """Run an approved typed program request without exposing a shell command string.
+
+    Prefer this capability for routine non-shell execution (typed argv, no shell
+    interpretation). Semantic Docker and systemd service mutations have their own
+    dedicated capabilities; the per-executable admission policy admits only
+    read-only or diagnostic usage (for example `docker inspect --format`,
+    `curl -s -o /dev/null -w %{http_code} URL`, `systemctl status`).
+    """
     return await _invoke(
         ctx,
         "execute_program",

@@ -34,8 +34,7 @@ from mikrus_mcp.validators import (
     validate_plan_receipt,
     validate_port,
     validate_process_target,
-    validate_program_arguments,
-    validate_program_executable,
+    validate_program_invocation,
     validate_program_job_id,
     validate_search_pattern,
     validate_service_action,
@@ -314,10 +313,11 @@ class PolicyMixin:
                 normalized["term"] = validate_search_pattern(required_text("term"))
                 normalized["lines"] = validate_lines_param(normalized.get("lines", 50))
             case "execute_program" | "start_program":
-                normalized["executable"] = validate_program_executable(
-                    required_text("executable", maximum=255)
+                executable = required_text("executable", maximum=255)
+                normalized["executable"] = executable
+                normalized["argv"] = validate_program_invocation(
+                    executable, normalized.get("argv", [])
                 )
-                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
                 if "cwd" in normalized and normalized["cwd"] is not None:
                     normalized["cwd"] = validate_path(required_text("cwd"))
                 if "stdin" in normalized and normalized["stdin"] is not None:
@@ -326,10 +326,11 @@ class PolicyMixin:
                 normalized["job_id"] = validate_program_job_id(required_text("job_id", maximum=64))
             case "remote_job_start":
                 normalized["idempotency_key"] = required_text("idempotency_key", maximum=128)
-                normalized["executable"] = validate_program_executable(
-                    required_text("executable", maximum=255)
+                executable = required_text("executable", maximum=255)
+                normalized["executable"] = executable
+                normalized["argv"] = validate_program_invocation(
+                    executable, normalized.get("argv", [])
                 )
-                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
                 if normalized.get("cwd") is not None:
                     normalized["cwd"] = validate_path(required_text("cwd"))
                 if normalized.get("stdin") is not None:
@@ -367,10 +368,11 @@ class PolicyMixin:
                     required_text("profile_id", maximum=64)
                 )
                 normalized["schedule"] = validate_cron_schedule(normalized.get("schedule"))
-                normalized["executable"] = validate_program_executable(
-                    required_text("executable", maximum=255)
+                executable = required_text("executable", maximum=255)
+                normalized["executable"] = executable
+                normalized["argv"] = validate_program_invocation(
+                    executable, normalized.get("argv", [])
                 )
-                normalized["argv"] = validate_program_arguments(normalized.get("argv", []))
                 normalized["environment"] = validate_cron_environment(
                     normalized.get("environment", {})
                 )

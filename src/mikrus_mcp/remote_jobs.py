@@ -1,7 +1,11 @@
-"""Bounded, serializable contract for durable remote operation records.
+"""Bounded records, durable JSON store, and registry for remote jobs.
 
-This module deliberately contains no executor or persistence implementation.  It
-is the stable record shape shared by the future durable job store and adapters.
+``RemoteJobRecord`` is the stable record shape shared with the SSH-side job
+helper; ``RemoteJobStore`` persists records in one atomically replaced JSON
+file; ``DurableRemoteJobRegistry`` coordinates ownership, idempotency,
+retention expiry, and terminal-state transitions over that store.  Job
+execution itself lives in the SSH adapter helper (``clients/ssh.py``), not
+in this module.
 """
 
 from __future__ import annotations
