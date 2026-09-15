@@ -207,7 +207,14 @@ def test_typed_program_argv_admits_bounded_literal_strings_per_issue_27() -> Non
     ]
     assert validate_program_arguments(passthrough) == passthrough
 
-    for rejected in (["a\x00b"], ["a\x1fb"], ["a\x7fb"], ["a" * 4_097]):
+    for rejected in (
+        [""],
+        ["a\x00b"],
+        ["a\x1fb"],
+        ["a\x7fb"],
+        ["a" * 4_097],
+        ["\ud800"],
+    ):
         with pytest.raises(ValidationError, match="bounded typed arguments"):
             validate_program_arguments(rejected)
     assert validate_program_arguments(["a" * 4_096]) == ["a" * 4_096]
@@ -216,6 +223,7 @@ def test_typed_program_argv_admits_bounded_literal_strings_per_issue_27() -> Non
         validate_program_arguments(["x"] * 129)
     with pytest.raises(ValidationError, match="100000-byte"):
         validate_program_arguments(["x" * 4_096] * 25)
+    assert validate_program_arguments(["a" * 4_000] * 25) == ["a" * 4_000] * 25
     with pytest.raises(ValidationError, match="bounded typed arguments"):
         validate_program_arguments(["ok", 42])
 

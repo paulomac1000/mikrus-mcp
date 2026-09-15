@@ -276,11 +276,15 @@ def validate_program_arguments(argv: object) -> list[str]:
     for value in argv:
         if (
             not isinstance(value, str)
+            or not value
             or len(value) > _MAX_PROGRAM_ARGV_ELEMENT
             or _PROGRAM_CONTROL.search(value)
         ):
             raise ValidationError("argv entries must be bounded typed arguments")
-        total += len(value.encode("utf-8"))
+        try:
+            total += len(value.encode("utf-8"))
+        except UnicodeEncodeError as exc:  # lone surrogates stay in the validation contract
+            raise ValidationError("argv entries must be bounded typed arguments") from exc
         if total > _MAX_PROGRAM_ARGV_TOTAL:
             raise ValidationError("argv exceeds the 100000-byte limit")
         result.append(value)
