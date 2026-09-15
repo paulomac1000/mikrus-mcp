@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
+import re
 import shlex
 import textwrap
+from datetime import UTC, datetime
 from typing import Any
 
 from mikrus_mcp.clients.common import _remote_atomic_write_command, _remote_read_prefix
-from mikrus_mcp.clients.mikrus import MikrusClient
+from mikrus_mcp.clients.mikrus import _parse_process_snapshot
 from mikrus_mcp.config import TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.sanitizer import sanitize_text
 from mikrus_mcp.tools.constants import (
     EXEC_HTTP_TIMEOUT,
     MAX_JOURNAL_LINES,
@@ -35,6 +39,75 @@ from mikrus_mcp.validators import (
 logger = logging.getLogger(__name__)
 
 SSH_TERMINATE_WAIT_SECONDS = 5.0
+_DOCKER_PARSE_EXCERPT_BYTES = 200
+_FAILURE_EXCERPT_BYTES = 300
+_PROCESS_SNAPSHOT_COMMAND = "ps aux --sort=-%mem"
+_PROCESS_SNAPSHOT_LINE_BUDGET = 20
+_DISK_PHASE_MARKER = re.compile(r"---PHASE---fs:(\d+)\n---PHASE---du:(\d+)")
+
+
+def _failure_excerpt(value: object) -> str:
+    return sanitize_text(str(value or ""))[-_FAILURE_EXCERPT_BYTES:]
+
+
+def _failure_class(stderr: object) -> str:
+    lowered = str(stderr or "").lower()
+    return "PERMISSION_DENIED" if "permission denied" in lowered else "REMOTE_COMMAND_FAILED"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Issue #23 contract: typed, phased disk-analysis outcomes."""
+    output = str(result.get("output", ""))
+    stderr = result.get("stderr", "")
+    marker = _DISK_PHASE_MARKER.search(output)
+    if marker is None:
+        raise AppError(
+            ErrorCode.UPSTREAM_PROTOCOL,
+            "disk analysis output could not be parsed (PARSER_FAILED)",
+            retryable=False,
+        )
+    fs_status = int(marker.group(1))
+    du_status = int(marker.group(2))
+    sections = output[: marker.start()].split("---TOP20---", 1)
+    summary_text = sections[0].strip()
+    files_text = sections[1].strip() if len(sections) > 1 else ""
+    if fs_status != 0:
+        raise AppError(
+            ErrorCode.UPSTREAM,
+            "disk analysis failed "
+            f"({_failure_class(stderr)}) phase=filesystem_summary exit_code={fs_status} "
+            f"stderr={_failure_excerpt(stderr)}",
+            retryable=False,
+        )
+    if not summary_text:
+        raise AppError(
+            ErrorCode.UPSTREAM_PROTOCOL,
+            "disk analysis output could not be parsed (PARSER_FAILED): "
+            "filesystem summary section is empty",
+            retryable=False,
+        )
+    summary: dict[str, Any] = {"state": "complete", "output": summary_text}
+    if du_status != 0:
+        return {
+            "state": "partial",
+            "filesystemSummary": summary,
+            "largeFiles": {
+                "state": "failed",
+                "exitCode": du_status,
+                "failureClass": _failure_class(stderr),
+            },
+            "observedAt": _utc_now_iso(),
+        }
+    return {
+        "state": "complete",
+        "filesystemSummary": summary,
+        "largeFiles": {"state": "complete", "output": files_text},
+        "observedAt": _utc_now_iso(),
+    }
 _PROGRAM_HELPER = textwrap.dedent(
     """
     import json, os, select, signal, subprocess, sys
@@ -1651,18 +1724,12 @@ class SshClient:
     async def analyze_disk(self, path: str = "/") -> Any:
         result = await self._run(
             _remote_read_prefix(path)
-            + 'df -h -- "$resolved"; echo ---TOP20---; '
-            + 'du -sh -- "$resolved"/* 2>/dev/null | sort -rh | head -n 20',
+            + 'df -h -- "$resolved"; fs_status=$?; echo ---TOP20---; '
+            + 'du -sh -- "$resolved"/* 2>/dev/null | sort -rh | head -n 20; du_status=$?; '
+            + 'printf "\\n---PHASE---fs:%s\\n---PHASE---du:%s\\n" "$fs_status" "$du_status"',
             timeout=30,
         )
-        if result.get("exit_code", 0) != 0:
-            stderr = result.get("stderr", "")
-            detail = stderr or result.get("output", "")
-            raise AppError(
-                ErrorCode.UPSTREAM,
-                f"disk analysis failed with exit code {result['exit_code']}: {detail}",
-            )
-        return result
+        return _analyze_disk_result(result)
 
     async def check_port(self, port: str) -> Any:
         value = validate_port(port)
@@ -1671,7 +1738,29 @@ class SshClient:
         )
 
     async def list_processes(self) -> Any:
-        return await self._run("ps aux --sort=-%mem | head -n 20")
+        result = await self._run(
+            f"{_PROCESS_SNAPSHOT_COMMAND} | head -n {_PROCESS_SNAPSHOT_LINE_BUDGET + 1}",
+            timeout=20,
+        )
+        if result.get("exit_code", 0) != 0:
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                "process snapshot failed "
+                f"({_failure_class(result.get('stderr'))}) "
+                f"exit_code={result.get('exit_code')} stderr={_failure_excerpt(result.get('stderr'))}",
+                retryable=False,
+            )
+        raw = "\n".join(
+            line
+            for line in str(result.get("output", "")).splitlines()
+            if _PROCESS_SNAPSHOT_COMMAND not in line
+        )
+        snapshot = _parse_process_snapshot(raw)
+        records = snapshot.get("processes", [])
+        snapshot["processLimit"] = _PROCESS_SNAPSHOT_LINE_BUDGET
+        snapshot["processesTruncated"] = len(records) >= _PROCESS_SNAPSHOT_LINE_BUDGET
+        snapshot["observedAt"] = _utc_now_iso()
+        return snapshot
 
     async def terminate_process(self, target: str) -> Any:
         value = shlex.quote(validate_process_target(target))
@@ -1714,9 +1803,7 @@ class SshClient:
         return await self._run("ps auxf | head -n 100")
 
     async def list_docker_containers(self) -> Any:
-        return MikrusClient._parse_docker_jsonl(
-            await self._run("docker ps -a --format '{{json .}}'")
-        )
+        return self._parse_docker_jsonl(await self._run("docker ps -a --format '{{json .}}'"))
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
         return await self._run(
@@ -1725,9 +1812,51 @@ class SshClient:
         )
 
     async def get_docker_stats(self) -> Any:
-        return MikrusClient._parse_docker_jsonl(
+        return self._parse_docker_jsonl(
             await self._run("docker stats --no-stream --format '{{json .}}'")
         )
+
+    @staticmethod
+    def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
+        """Issue #17 contract: entity-escaped records decode to ordinary JSON
+        strings; non-empty output with zero records is PARSER_FAILED, never a
+        successful empty inventory; mixed output is partial with bounded
+        diagnostics."""
+        raw = str(result.get("output", ""))
+        parsed: list[dict[str, Any]] = []
+        rejected = 0
+        excerpt: str | None = None
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(html.unescape(line))
+            except json.JSONDecodeError:
+                rejected += 1
+            else:
+                if isinstance(value, dict):
+                    parsed.append(value)
+                else:
+                    rejected += 1
+                continue
+            if excerpt is None:
+                excerpt = sanitize_text(line[:_DOCKER_PARSE_EXCERPT_BYTES])
+        if not parsed and raw.strip():
+            raise AppError(
+                ErrorCode.UPSTREAM_PROTOCOL,
+                "docker listing output could not be parsed (PARSER_FAILED): "
+                "no records decoded from non-empty output; "
+                f"excerpt={sanitize_text(raw[:_DOCKER_PARSE_EXCERPT_BYTES])}",
+                retryable=False,
+            )
+        if rejected:
+            return {
+                **result,
+                "containers": parsed,
+                "parseState": "partial",
+                "parseDiagnostics": {"rejectedLines": rejected, "excerpt": excerpt},
+            }
+        return {**result, "containers": parsed, "parseState": "complete"}
 
     async def get_journal_logs(self, unit: str, lines: int = 50) -> Any:
         return await self._run_sudo(

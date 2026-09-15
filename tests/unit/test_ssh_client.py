@@ -283,8 +283,13 @@ async def test_terminate_process_escalates_to_close_within_bounded_time(
 
 
 @pytest.mark.asyncio
-async def test_analyze_disk_fails_on_non_zero_exit_code() -> None:
-    process = FakeProcess([b""], stderr=[b"Permission denied"])
+async def test_analyze_disk_classifies_permission_denied_per_issue_23() -> None:
+    """Issue #23 replaced the generic UPSTREAM error with typed failure
+    classes: permission failure is classified distinctly from a plain remote
+    command failure."""
+    process = FakeProcess(
+        [b"\n---PHASE---fs:1\n---PHASE---du:1\n"], stderr=[b"df: /root: Permission denied"]
+    )
     process.exit_status = 1
     connection = FakeConnection(process)
     client = SshClient(ssh_target())
@@ -293,8 +298,206 @@ async def test_analyze_disk_fails_on_non_zero_exit_code() -> None:
     with pytest.raises(AppError) as exc_info:
         await client.analyze_disk("/root")
     assert exc_info.value.code == ErrorCode.UPSTREAM
-    assert "disk analysis failed with exit code 1" in exc_info.value.message
-    assert "Permission denied" in exc_info.value.message
+    assert "(PERMISSION_DENIED)" in exc_info.value.message
+    assert "phase=filesystem_summary" in exc_info.value.message
+    assert "exit_code=1" in exc_info.value.message
+    assert "df -h" not in exc_info.value.message
+
+
+def _analyze_process(stdout: bytes, stderr: list[bytes] | None = None, status: int = 0):
+    process = FakeProcess([stdout], stderr=stderr)
+    process.exit_status = status
+    connection = FakeConnection(process)
+    client = SshClient(ssh_target())
+    client._connection = connection
+    return client
+
+
+DF_SECTION = "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1 40G 12G 28G 31% /"
+DU_SECTION = "12G\t/\n4,1G\t/var"
+PHASE_OK = "\n---PHASE---fs:0\n---PHASE---du:0\n"
+PHASE_DU_FAILED = "\n---PHASE---fs:0\n---PHASE---du:1\n"
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_complete_result_has_typed_sections_and_time() -> None:
+    client = _analyze_process(
+        (DF_SECTION + "\n---TOP20---\n" + DU_SECTION + PHASE_OK).encode("utf-8")
+    )
+    result = await client.analyze_disk("/")
+    assert result["state"] == "complete"
+    assert result["filesystemSummary"]["state"] == "complete"
+    assert "/dev/sda1" in result["filesystemSummary"]["output"]
+    assert result["largeFiles"] == {"state": "complete", "output": DU_SECTION}
+    assert result["observedAt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_partial_when_large_files_phase_fails() -> None:
+    client = _analyze_process(
+        (DF_SECTION + "\n---TOP20---\n" + PHASE_DU_FAILED).encode("utf-8")
+    )
+    result = await client.analyze_disk("/")
+    assert result["state"] == "partial"
+    assert result["filesystemSummary"]["state"] == "complete"
+    assert result["largeFiles"]["state"] == "failed"
+    assert result["largeFiles"]["exitCode"] == 1
+    assert result["largeFiles"]["failureClass"] == "REMOTE_COMMAND_FAILED"
+    assert result["observedAt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_command_failure_is_remote_command_failed() -> None:
+    client = _analyze_process(
+        (DF_SECTION + "\n---TOP20---\n" + "\n---PHASE---fs:1\n---PHASE---du:1\n").encode(
+            "utf-8"
+        ),
+        stderr=[b"df: cannot access"],
+        status=1,
+    )
+    with pytest.raises(AppError) as exc_info:
+        await client.analyze_disk("/")
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_unparsable_output_is_parser_failed() -> None:
+    client = _analyze_process(b"df: /: no such output at all\n")
+    with pytest.raises(AppError) as exc_info:
+        await client.analyze_disk("/")
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_decodes_entities_and_round_trips_values() -> None:
+    line = (
+        '{"Command":"\\"docker-entrypoint…\\"","Names":"web&amp;db",'
+        '"Labels":"{\\"com.example.zone\\":\\"prod\\"}","Ports":"0.0.0.0:8080-&gt;80/tcp",'
+        '"Mounts":"vol1"}'
+    )
+    client = _analyze_process((line + "\n").encode("utf-8"))
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"][0]["Names"] == "web&db"
+    assert result["containers"][0]["Ports"] == "0.0.0.0:8080->80/tcp"
+    assert "&#34;" not in json.dumps(result["containers"])
+    assert "&amp;" not in json.dumps(result["containers"])
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_never_reports_success_on_unparsable_output() -> None:
+    client = _analyze_process(b"{}dangling{\" broken\nnot json\n")
+    with pytest.raises(AppError) as exc_info:
+        await client.list_docker_containers()
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_empty_output_is_a_legitimate_success() -> None:
+    client = _analyze_process(b"")
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == []
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_mixed_output_is_partial_with_diagnostics() -> None:
+    good = '{"Command":"nginx","Names":"api"}'
+    client = _analyze_process((good + "\ncorrupted line\n").encode("utf-8"))
+    result = await client.get_docker_stats()
+    assert result["parseState"] == "partial"
+    assert result["parseDiagnostics"]["rejectedLines"] == 1
+    assert "corrupted line" in result["parseDiagnostics"]["excerpt"]
+    assert len(result["containers"]) == 1
+
+
+def _ps_line(
+    pid: int,
+    user: str,
+    mem: float,
+    command: str,
+) -> str:
+    return f"{user} {pid} 0.3 {mem} 120000 4000 ? Sl 10:00 0:05 {command}"
+
+
+@pytest.mark.asyncio
+async def test_list_processes_returns_structured_records_with_time() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [
+            header,
+            _ps_line(101, "app", 4.2, "python3 -c \"import 'a&b'\""),
+            _ps_line(102, "root", 1.1, "nginx: master process"),
+            _ps_line(103, "app", 0.4, "postgres -D /var/lib/data"),
+        ]
+    )
+    client = _analyze_process(body.encode("utf-8"))
+    result = await client.list_processes()
+    assert result["state"] == "complete"
+    assert len(result["processes"]) == 3
+    assert result["processesTruncated"] is False
+    assert result["processLimit"] == 20
+    assert result["processSort"] == "memory"
+    assert result["observedAt"]
+    assert result["processes"][0]["pid"] == 101
+    assert result["processes"][0]["memoryPercent"] == 4.2
+    assert "a&b" in result["processes"][0]["command"]
+    assert "&amp;" not in json.dumps(result["processes"])
+
+
+@pytest.mark.asyncio
+async def test_list_processes_excludes_wrapper_command_from_inventory() -> None:
+    wrapper = _ps_line(900, "root", 0.1, "bash -c ps aux --sort=-%mem | head -n 21")
+    client = _analyze_process(wrapper.encode("utf-8"))
+    result = await client.list_processes()
+    assert result["state"] == "partial"
+    assert result["processes"] == []
+    assert result["error"]["code"] == "PROCESS_SNAPSHOT_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_list_processes_truncates_at_line_budget() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [header] + [_ps_line(1000 + index, "u", 0.1, "sleeper") for index in range(20)]
+    )
+    client = _analyze_process(body.encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert result["processesTruncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_processes_redacts_secret_arguments() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [
+            header,
+            _ps_line(77, "app", 0.2, "curl --password hunter2 -s http://example.com"),
+        ]
+    )
+    client = _analyze_process(body.encode("utf-8"))
+    result = await client.list_processes()
+    serialized = json.dumps(result)
+    assert "hunter2" not in serialized
+    assert result["processes"][0]["executable"] == "curl"
+    assert result["processes"][0]["pid"] == 77
+
+
+@pytest.mark.asyncio
+async def test_list_processes_failure_is_typed_not_raw_text() -> None:
+    client = _analyze_process(b"", stderr=[b"ps: error reading"], status=1)
+    with pytest.raises(AppError) as exc_info:
+        await client.list_processes()
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert "hunter2" not in exc_info.value.message or "hunter2" not in str(
+        exc_info.value.message
+    )
 
 
 def _run_helper(
