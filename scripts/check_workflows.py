@@ -211,9 +211,19 @@ def audit(path: Path) -> list[str]:
                     if isinstance(step, dict) and str(step.get("uses", "")).startswith(
                         "actions/checkout@"
                     ):
-                        findings.append(
-                            f"{path.name}: publish step {index} must not checkout candidate source"
+                        with_block = step.get("with")
+                        trusted_checkout = (
+                            isinstance(with_block, dict)
+                            and with_block.get("ref") == "master"
+                            and with_block.get("sparse-checkout") == "scripts/promote_digest.py"
+                            and with_block.get("persist-credentials") is False
                         )
+                        if not trusted_checkout:
+                            findings.append(
+                                f"{path.name}: publish step {index} must not checkout "
+                                "candidate source (only the reviewed master promoter "
+                                "script via sparse checkout is allowed)"
+                            )
 
         steps = raw_job.get("steps")
         if not isinstance(steps, list):

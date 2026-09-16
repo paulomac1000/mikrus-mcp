@@ -162,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$QUARANTINE_USERNAME" && test -n "$QUARANTINE_PASSWORD"
-          quarantine_ref="$QUARANTINE_REGISTRY/$QUARANTINE_REPOSITORY"
+          quarantine_ref="$QUARANTINE_REGISTRY/${QUARANTINE_REPOSITORY,,}"
           echo "$QUARANTINE_PASSWORD" | docker login "$QUARANTINE_REGISTRY" \
             --username "$QUARANTINE_USERNAME" --password-stdin
           loaded="$(docker load --input bundle/release/image.tar)"
@@ -190,24 +190,16 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Download exact validated CI artifact (promoter script and evidence only)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ needs.validate-release.outputs.artifact_id }}
-        run: |
-          set -euo pipefail
-          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > release-bundle.zip
-          mkdir bundle
-          unzip -q release-bundle.zip -d bundle
-      - name: Verify exact bundle identity before promotion
-        shell: bash
-        env:
-          RELEASE_SHA: ${{ needs.validate-release.outputs.sha }}
-        run: |
-          set -euo pipefail
-          test "$(cat bundle/release/commit-sha.txt)" = "$RELEASE_SHA"
-          (cd bundle && sha256sum --check release/bundle-sha256.txt)
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      # The only checkout in the protected publisher: the reviewed master copy
+      # of the promoter script, never the candidate revision.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: master
+          sparse-checkout: scripts/promote_digest.py
+          sparse-checkout-cone: false
+          fetch-depth: 1
+          persist-credentials: false
       - name: Promote exact tested digest registry-to-registry without candidate bytes
         id: copy
         shell: bash
@@ -229,13 +221,14 @@ jobs:
             test "$RELEASE_TAG" = "v$VERSION"
             tags+=(--tag "$VERSION")
           fi
-          python3 bundle/release/promote_digest.py \
-            --source-ref "$QUARANTINE_REGISTRY/$QUARANTINE_REPOSITORY" \
+          python3 scripts/promote_digest.py \
+            --source-ref "$QUARANTINE_REGISTRY/${QUARANTINE_REPOSITORY,,}" \
             --digest "$QUARANTINED_DIGEST" \
             --expected-digest "$QUARANTINED_DIGEST" \
             --destination-ref "ghcr.io/${GITHUB_REPOSITORY,,}" \
             "${tags[@]}"
       - name: Independently verify production tags resolve to the promoted digest
+        id: promote
         shell: bash
         env:
           RELEASE_SHA: ${{ needs.validate-release.outputs.sha }}
@@ -250,7 +243,7 @@ jobs:
           if [[ -n "$RELEASE_TAG" ]]; then
             tags+=("$VERSION")
           fi
-          python3 bundle/release/promote_digest.py \
+          python3 scripts/promote_digest.py \
             --verify-only \
             --digest "$QUARANTINED_DIGEST" \
             --destination-ref "ghcr.io/${GITHUB_REPOSITORY,,}" \

@@ -53,7 +53,7 @@ jobs:
           set -euo pipefail
           echo "dependency source: $DEPENDENCY_SOURCE (mutable upstream; see workflow header)"
           echo "resolver tooling: $RESOLVER_TOOLING"
-          echo "runner: $ImageOSVersion$ImageVersion (recorded for reproducibility)"
+          echo "runner: ${ImageOS:-unknown} ${ImageVersion:-unknown} (recorded for reproducibility)"
           python -m pip install "pip==$PIP_VERSION" "pip-tools==$PIP_TOOLS_VERSION"
           lock_id="linux-x64-py${PYTHON_VERSION//./}"
           # Fresh isolated cache: stale local cache state cannot alter the result.
@@ -97,7 +97,7 @@ jobs:
           {
             echo "dependency source: $DEPENDENCY_SOURCE (mutable upstream)"
             echo "resolver tooling: $RESOLVER_TOOLING"
-            echo "runner image: ${ImageOSVersion:-unknown} ${ImageVersion:-unknown}"
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
           } > refresh-metadata.txt
           for kind in runtime dev; do
             name="requirements-$kind-$lock_id.lock"

@@ -157,10 +157,11 @@ def test_refresh_covers_every_supported_variant(
 def test_documented_toolchain_matches_canonical_pip(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root = _lock_policy_tree(tmp_path, pip_version="26.1.2")
-    assert _run_lock_policy(root) == 1
-    captured = capsys.readouterr()
-    assert "does not match canonical" in captured.err
+    for stale_version in ("26.1.2", "25.3.0"):
+        root = _lock_policy_tree(tmp_path / stale_version, pip_version=stale_version)
+        assert _run_lock_policy(root) == 1
+        captured = capsys.readouterr()
+        assert "does not match canonical" in captured.err
 
 
 def test_release_has_single_generic_entrypoint_without_hardcoded_version() -> None:

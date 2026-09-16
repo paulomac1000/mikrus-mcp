@@ -87,7 +87,6 @@ def _check_toolchain_consistency(root: Path) -> list[str]:
         found = {
             match.group(1)
             for match in DOC_INSTALL_PATTERN.finditer(doc.read_text(encoding="utf-8"))
-            if match.group(1).startswith("26.")
         }
         stale = {version for version in found if version != CANONICAL_PIP_VERSION}
         if stale:
