@@ -3,7 +3,7 @@
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
 [![AI Skills](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml)
 [![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue)](https://www.python.org/)
-[![Version 2.1.0](https://img.shields.io/badge/version-2.1.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
+[![Version 2.2.0](https://img.shields.io/badge/version-2.2.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for managing [mikr.us](https://mikr.us/) VPS instances and remote Linux hosts over SSH.
@@ -89,12 +89,12 @@ The single-server form is the smallest configuration. For SSH or multiple target
 ### 4. Build and run with Docker
 
 ```bash
-docker build -t mikrus-mcp:2.1.0 .
+docker build -t mikrus-mcp:2.2.0 .
 
 docker run --rm \
   -e MIKRUS_API_KEY='replace-me' \
   -e MIKRUS_SERVER_NAME='srv123' \
-  mikrus-mcp:2.1.0
+  mikrus-mcp:2.2.0
 ```
 
 Published release images are promoted by immutable digest. Prefer a release tag or digest over an unpinned moving tag in production.
@@ -453,9 +453,9 @@ Representative success:
   "_meta": {
     "request_id": "6a5c...",
     "capability": "get_server_info",
-    "capability_version": "2.1.0",
+    "capability_version": "2.2.0",
     "source": "mikrus-mcp",
-    "artifact": "mikrus-mcp==2.1.0",
+    "artifact": "mikrus-mcp==2.2.0",
     "target": "srv123",
     "target_identity": "mikrus:srv123",
     "backend": "mikrus",

@@ -2,7 +2,51 @@
 
 All notable changes to mikrus-mcp are recorded here.
 
-## [2.1.0] - 2026-09-12
+## [2.2.0] - 2026-09-16
+
+### Changed
+
+- Typed SSH program execution admission is now a per-executable policy:
+  `docker` (read-only subcommands), `curl` (diagnostic allowlist only — leading
+  `-q`/`--disable` required, GET/HEAD only, no request bodies/uploads, no
+  config files (`-K/--config`), no `-H @file/@-`, no proxy/Unix-socket/trace/
+  dump/cookie/etag file I/O, `-o` restricted to `/dev/null`, explicit
+  `http://`/`https://` destinations only, loopback/private/link-local/metadata/
+  local hosts rejected, optional fail-closed
+  `MCP_CURL_DESTINATION_ALLOWLIST`), and `systemctl` (read-only verbs; service
+  mutations remain on `change_service_state`). Unsupported invocations are
+  rejected before dispatch with typed `PROGRAM_SUBCOMMAND_NOT_PERMITTED` /
+  `PROGRAM_ARGUMENT_NOT_PERMITTED` policy codes. The policy applies uniformly
+  to `execute_program`, `start_program`, `remote_job_start`, and persisted cron
+  arguments.
+
+### Fixed
+
+- `list_docker_containers`/`get_docker_stats` check the Docker CLI exit status
+  before parsing: a daemon/permission failure is a typed upstream error with
+  bounded sanitized stderr, never a successful empty inventory. Record decoding
+  parses JSON first and decodes HTML entities only inside string keys/values,
+  with a tested fallback for the historical fully-escaped transport.
+- `analyze_disk` captures each phase's producer exit status (df and du
+  independently; no reliance on pipeline status) and preserves bounded
+  sanitized `du` stderr; failures are typed
+  (`REMOTE_COMMAND_FAILED`/`PERMISSION_DENIED`/`TIMEOUT`/`PARSER_FAILED`) and
+  partial results name the failed section. Remote tempfiles are cleaned by
+  POSIX traps even when the diagnostic is interrupted.
+- `list_processes` reports the explicit `ps` producer status (typed failure on
+  `ps` error), excludes the wrapper process before applying the 20-record
+  budget, and reports `processesTruncated` only when more than 20 usable
+  records were observed, with an explicit `observedAt` timestamp.
+
+### Added
+
+- `docs/ci-troubleshooting.md`: recurring hosted-CI and bot-gate friction with
+  verified mitigations.
+- Acceptance coverage for durable remote jobs (idempotency conflicts, PID-reuse
+  protection, output cursor paging, bounded wait, cross-instance recovery,
+  retention) and build-provenance distinguishability between source revisions.
+
+ - 2026-09-12
 
 ### Added
 
