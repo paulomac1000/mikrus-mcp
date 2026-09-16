@@ -155,3 +155,33 @@ def test_allowed_evidence_paths_stay_in_sync_with_freshness_gate() -> None:
     from scripts.rebind_evidence import ALLOWED_EVIDENCE_PATHS
 
     assert ALLOWED_EVIDENCE_PATHS == set(DEFAULT_ALLOWED_EVIDENCE_PATHS)
+
+
+def test_default_rebind_rejects_dirty_working_tree(
+    evidence_repo: tuple[Path, str, str],
+) -> None:
+    import sys
+
+    root, _first, second = evidence_repo
+    (root / "service.py").write_text("uncommitted source change", encoding="utf-8")
+    argv = sys.argv
+    sys.argv = ["rebind_evidence.py", "--repo", str(root)]
+    try:
+        with pytest.raises(SystemExit):
+            rebind_main()
+    finally:
+        sys.argv = argv
+    assert f"assessed_revision: {second}" not in (root / BINDING_RELATIVE).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_rebind_rejects_revision_that_is_not_head(
+    evidence_repo: tuple[Path, str, str],
+) -> None:
+    root, first, second = evidence_repo
+    before = (root / BINDING_RELATIVE).read_text(encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _run(root, "--revision", first)
+    assert (root / BINDING_RELATIVE).read_text(encoding="utf-8") == before
+    del second

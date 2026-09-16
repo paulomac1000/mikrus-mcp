@@ -205,6 +205,20 @@ def main() -> int:
         print(f"evidence binding verified for exact candidate {revision}")
         return 0
 
+    head = _git(root, "rev-parse", "HEAD")
+    if revision != head:
+        raise RebindError(
+            f"--revision {revision} is not the checked-out HEAD {head}; "
+            "check out the exact acceptance candidate so the binding corresponds "
+            "to the reviewed tree, then re-run"
+        )
+    dirty = _git(root, "status", "--porcelain")
+    if dirty:
+        raise RebindError(
+            "working tree is dirty; uncommitted source changes were never assessed "
+            "and must not be relabeled as fresh evidence:\n" + dirty
+        )
+
     _rewrite_binding(binding_path, revision)
     print(f"assessed_revision bound to exact candidate {revision}")
     if args.require_provider_run:
