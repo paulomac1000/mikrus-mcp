@@ -211,20 +211,11 @@ def audit(path: Path) -> list[str]:
                     if isinstance(step, dict) and str(step.get("uses", "")).startswith(
                         "actions/checkout@"
                     ):
-                        with_block = step.get("with")
-                        trusted_checkout = (
-                            isinstance(with_block, dict)
-                            and with_block.get("ref") == "${{ env.PROMOTER_REVISION }}"
-                            and with_block.get("sparse-checkout") == "scripts/promote_digest.py"
-                            and with_block.get("persist-credentials") is False
+                        findings.append(
+                            f"{path.name}: publish step {index} must not checkout "
+                            "candidate source; the promoter script arrives via the "
+                            "digest-verified CI bundle"
                         )
-                        if not trusted_checkout:
-                            findings.append(
-                                f"{path.name}: publish step {index} must not checkout "
-                                "candidate source (only the pinned immutable "
-                                "PROMOTER_REVISION sparse checkout of the promoter "
-                                "script is allowed)"
-                            )
 
         steps = raw_job.get("steps")
         if not isinstance(steps, list):
