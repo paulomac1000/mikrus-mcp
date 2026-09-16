@@ -41,21 +41,6 @@ def _run_helper(payload: dict[str, Any], home: Path, timeout: int = 60) -> dict[
     return json.loads(text) if text else {}
 
 
-def _start_job(home: Path, *, code: str, limit: int = TEST_LIMIT_BYTES) -> dict[str, Any]:
-    return _run_helper(
-        {
-            "operation": "start",
-            "job_id": VALID_JOB_ID,
-            "request_digest": "d" * 64,
-            "executable": sys.executable,
-            "argv": ["-c", code],
-            "output_limit_bytes": limit,
-            "worker": ssh_module._REMOTE_JOB_WORKER,
-        },
-        home,
-    )
-
-
 def _run_to_terminal(home: Path, *, timeout: float = 30.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -668,3 +653,82 @@ def test_gc_rotating_cursor_eventually_reaches_entries_beyond_budget(tmp_path: P
     assert removed_total == len(stale_names)
     remaining = [name for name in stale_names if (_job_root(home) / name).exists()]
     assert remaining == []
+
+
+def test_worker_does_not_deadlock_when_child_fills_stdout_before_reading_stdin(
+    tmp_path: Path,
+) -> None:
+    home = _home(tmp_path)
+    child_code = (
+        "import sys\n"
+        "for _ in range(10):\n"
+        "    sys.stdout.write('x' * 100_000)\n"
+        "sys.stdout.flush()\n"
+        "data = sys.stdin.read()\n"
+        "sys.stdout.write('done:' + str(len(data)))\n"
+    )
+    _start_job(
+        home,
+        code=child_code,
+        payload_stdin="y" * 2_000_000,
+    )
+    record = _run_to_terminal(home, timeout=45.0)
+    assert record["state"] == "succeeded"
+    assert record["stdoutTruncated"] is True
+
+
+def _start_job(
+    home: Path,
+    *,
+    code: str,
+    limit: int = TEST_LIMIT_BYTES,
+    payload_stdin: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "operation": "start",
+        "job_id": VALID_JOB_ID,
+        "request_digest": "d" * 64,
+        "executable": sys.executable,
+        "argv": ["-c", code],
+        "output_limit_bytes": limit,
+        "drain_grace_seconds": 2.0,
+        "worker": ssh_module._REMOTE_JOB_WORKER,
+    }
+    if payload_stdin is not None:
+        payload["stdin"] = payload_stdin
+    return _run_helper(payload, home)
+
+
+def test_incomplete_output_drain_refuses_success(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = VALID_JOB_ID
+    _start_job(
+        home,
+        code=(
+            "import os, subprocess, sys\n"
+            "descendant = (\n"
+            "    f'import time; time.sleep({60}); '\n"
+            "    'print(\\\"late\\\" * 100000)'\n"
+            ")\n"
+            "subprocess.Popen([sys.executable, '-c', descendant], start_new_session=True)\n"
+            "sys.stdout.write('leader-done')\n"
+            "sys.stdout.flush()\n"
+        ),
+        limit=TEST_LIMIT_BYTES,
+    )
+    job_dir = _job_root(home) / job_id
+    record_path = job_dir / "record.json"
+    deadline = time.monotonic() + 60
+    record: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        raw = json.loads(record_path.read_text(encoding="utf-8"))
+        if raw.get("finishedAt") is not None:
+            record = raw
+            break
+        time.sleep(0.2)
+    assert record.get("state") == "failed", record
+    assert "incomplete" in str(record.get("error", ""))
+    try:
+        os.killpg(os.getpgid(int(record["runtimeIdentity"]["pid"])), 9)
+    except (ProcessLookupError, OSError, KeyError):
+        pass

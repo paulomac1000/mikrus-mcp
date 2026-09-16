@@ -309,7 +309,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         grace = float(payload.get("grace_seconds", 3600))
         budget = int(payload.get("max_entries", 256))
         summary = {
-            "scanned": 0, "removed": 0, "keptActive": 0, "keptRecent": 0, "errors": 0,
+            "enumerated": 0,
+            "scanned": 0,
+            "removed": 0,
+            "keptActive": 0,
+            "keptRecent": 0,
+            "errors": 0,
         }
 
         def pid_alive(identity):
@@ -337,17 +342,25 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 summary["errors"] += 1
 
         try:
-            all_names = sorted(entry.name for entry in os.scandir(root))
+            total = 0
+            for _entry in os.scandir(root):
+                total += 1
+            summary["enumerated"] = total
         except OSError:
             return summary
-        if not all_names:
+        if total == 0:
             return summary
-        # Rotating wrap-around cursor: successive passes at different times
-        # start at different offsets, so entries beyond one budget are still
-        # eventually visited while each pass stays bounded.
-        offset = int(now // 60) % len(all_names)
-        rotated = all_names[offset:] + all_names[:offset]
-        for entry_name in rotated:
+        # Rotating window: each pass inspects at most `budget` consecutive
+        # entries starting at a time-derived offset, so successive passes
+        # eventually visit every entry while pass memory stays O(budget) and
+        # no full-directory sort or materialization happens.
+        offset = int(now // 60) % total
+        window_names = []
+        for index, entry in enumerate(os.scandir(root)):
+            relative = index - offset
+            if 0 <= relative < budget or (relative < 0 and relative + total < budget):
+                window_names.append(entry.name)
+        for entry_name in window_names:
             if summary["scanned"] >= budget:
                 break
             summary["scanned"] += 1
@@ -382,10 +395,25 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     remove_dir(path)
                 continue
             try:
-                record = json.loads(
-                    (path / "record.json").read_text(encoding="utf-8")[:65536]
+                record_fd = os.open(
+                    path / "record.json",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
                 )
-            except (OSError, ValueError):
+                try:
+                    raw_record = os.read(record_fd, 65537)
+                finally:
+                    os.close(record_fd)
+            except OSError:
+                raw_record = b""
+            if len(raw_record) > 65536:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    remove_dir(path)
+                continue
+            try:
+                record = json.loads(raw_record)
+            except ValueError:
                 if fresh:
                     summary["keptRecent"] += 1
                 else:
@@ -612,7 +640,6 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
     job_dir = meta_path.parent
     lock_path = meta_path.with_name(meta_path.name + ".lock")
-    payload = None
     def acquire_lock():
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
@@ -640,6 +667,39 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             return fields[21]
         except (OSError, IndexError, ValueError):
             return None
+    def drain_capped(pipe, fileobj, state, output_limit):
+        stored = 0
+        discarded = 0
+        while True:
+            chunk = pipe.read(65536)
+            if not chunk:
+                break
+            room = output_limit - stored
+            if room > 0:
+                keep = chunk[:room]
+                fileobj.write(keep)
+                fileobj.flush()
+                stored += len(keep)
+            if len(chunk) > room:
+                discarded += len(chunk) - room
+        state["stored"] = stored
+        state["truncated"] = discarded > 0
+        state["discarded"] = discarded
+        try:
+            pipe.close()
+        except OSError:
+            pass
+    def fail_record(message):
+        lock_fd = acquire_lock()
+        try:
+            record = read_record()
+            record["state"] = "failed"
+            record["error"] = message
+            record["finishedAt"] = time.time()
+            record.pop("payload", None)
+            write_record(record)
+        finally:
+            release_lock(lock_fd)
     lock_fd = acquire_lock()
     try:
         record = read_record()
@@ -652,14 +712,19 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     record["state"] = "running"
     limits = record.get("limits") or {}
     output_limit = int(limits.get("outputBytes") or (1024 * 1024))
-    child = subprocess.Popen(
-        [payload["executable"], *payload["argv"]],
-        cwd=payload.get("cwd"),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    drain_grace = float(limits.get("drainGraceSeconds", 30.0))
+    try:
+        child = subprocess.Popen(
+            [payload["executable"], *payload["argv"]],
+            cwd=payload.get("cwd"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as spawn_error:
+        fail_record("worker could not spawn the program: " + str(spawn_error)[:256])
+        raise SystemExit(0)
     lock_fd = acquire_lock()
     try:
         record = read_record()
@@ -680,6 +745,24 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         write_record(record)
     finally:
         release_lock(lock_fd)
+    stdout_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stderr_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stdout_file = (job_dir / "stdout").open("wb")
+    stderr_file = (job_dir / "stderr").open("wb")
+    threads = [
+        threading.Thread(
+            target=drain_capped, args=(child.stdout, stdout_file, stdout_state, output_limit)
+        ),
+        threading.Thread(
+            target=drain_capped, args=(child.stderr, stderr_file, stderr_state, output_limit)
+        ),
+    ]
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+    # Drainers must consume stdout/stderr while stdin is being delivered;
+    # a child that fills an output pipe before reading stdin would otherwise
+    # deadlock against the worker's stdin write.
     stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
     if child.stdin is not None:
         try:
@@ -692,43 +775,6 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
                 child.stdin.close()
             except OSError:
                 pass
-    def drain_capped(pipe, fileobj, state):
-        stored = 0
-        truncated = False
-        discarded = 0
-        while True:
-            chunk = pipe.read(65536)
-            if not chunk:
-                break
-            room = output_limit - stored
-            if room > 0:
-                keep = chunk[:room]
-                fileobj.write(keep)
-                fileobj.flush()
-                stored += len(keep)
-            if len(chunk) > room:
-                truncated = True
-                discarded += len(chunk) - room
-            elif room == 0:
-                truncated = truncated or False
-        state["stored"] = stored
-        state["truncated"] = truncated or discarded > 0
-        state["discarded"] = discarded
-        try:
-            pipe.close()
-        except OSError:
-            pass
-    stdout_state = {"stored": 0, "truncated": False, "discarded": 0}
-    stderr_state = {"stored": 0, "truncated": False, "discarded": 0}
-    stdout_file = (job_dir / "stdout").open("wb")
-    stderr_file = (job_dir / "stderr").open("wb")
-    threads = [
-        threading.Thread(target=drain_capped, args=(child.stdout, stdout_file, stdout_state)),
-        threading.Thread(target=drain_capped, args=(child.stderr, stderr_file, stderr_state)),
-    ]
-    for thread in threads:
-        thread.daemon = True
-        thread.start()
     worker_failed = False
     try:
         code = child.wait()
@@ -743,20 +789,36 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         except OSError:
             pass
         code = child.returncode
+    drain_deadline = time.monotonic() + drain_grace
     for thread in threads:
-        thread.join(timeout=30)
+        thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+    incomplete_drain = any(thread.is_alive() for thread in threads)
+    if incomplete_drain:
+        # A descendant still holds the output pipes; the stored streams cannot
+        # become complete. Terminate the remaining group and refuse success.
+        try:
+            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        for thread in threads:
+            thread.join(timeout=5)
     stdout_file.close()
     stderr_file.close()
-    child_failed = code is None or code != 0
     overflowed = stdout_state["truncated"] or stderr_state["truncated"]
     lock_fd = acquire_lock()
     try:
         record = read_record()
         if record.get("state") != "cancelled":
-            if worker_failed:
+            if worker_failed or incomplete_drain:
                 record["state"] = "failed"
             else:
                 record["state"] = "succeeded" if code == 0 else "failed"
+            if incomplete_drain:
+                record["error"] = (
+                    "output drain did not finish before the bounded grace period; "
+                    "remaining process-group members were terminated and the "
+                    "stored streams may be incomplete"
+                )
             if overflowed:
                 record["stdoutTruncated"] = stdout_state["truncated"]
                 record["stderrTruncated"] = stderr_state["truncated"]
