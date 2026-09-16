@@ -16,6 +16,11 @@ from mikrus_mcp.clients.common import _remote_atomic_write_command, _remote_read
 from mikrus_mcp.clients.mikrus import _parse_process_snapshot
 from mikrus_mcp.config import TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.remote_jobs import (
+    MAX_REMOTE_OUTPUT_BYTES,
+    REMOTE_JOB_GRACE_SECONDS,
+    REMOTE_JOB_RETENTION_SECONDS,
+)
 from mikrus_mcp.sanitizer import sanitize_text
 from mikrus_mcp.tools.constants import (
     EXEC_HTTP_TIMEOUT,
@@ -241,14 +246,17 @@ _PROGRAM_HELPER = textwrap.dedent(
 
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import fcntl, hashlib, json, os, re, signal, subprocess, sys, tempfile, time
+    import fcntl, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
     JOB_ID = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
     payload = json.load(sys.stdin)
+    operation = payload.get("operation")
     job_id = payload.get("job_id", "")
-    if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
+    if operation != "gc" and (
+        not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id)
+    ):
         raise SystemExit("invalid job id")
     root = Path.home() / ".cache" / "mikrus-mcp" / "remote-jobs"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -274,21 +282,134 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             if os.path.exists(name):
                 os.unlink(name)
     def output(path, offset, maximum):
-        data = path.read_bytes() if path.exists() else b""
-        chunk = data[offset:offset + maximum]
-        return {
-            "data": chunk.decode(errors="replace"),
-            "next_offset": offset + len(chunk),
-            "eof": offset + len(chunk) >= len(data),
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(path, os.O_RDONLY | nofollow)
+        except FileNotFoundError:
+            return {"data": "", "next_offset": int(offset), "eof": True}
+        except NotADirectoryError:
+            return {"data": "", "next_offset": int(offset), "eof": True}
+        try:
+            size = os.fstat(fd).st_size
+            start = max(0, int(offset))
+            if start >= size:
+                return {"data": "", "next_offset": start, "eof": True}
+            os.lseek(fd, start, os.SEEK_SET)
+            chunk = os.read(fd, max(1, int(maximum)))
+            return {
+                "data": chunk.decode(errors="replace"),
+                "next_offset": start + len(chunk),
+                "eof": start + len(chunk) >= size,
+            }
+        finally:
+            os.close(fd)
+    def gc_operation(payload):
+        now = time.time()
+        retention = float(payload.get("retention_seconds", 604800))
+        grace = float(payload.get("grace_seconds", 3600))
+        budget = int(payload.get("max_entries", 256))
+        summary = {
+            "scanned": 0, "removed": 0, "keptActive": 0, "keptRecent": 0, "errors": 0,
         }
+        def entry_mtime(entry):
+            try:
+                return entry.stat(follow_symlinks=False).st_mtime
+            except OSError:
+                return None
+        def record_mtime(path):
+            try:
+                return os.lstat(path / "record.json").st_mtime
+            except OSError:
+                return None
+        def pid_alive(identity):
+            if not isinstance(identity, dict):
+                return False
+            try:
+                pid = int(identity.get("pid"))
+            except (TypeError, ValueError):
+                return False
+            try:
+                fields = PathLib(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
+            except (OSError, ValueError, IndexError):
+                return False
+            if len(fields) <= 21:
+                return False
+            if fields[2] in {"Z", "z", "X", "x"}:
+                return False
+            return identity.get("startTicks") == fields[21]
+        def remove_dir(path):
+            try:
+                shutil.rmtree(path)
+                summary["removed"] += 1
+            except OSError:
+                summary["errors"] += 1
+        try:
+            entries = sorted(os.scandir(root), key=lambda item: item.name)
+        except OSError:
+            return summary
+        for entry in entries:
+            if summary["scanned"] >= budget:
+                break
+            summary["scanned"] += 1
+            path = root / entry.name
+            fresh_mtime = max(
+                filter(None, (entry_mtime(entry), record_mtime(path))), default=None
+            )
+            fresh = fresh_mtime is not None and (now - fresh_mtime) <= grace
+            if not entry.is_dir(follow_symlinks=False):
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    try:
+                        os.unlink(path)
+                        summary["removed"] += 1
+                    except OSError:
+                        summary["errors"] += 1
+                continue
+            st_meta = None
+            try:
+                st_meta = os.lstat(path / "record.json")
+            except OSError:
+                st_meta = None
+            if st_meta is None or not stat.S_ISREG(st_meta.st_mode):
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    remove_dir(path)
+                continue
+            try:
+                record = json.loads((path / "record.json").read_text(encoding="utf-8")[:65536])
+            except (OSError, ValueError):
+                summary["keptActive"] += 1
+                continue
+            state = record.get("state")
+            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                finished = record.get("finishedAt")
+                if not isinstance(finished, (int, float)) or (now - float(finished)) > retention:
+                    remove_dir(path)
+                else:
+                    summary["keptRecent"] += 1
+                continue
+            if fresh:
+                summary["keptRecent"] += 1
+                continue
+            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                summary["keptActive"] += 1
+                continue
+            if state == "queued" and record.get("runtimeIdentity") == {}:
+                summary["keptActive"] += 1
+                continue
+            remove_dir(path)
+        return summary
     def start_ticks(pid):
         try:
             fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
             return fields[21]
         except (OSError, IndexError, ValueError):
             return None
-    operation = payload.get("operation")
-    if operation == "start":
+    if operation == "gc":
+        print(json.dumps(gc_operation(payload)))
+    elif operation == "start":
         job_dir.mkdir(mode=0o700, parents=False, exist_ok=False) if not job_dir.exists() else None
         if meta_path.exists():
             record = read_record()
@@ -297,12 +418,19 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 raise SystemExit(0)
             print(json.dumps(record))
             raise SystemExit(0)
+        raw_limit = payload.get("output_limit_bytes")
+        try:
+            output_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            output_limit = 1024 * 1024
+        output_limit = min(max(output_limit, 4096), 16 * 1024 * 1024)
         record = {
             "jobId": job_id,
             "state": "queued",
             "requestDigest": payload["request_digest"],
             "createdAt": time.time(),
             "safeToRetry": False,
+            "limits": {"outputBytes": output_limit},
             "payload": {
                 "executable": payload["executable"],
                 "argv": payload["argv"],
@@ -370,6 +498,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 numeric_pgid = None
             if record.get("state") == "queued" and identity == {}:
                 record["state"] = "cancelled"
+                record["finishedAt"] = time.time()
                 write_record(record)
                 fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
                 os.close(cancel_lock_fd)
@@ -446,6 +575,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             terminated = not group_has_live_process()
             record["state"] = "cancelled"
             record["terminated"] = terminated
+            record["finishedAt"] = time.time()
             write_record(record)
             fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
             os.close(cancel_lock_fd)
@@ -467,7 +597,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 ).strip()
 _REMOTE_JOB_WORKER = textwrap.dedent(
     """
-    import fcntl, json, os, signal, subprocess, tempfile
+    import fcntl, json, os, resource, signal, subprocess, tempfile, time
     from datetime import datetime, timezone
     from pathlib import Path
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
@@ -511,6 +641,10 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         release_lock(lock_fd)
     record.pop("payload", None)
     record["state"] = "running"
+    limits = record.get("limits") or {}
+    output_limit = int(limits.get("outputBytes") or (1024 * 1024))
+    def _child_limits():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (output_limit, output_limit))
     with (job_dir / "stdout").open("wb") as stdout, (job_dir / "stderr").open("wb") as stderr:
         child = subprocess.Popen(
             [payload["executable"], *payload["argv"]],
@@ -519,6 +653,7 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             stdout=stdout,
             stderr=stderr,
             start_new_session=True,
+            preexec_fn=_child_limits,
         )
         lock_fd = acquire_lock()
         try:
@@ -541,12 +676,15 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         finally:
             release_lock(lock_fd)
         worker_failed = False
+        stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
         try:
-            child.communicate(
-                input=payload["stdin"].encode()
-                if payload.get("stdin") is not None
-                else None
-            )
+            if stdin_bytes is not None and child.stdin is not None:
+                try:
+                    child.stdin.write(stdin_bytes)
+                    child.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            code = child.wait()
         except Exception:
             worker_failed = True
             try:
@@ -557,18 +695,34 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
                 child.wait()
             except OSError:
                 pass
-        code = child.returncode
+            code = child.returncode
+        stdout_size = (job_dir / "stdout").stat().st_size
+        stderr_size = (job_dir / "stderr").stat().st_size
+    child_failed = code is None or code != 0
+    overflowed = child_failed and (
+        stdout_size >= output_limit or stderr_size >= output_limit
+    )
     lock_fd = acquire_lock()
     try:
         record = read_record()
         if record.get("state") != "cancelled":
-            if worker_failed or code != 0:
+            if overflowed:
+                record["state"] = "failed"
+                record["error"] = (
+                    "output storage bound exceeded; the process was terminated "
+                    "by SIGXFSZ after reaching the per-job output ceiling"
+                )
+            elif worker_failed or code != 0:
                 record["state"] = "failed"
             else:
                 record["state"] = "succeeded"
+            if overflowed:
+                record["stdoutTruncated"] = stdout_size >= output_limit
+                record["stderrTruncated"] = stderr_size >= output_limit
             if code is not None:
                 record["exitCode"] = code
         record.pop("payload", None)
+        record["finishedAt"] = time.time()
         write_record(record)
     finally:
         release_lock(lock_fd)
@@ -1378,7 +1532,25 @@ class SshClient:
                 "argv": argv,
                 "cwd": cwd,
                 "stdin": stdin,
+                "output_limit_bytes": MAX_REMOTE_OUTPUT_BYTES,
                 "worker": _REMOTE_JOB_WORKER,
+            },
+            mutation=True,
+        )
+
+    async def remote_job_gc(
+        self,
+        *,
+        retention_seconds: int = REMOTE_JOB_RETENTION_SECONDS,
+        grace_seconds: int = REMOTE_JOB_GRACE_SECONDS,
+        max_entries: int = 256,
+    ) -> dict[str, Any]:
+        return await self._remote_job_call(
+            {
+                "operation": "gc",
+                "retention_seconds": retention_seconds,
+                "grace_seconds": grace_seconds,
+                "max_entries": max_entries,
             },
             mutation=True,
         )

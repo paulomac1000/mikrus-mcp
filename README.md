@@ -272,6 +272,31 @@ record instead of surfacing the raw timeout (an unrecoverable lookup surfaces
 (`REMOTE_JOB_RETENTION_SECONDS = 604800`); expired records are cleaned on the next
 registry read.
 
+Remote durable-job storage is bounded throughout the job lifecycle:
+
+- **Live output bound.** Worker stdout and stderr are capped per stream
+  (`MAX_REMOTE_OUTPUT_BYTES = 1000000`, clamped 4 KiB–16 MiB) through a per-process
+  file-size limit. A process that attempts to write past the bound is terminated
+  (POSIX file-size limit; CPython children see `EFBIG`), the job reaches a typed
+  `failed` outcome with `stdoutTruncated`/`stderrTruncated` markers and a bounded
+  error message, and stored bytes never exceed the documented limit.
+- **Bounded range reads.** `remote_job_output` performs a true bounded seek/read of
+  the requested byte range; a 64 KiB slice of a multi-megabyte stream reads only
+  that slice. Continuation metadata (`offset`/`nextOffset`/`eof`) is deterministic
+  across repeated reads.
+- **Retention GC.** After every successful `remote_job_start`, the server runs a
+  bounded, idempotent garbage-collection pass on the managed remote job root
+  (`~/.cache/mikrus-mcp/remote-jobs`). It removes terminal job directories whose
+  `finishedAt` is older than the retention horizon, collects orphaned or partial
+  directories and stale identities that can no longer represent a live job after a
+  grace period (`REMOTE_JOB_GRACE_SECONDS = 3600`), never removes a running job
+  whose recorded process identity is alive, never follows symlinks, never leaves
+  the managed root, and scans at most 256 entries per pass. GC failures are
+  reported as a typed `gc` error in the start response and never fail the start.
+- **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
+  `remote_job_result` for an expired job surface the owner-bound local record with
+  `remotePayloadRemoved: true` instead of a raw not-found error.
+
 ### Cron profiles
 
 Set an absolute owner-controlled store path to activate the `cron_list`, `cron_upsert`,

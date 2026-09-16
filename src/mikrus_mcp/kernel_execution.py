@@ -403,6 +403,11 @@ class ExecutionMixin:
                         job_id=record.job_id, principal=caller.principal, now=now
                     )
                     raise
+                try:
+                    gc_summary: dict[str, Any] = await client.remote_job_gc()
+                except AppError as gc_exc:
+                    gc_summary = {"gcError": gc_exc.code.value, "gcMessage": gc_exc.message}
+                return {**record.as_dict(), "reused": reused, "gc": gc_summary}
             return {**record.as_dict(), "reused": reused}
 
         if name in {
@@ -415,25 +420,37 @@ class ExecutionMixin:
             if self.remote_jobs is None or client is None:
                 raise AppError(ErrorCode.UNAVAILABLE, "durable remote jobs are not configured")
             job_id = str(arguments["job_id"])
-            if name == "remote_job_status":
-                remote = await client.remote_job_status(job_id=job_id)
-            elif name == "remote_job_wait":
-                remote = await client.remote_job_wait(
-                    job_id=job_id, timeout_seconds=float(arguments.get("timeout_seconds", 30))
-                )
-            elif name == "remote_job_result":
-                remote = await client.remote_job_result(job_id=job_id)
-            elif name == "remote_job_output":
-                remote = await client.remote_job_output(
-                    job_id=job_id,
-                    stream=str(arguments["stream"]),
-                    offset=int(arguments.get("offset", 0)),
-                    max_bytes=int(arguments.get("max_bytes", 65_536)),
-                )
-            else:
-                remote = await client.remote_job_cancel(
-                    job_id=job_id, reason=str(arguments.get("reason", "operator request"))
-                )
+            tombstone_states = {"expired"}
+            try:
+                if name == "remote_job_status":
+                    remote = await client.remote_job_status(job_id=job_id)
+                elif name == "remote_job_wait":
+                    remote = await client.remote_job_wait(
+                        job_id=job_id, timeout_seconds=float(arguments.get("timeout_seconds", 30))
+                    )
+                elif name == "remote_job_result":
+                    remote = await client.remote_job_result(job_id=job_id)
+                elif name == "remote_job_output":
+                    remote = await client.remote_job_output(
+                        job_id=job_id,
+                        stream=str(arguments["stream"]),
+                        offset=int(arguments.get("offset", 0)),
+                        max_bytes=int(arguments.get("max_bytes", 65_536)),
+                    )
+                else:
+                    remote = await client.remote_job_cancel(
+                        job_id=job_id, reason=str(arguments.get("reason", "operator request"))
+                    )
+            except AppError as exc:
+                if (
+                    exc.code == ErrorCode.NOT_FOUND
+                    and name in {"remote_job_status", "remote_job_result"}
+                    and self.remote_jobs is not None
+                ):
+                    record = self.remote_jobs.get(job_id=job_id, principal=caller.principal)
+                    if record.state in tombstone_states:
+                        return {**record.as_dict(), "remotePayloadRemoved": True}
+                raise
             state = remote.get("state")
             if state in {"running", "succeeded", "failed", "cancelled", "lost", "expired"}:
                 self.remote_jobs.reconcile_observed_state(
