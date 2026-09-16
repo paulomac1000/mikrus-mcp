@@ -62,7 +62,7 @@ Create an isolated environment:
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install "pip==26.1.2"
+.venv/bin/python -m pip install "pip==26.2.1"
 .venv/bin/python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
 .venv/bin/python -m pip install --no-deps .
 ```
