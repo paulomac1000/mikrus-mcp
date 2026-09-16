@@ -1,3 +1,5 @@
+import json
+
 from mikrus_mcp.config import Settings, TargetConfig
 from mikrus_mcp.manifests import MANIFESTS, active_names, inactive_reason, validate_manifests
 
@@ -64,3 +66,24 @@ def test_retry_and_concurrency_fields_are_executable_policy() -> None:
         assert manifest.retryable is bool(manifest.retry_conditions)
         if manifest.retry_conditions:
             assert manifest.idempotent is True
+
+
+def test_write_disabled_mutations_report_inactive_state_and_reason() -> None:
+    # SSH target is configured, so the only remaining inactivity cause for the
+    # mutation family is the process write policy.
+    target = TargetConfig("host", "ssh", host="server.example")
+    current = Settings({"host": target}, "host")
+    reason = inactive_reason("execute_program", current)
+    assert reason == {
+        "code": "WRITE_OPERATIONS_DISABLED",
+        "message": "write operations are disabled by process policy",
+    }
+    assert "execute_program" not in active_names(current)
+
+    # Mirrors how InvocationKernel.catalog() renders an inactive capability.
+    entry = MANIFESTS["execute_program"].as_dict(
+        active_state="inactive",
+        inactive_reason=reason,
+    )
+    assert entry["active_state"] == "inactive"
+    assert "WRITE_OPERATIONS_DISABLED" in json.dumps(entry)

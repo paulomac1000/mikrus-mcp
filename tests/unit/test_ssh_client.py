@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import shlex
 import signal
+import subprocess
 import sys
 import types
 from collections import deque
@@ -283,8 +286,13 @@ async def test_terminate_process_escalates_to_close_within_bounded_time(
 
 
 @pytest.mark.asyncio
-async def test_analyze_disk_fails_on_non_zero_exit_code() -> None:
-    process = FakeProcess([b""], stderr=[b"Permission denied"])
+async def test_analyze_disk_classifies_permission_denied_per_issue_23() -> None:
+    """Issue #23 replaced the generic UPSTREAM error with typed failure
+    classes: permission failure is classified distinctly from a plain remote
+    command failure."""
+    process = FakeProcess(
+        [b"\n---PHASE---fs:1\n---PHASE---du:1\n"], stderr=[b"df: /root: Permission denied"]
+    )
     process.exit_status = 1
     connection = FakeConnection(process)
     client = SshClient(ssh_target())
@@ -293,8 +301,244 @@ async def test_analyze_disk_fails_on_non_zero_exit_code() -> None:
     with pytest.raises(AppError) as exc_info:
         await client.analyze_disk("/root")
     assert exc_info.value.code == ErrorCode.UPSTREAM
-    assert "disk analysis failed with exit code 1" in exc_info.value.message
-    assert "Permission denied" in exc_info.value.message
+    assert "(PERMISSION_DENIED)" in exc_info.value.message
+    assert "phase=filesystem_summary" in exc_info.value.message
+    assert "exit_code=1" in exc_info.value.message
+    assert "df -h" not in exc_info.value.message
+
+
+def _analyze_process(stdout: bytes, stderr: list[bytes] | None = None, status: int = 0):
+    process = FakeProcess([stdout], stderr=stderr)
+    process.exit_status = status
+    connection = FakeConnection(process)
+    client = SshClient(ssh_target())
+    client._connection = connection
+    return client
+
+
+DF_SECTION = "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1 40G 12G 28G 31% /"
+DU_SECTION = "12G\t/\n4,1G\t/var"
+PHASE_OK = "\n---PHASE---fs:0\n---PHASE---du:0\n"
+PHASE_DU_FAILED = "\n---PHASE---fs:0\n---PHASE---du:1\n"
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_complete_result_has_typed_sections_and_time() -> None:
+    client = _analyze_process(
+        (DF_SECTION + "\n---TOP20---\n" + DU_SECTION + PHASE_OK).encode("utf-8")
+    )
+    result = await client.analyze_disk("/")
+    assert result["state"] == "complete"
+    assert result["filesystemSummary"]["state"] == "complete"
+    assert "/dev/sda1" in result["filesystemSummary"]["output"]
+    assert result["largeFiles"] == {"state": "complete", "output": DU_SECTION}
+    assert result["observedAt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_partial_when_large_files_phase_fails() -> None:
+    client = _analyze_process((DF_SECTION + "\n---TOP20---\n" + PHASE_DU_FAILED).encode("utf-8"))
+    result = await client.analyze_disk("/")
+    assert result["state"] == "partial"
+    assert result["filesystemSummary"]["state"] == "complete"
+    assert result["largeFiles"]["state"] == "failed"
+    assert result["largeFiles"]["exitCode"] == 1
+    assert result["largeFiles"]["failureClass"] == "REMOTE_COMMAND_FAILED"
+    assert result["observedAt"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_command_failure_is_remote_command_failed() -> None:
+    client = _analyze_process(
+        (DF_SECTION + "\n---TOP20---\n" + "\n---PHASE---fs:1\n---PHASE---du:1\n").encode("utf-8"),
+        stderr=[b"df: cannot access"],
+        status=1,
+    )
+    with pytest.raises(AppError) as exc_info:
+        await client.analyze_disk("/")
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_unparsable_output_is_parser_failed() -> None:
+    client = _analyze_process(b"df: /: no such output at all\n")
+    with pytest.raises(AppError) as exc_info:
+        await client.analyze_disk("/")
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_decodes_entities_and_round_trips_values() -> None:
+    line = (
+        '{"Command":"\\"docker-entrypoint…\\"","Names":"web&amp;db",'
+        '"Labels":"{\\"com.example.zone\\":\\"prod\\"}","Ports":"0.0.0.0:8080-&gt;80/tcp",'
+        '"Mounts":"vol1"}'
+    )
+    client = _analyze_process((line + "\n").encode("utf-8"))
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"][0]["Names"] == "web&db"
+    assert result["containers"][0]["Ports"] == "0.0.0.0:8080->80/tcp"
+    assert "&#34;" not in json.dumps(result["containers"])
+    assert "&amp;" not in json.dumps(result["containers"])
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_never_reports_success_on_unparsable_output() -> None:
+    client = _analyze_process(b'{}dangling{" broken\nnot json\n')
+    with pytest.raises(AppError) as exc_info:
+        await client.list_docker_containers()
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_empty_output_is_a_legitimate_success() -> None:
+    client = _analyze_process(b"")
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == []
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_mixed_output_is_partial_with_diagnostics() -> None:
+    good = '{"Command":"nginx","Names":"api"}'
+    client = _analyze_process((good + "\ncorrupted line\n").encode("utf-8"))
+    result = await client.get_docker_stats()
+    assert result["parseState"] == "partial"
+    assert result["parseDiagnostics"]["rejectedLines"] == 1
+    assert "corrupted line" in result["parseDiagnostics"]["excerpt"]
+    assert len(result["containers"]) == 1
+
+
+def _ps_output(body: str, status: int = 0, pserr: str = "") -> str:
+    return f"{body}\n---PSERR---\n{pserr}\n---ENDPSERR---\n---PSSTATUS---{status}\n"
+
+
+def _ps_line(
+    pid: int,
+    user: str,
+    mem: float,
+    command: str,
+) -> str:
+    return f"{user} {pid} 0.3 {mem} 120000 4000 ? Sl 10:00 0:05 {command}"
+
+
+@pytest.mark.asyncio
+async def test_list_processes_returns_structured_records_with_time() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [
+            header,
+            _ps_line(101, "app", 4.2, "python3 -c \"import 'a&b'\""),
+            _ps_line(102, "root", 1.1, "nginx: master process"),
+            _ps_line(103, "app", 0.4, "postgres -D /var/lib/data"),
+        ]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert result["state"] == "complete"
+    assert len(result["processes"]) == 3
+    assert result["processesTruncated"] is False
+    assert result["processLimit"] == 20
+    assert result["processSort"] == "memory"
+    assert result["observedAt"]
+    assert result["processes"][0]["pid"] == 101
+    assert result["processes"][0]["memoryPercent"] == 4.2
+    assert "a&b" in result["processes"][0]["command"]
+    assert "&amp;" not in json.dumps(result["processes"])
+
+
+@pytest.mark.asyncio
+async def test_list_processes_excludes_wrapper_command_from_inventory() -> None:
+    wrapper = _ps_line(900, "root", 0.1, "bash -c ps aux --sort=-%mem | head -n 21")
+    client = _analyze_process(_ps_output(wrapper).encode("utf-8"))
+    result = await client.list_processes()
+    assert result["state"] == "partial"
+    assert result["processes"] == []
+    assert result["error"]["code"] == "PROCESS_SNAPSHOT_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_list_processes_truncates_at_line_budget() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [header] + [_ps_line(1000 + index, "u", 0.1, "sleeper") for index in range(20)]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert result["processesTruncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_processes_reports_truncated_with_usable_lookahead() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [header] + [_ps_line(2000 + index, "u", 0.1, "sleeper") for index in range(21)]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert result["processesTruncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_processes_wrapper_does_not_consume_top_n_budget() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    wrapper = _ps_line(900, "root", 0.1, "bash -c ps aux --sort=-%mem | head -n 21")
+    body = "\n".join(
+        [header, wrapper] + [_ps_line(3000 + index, "u", 0.1, "sleeper") for index in range(20)]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert all(record["pid"] != 900 for record in result["processes"])
+    assert result["processesTruncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_processes_redacts_secret_arguments() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [
+            header,
+            _ps_line(77, "app", 0.2, "curl --password hunter2 -s http://example.com"),
+        ]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    serialized = json.dumps(result)
+    assert "hunter2" not in serialized
+    assert result["processes"][0]["executable"] == "curl"
+    assert result["processes"][0]["pid"] == 77
+
+
+@pytest.mark.asyncio
+async def test_list_processes_ps_failure_is_typed_even_when_pipeline_exits_zero() -> None:
+    """The remote command reports the ps producer status explicitly; a ps
+    failure must surface as a typed upstream failure even though the wrapping
+    shell pipeline exits 0."""
+    client = _analyze_process(
+        _ps_output("", status=1, pserr="ps: error reading /proc").encode("utf-8")
+    )
+    with pytest.raises(AppError) as exc_info:
+        await client.list_processes()
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert "exit_code=1" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_list_processes_missing_status_marker_is_parser_failed() -> None:
+    client = _analyze_process(b"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\n")
+    with pytest.raises(AppError) as exc_info:
+        await client.list_processes()
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
 
 
 def _run_helper(
@@ -1116,3 +1360,185 @@ async def test_collect_process_termination_fits_inside_caller_deadline(
     assert process.terminated is True
     assert process.closed is True
     assert elapsed < 0.35, f"termination exceeded caller deadline: {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_cli_failure_is_typed_not_empty_inventory() -> None:
+    client = _analyze_process(b"", stderr=[b"Cannot connect to the Docker daemon"], status=1)
+    with pytest.raises(AppError) as exc_info:
+        await client.list_docker_containers()
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert "Cannot connect to the Docker daemon" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_stats_cli_failure_with_permission_denied() -> None:
+    client = _analyze_process(b"", stderr=[b"permission denied while talking to socket"], status=1)
+    with pytest.raises(AppError) as exc_info:
+        await client.get_docker_stats()
+    assert "(PERMISSION_DENIED)" in exc_info.value.message
+    assert len(exc_info.value.message) < 600
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_exit_zero_empty_output_is_legitimate() -> None:
+    client = _analyze_process(b"")
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == []
+
+
+@pytest.mark.asyncio
+async def test_docker_stats_exit_zero_with_records_is_complete() -> None:
+    line = '{"BlockIO":"0B / 0B","Name":"web"}'
+    client = _analyze_process((line + "\n").encode("utf-8"))
+    result = await client.get_docker_stats()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == [{"BlockIO": "0B / 0B", "Name": "web"}]
+
+
+def test_docker_line_decode_preserves_entities_inside_valid_json() -> None:
+    line = '{"Command":"echo &quot;hi&quot;","Names":"web&amp;db"}'
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["Command"] == 'echo "hi"'
+    assert decoded["Names"] == "web&db"
+
+
+def test_docker_line_decode_handles_historical_whole_record_escaping() -> None:
+    line = (
+        "{&#34;Command&#34;:&#34;\\&#34;docker-entrypoint…\\&#34;&#34;,"
+        "&#34;Names&#34;:&#34;web&amp;db&#34;}"
+    )
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["Names"] == "web&db"
+    assert decoded["Command"].startswith('"docker-entrypoint')
+
+
+def test_docker_line_decode_preserves_non_string_types_and_nesting() -> None:
+    line = (
+        '{"SizeRootFs":123456789,"Running":true,"Created":1700000000.5,"Labels":null,'
+        '"Mounts":[{"Destination":"/data","RW":false}],'
+        '"NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}}}'
+    )
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["SizeRootFs"] == 123456789
+    assert decoded["Running"] is True
+    assert decoded["Created"] == 1700000000.5
+    assert decoded["Labels"] is None
+    assert decoded["Mounts"][0]["RW"] is False
+    assert decoded["NetworkSettings"]["Ports"]["80/tcp"][0]["HostPort"] == "8080"
+
+
+def _run_shell_in_tmp(command: str, workdir, tmpdir) -> subprocess.Popen:
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmpdir)
+    return subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+
+
+def _tempfile_count(tmpdir) -> int:
+    return len([entry for entry in tmpdir.iterdir() if entry.name.startswith("tmp.")])
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_remote_command_cleans_tempfiles_on_normal_exit(
+    tmp_path: Path,
+) -> None:
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    command = ssh_module._analyze_disk_remote_command(str(tmp_path))
+    process = _run_shell_in_tmp(command, tmp_path, tmp_path)
+    process.wait(timeout=30)
+    assert _tempfile_count(tmp_path) == 0
+
+
+def test_analyze_disk_remote_command_cleans_tempfiles_on_termination(
+    tmp_path: Path,
+) -> None:
+    """SIGTERM mid-run must still remove the mktemp files via the EXIT trap."""
+    import time as time_module
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "du").write_text("#!/bin/sh\nexec sleep 30\n")
+    (fakebin / "du").chmod(0o755)
+    command = ssh_module._analyze_disk_remote_command(str(tmp_path))
+
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmp_path)
+    environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
+    process = subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        deadline = time_module.monotonic() + 5
+        while time_module.monotonic() < deadline:
+            if _tempfile_count(tmp_path) > 0:
+                break
+            time_module.sleep(0.05)
+        assert _tempfile_count(tmp_path) > 0, "du never created its tempfiles"
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.wait(timeout=10)
+        for _ in range(50):
+            if _tempfile_count(tmp_path) == 0:
+                break
+            time_module.sleep(0.1)
+        assert _tempfile_count(tmp_path) == 0, "trap did not clean up tempfiles"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+
+
+def test_list_processes_remote_command_cleans_tempfiles_on_termination(
+    tmp_path: Path,
+) -> None:
+    """SIGTERM mid-run must still remove the ps snapshot tempfiles."""
+    import time as time_module
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "ps").write_text("#!/bin/sh\nexec sleep 30\n")
+    (fakebin / "ps").chmod(0o755)
+    command = ssh_module._list_processes_remote_command()
+
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmp_path)
+    environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
+    process = subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        deadline = time_module.monotonic() + 5
+        while time_module.monotonic() < deadline:
+            if _tempfile_count(tmp_path) > 0:
+                break
+            time_module.sleep(0.05)
+        assert _tempfile_count(tmp_path) > 0, "ps never created its tempfiles"
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.wait(timeout=10)
+        for _ in range(50):
+            if _tempfile_count(tmp_path) == 0:
+                break
+            time_module.sleep(0.1)
+        assert _tempfile_count(tmp_path) == 0, "trap did not clean up tempfiles"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)

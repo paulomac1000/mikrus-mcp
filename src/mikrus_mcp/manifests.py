@@ -275,7 +275,10 @@ MANIFESTS: dict[str, CapabilityManifest] = {
     "get_journal_logs": _read("get_journal_logs", "sensitive", resource_argument="unit"),
     "find_system_errors": _read("find_system_errors", "sensitive"),
     "search_journal_logs": _read("search_journal_logs", "sensitive"),
-    "execute_program": _mutation("execute_program", impact="process execution"),
+    "execute_program": _mutation(
+        "execute_program",
+        impact="process execution (per-executable read-only admission policy)",
+    ),
     "start_program": _mutation("start_program", impact="process execution"),
     "get_program_status": _read(
         "get_program_status",

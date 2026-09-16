@@ -519,6 +519,7 @@ Key defaults:
 - no automatic mutation retries after timeout, disconnect, rate limit, or ambiguous completion;
 - no public arbitrary-command tool;
 - typed program execution is SSH-only, approval-bound, and sends user-controlled values as helper stdin rather than shell command text;
+- `curl` is admitted as a read-only diagnostic only: the invocation must start with `-q` (disables the implicit `.curlrc`), only an allowlisted diagnostic option set is accepted (no request bodies, uploads, `-X` methods other than GET/HEAD, config files `-K/--config`, cookie/dump/trace/etag file I/O, proxies, or Unix sockets), `-o` is restricted to `/dev/null`, and destinations must be explicit `http://`/`https://` URLs that are not loopback, private, link-local, metadata, or local-resource hosts. Set `MCP_CURL_DESTINATION_ALLOWLIST` (comma-separated hostnames) to additionally restrict hostname destinations to the listed entries; without it, any public host is reachable — hostname-to-private-IP resolution happens on the remote target and cannot be verified at admission, so treat the allowlist as the recommended hardening for sensitive targets;
 - component-safe no-follow remote file writes;
 - bounded request, response, output, concurrency, and deadline behavior;
 - sensitive response fields sanitized before model-visible serialization.
@@ -553,6 +554,10 @@ Run a focused test:
 ```bash
 .venv/bin/python -m pytest tests/unit/test_kernel.py -q
 ```
+
+When a hosted-CI or bot-review gate fails, consult the
+[CI friction runbook](docs/ci-troubleshooting.md) for the recurring failure
+modes and their verified mitigations before regenerating locks or re-pushing.
 
 Build the wheel (stamped builds refuse to run when sources are newer than the
 embedded build stamp; unstamped builds strip the stamp first):

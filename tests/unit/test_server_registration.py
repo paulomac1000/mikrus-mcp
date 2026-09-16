@@ -33,6 +33,17 @@ async def test_registration_matches_active_manifests() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_program_is_registered_for_writable_ssh_targets() -> None:
+    target = TargetConfig("host", "ssh", host="server.example")
+    current = Settings({"host": target}, "host", write_enabled=True)
+    async with Client(build_server(current), raise_exceptions=True) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+    assert names == active_names(current)
+    assert "execute_program" in names
+    assert "execute_command" not in names
+
+
+@pytest.mark.asyncio
 async def test_public_tool_schemas_do_not_expose_internal_authorization_inputs() -> None:
     current = settings()
     async with Client(build_server(current), raise_exceptions=True) as client:
