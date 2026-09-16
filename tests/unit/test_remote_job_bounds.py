@@ -71,14 +71,15 @@ def _read_record(home: Path) -> dict[str, Any]:
     return json.loads(record_path.read_text(encoding="utf-8"))
 
 
-def test_noisy_job_is_terminated_at_output_bound(tmp_path: Path) -> None:
+def test_noisy_output_is_capped_with_truncation_markers(tmp_path: Path) -> None:
     home = _home(tmp_path)
     _start_job(home, code="import sys\nsys.stdout.write('x' * (1024 * 1024))\n")
     record = _run_to_terminal(home)
-    assert record["state"] == "failed"
-    assert record.get("exitCode") != 0
+    assert record["state"] == "succeeded"
+    assert record["exitCode"] == 0
     assert record["stdoutTruncated"] is True
-    assert "storage bound" in str(record.get("error", ""))
+    assert record.get("outputCapped") is True
+    assert record.get("stdoutDiscardedBytes", 0) > 0
     stdout_size = (_job_root(home) / VALID_JOB_ID / "stdout").stat().st_size
     assert stdout_size <= TEST_LIMIT_BYTES
 
@@ -100,14 +101,13 @@ def test_stdout_and_stderr_bounds_are_independent(tmp_path: Path) -> None:
         code="import sys\nsys.stdout.write('o' * 8192)\nsys.stderr.write('e' * 1024)\n",
     )
     record = _run_to_terminal(home)
-    assert record["state"] == "failed"
+    assert record["state"] == "succeeded"
     assert record["stdoutTruncated"] is True
     assert record["stderrTruncated"] is False
     job_dir = _job_root(home) / VALID_JOB_ID
     assert (job_dir / "stdout").stat().st_size <= TEST_LIMIT_BYTES
     stderr_size = (job_dir / "stderr").stat().st_size
     assert stderr_size <= TEST_LIMIT_BYTES
-    assert record["stderrTruncated"] is False
 
 
 def test_range_read_returns_bounded_slice_from_large_stream(tmp_path: Path) -> None:
@@ -626,3 +626,45 @@ def test_gc_keeps_fresh_queued_record_without_identity(tmp_path: Path) -> None:
     assert summary["removed"] == 0
     assert summary["keptRecent"] == 1
     assert job_dir.exists()
+
+
+def test_child_own_file_writes_are_not_capped_by_output_policy(tmp_path: Path) -> None:
+    """Regression: output policy caps only stored streams, not child's own files."""
+    home = _home(tmp_path)
+    child_code = (
+        "import sys, tempfile, os\n"
+        "with tempfile.NamedTemporaryFile(delete=False) as f:\n"
+        "    f.write(b'z' * (64 * 1024))\n"
+        "    own = f.name\n"
+        "sys.stdout.write('ok')\n"
+        "print(own)\n"
+    )
+    _start_job(home, code=child_code)
+    record = _run_to_terminal(home)
+    assert record["state"] == "succeeded"
+    assert not record.get("outputCapped")
+
+
+def test_gc_rotating_cursor_eventually_reaches_entries_beyond_budget(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    stale_names = [f"{index:032d}" for index in range(10)]
+    old = time.time() - 7200.0
+    for name in stale_names:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 10.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+    gc_args = {"operation": "gc", "retention_seconds": 5, "grace_seconds": 0, "max_entries": 4}
+    removed_total = 0
+    for _ in range(6):
+        summary = _run_helper(gc_args, home)
+        removed_total += summary["removed"]
+        if removed_total == len(stale_names):
+            break
+    assert removed_total == len(stale_names)
+    remaining = [name for name in stale_names if (_job_root(home) / name).exists()]
+    assert remaining == []

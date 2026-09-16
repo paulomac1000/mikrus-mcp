@@ -311,11 +311,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         summary = {
             "scanned": 0, "removed": 0, "keptActive": 0, "keptRecent": 0, "errors": 0,
         }
-        def entry_mtime(entry):
-            try:
-                return entry.stat(follow_symlinks=False).st_mtime
-            except OSError:
-                return None
+
         def pid_alive(identity):
             if not isinstance(identity, dict):
                 return False
@@ -332,76 +328,88 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             if fields[2] in {"Z", "z", "X", "x"}:
                 return False
             return identity.get("startTicks") == fields[21]
+
         def remove_dir(path):
             try:
                 shutil.rmtree(path)
                 summary["removed"] += 1
             except OSError:
                 summary["errors"] += 1
+
         try:
-            entry_iterator = os.scandir(root)
+            all_names = sorted(entry.name for entry in os.scandir(root))
         except OSError:
             return summary
-        with entry_iterator:
-            for entry in entry_iterator:
-                if summary["scanned"] >= budget:
-                    break
-                summary["scanned"] += 1
-                path = root / entry.name
-                try:
-                    st_meta = os.lstat(path / "record.json")
-                except OSError:
-                    st_meta = None
-                record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
-                if record_regular and (now - st_meta.st_mtime) <= grace:
-                    summary["keptRecent"] += 1
-                    continue
-                fresh_mtime = entry_mtime(entry)
-                fresh = fresh_mtime is not None and (now - fresh_mtime) <= grace
-                if not entry.is_dir(follow_symlinks=False):
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        try:
-                            os.unlink(path)
-                            summary["removed"] += 1
-                        except OSError:
-                            summary["errors"] += 1
-                    continue
-                if not record_regular:
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        remove_dir(path)
-                    continue
-                try:
-                    record = json.loads(
-                        (path / "record.json").read_text(encoding="utf-8")[:65536]
-                    )
-                except (OSError, ValueError):
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        remove_dir(path)
-                    continue
-                state = record.get("state")
-                if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                    finished = record.get("finishedAt")
-                    if not isinstance(finished, (int, float)):
-                        finished = st_meta.st_mtime
-                    if (now - float(finished)) > retention:
-                        remove_dir(path)
-                    else:
-                        summary["keptRecent"] += 1
-                    continue
-                if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                    summary["keptActive"] += 1
-                    continue
+        if not all_names:
+            return summary
+        # Rotating wrap-around cursor: successive passes at different times
+        # start at different offsets, so entries beyond one budget are still
+        # eventually visited while each pass stays bounded.
+        offset = int(now // 60) % len(all_names)
+        rotated = all_names[offset:] + all_names[:offset]
+        for entry_name in rotated:
+            if summary["scanned"] >= budget:
+                break
+            summary["scanned"] += 1
+            path = root / entry_name
+            try:
+                st_meta = os.lstat(path / "record.json")
+            except OSError:
+                st_meta = None
+            record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
+            if record_regular and (now - st_meta.st_mtime) <= grace:
+                summary["keptRecent"] += 1
+                continue
+            try:
+                dir_mtime = os.lstat(path).st_mtime
+            except OSError:
+                dir_mtime = None
+            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+            if os.path.islink(path) or not os.path.isdir(path):
                 if fresh:
-                    summary["keptActive"] += 1
+                    summary["keptRecent"] += 1
+                else:
+                    try:
+                        os.unlink(path)
+                        summary["removed"] += 1
+                    except OSError:
+                        summary["errors"] += 1
+                continue
+            if not record_regular:
+                if fresh:
+                    summary["keptRecent"] += 1
                 else:
                     remove_dir(path)
+                continue
+            try:
+                record = json.loads(
+                    (path / "record.json").read_text(encoding="utf-8")[:65536]
+                )
+            except (OSError, ValueError):
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    remove_dir(path)
+                continue
+            state = record.get("state")
+            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                finished = record.get("finishedAt")
+                if not isinstance(finished, (int, float)):
+                    finished = st_meta.st_mtime
+                if (now - float(finished)) > retention:
+                    remove_dir(path)
+                else:
+                    summary["keptRecent"] += 1
+                continue
+            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                summary["keptActive"] += 1
+                continue
+            if fresh:
+                summary["keptActive"] += 1
+            else:
+                remove_dir(path)
         return summary
+
     def start_ticks(pid):
         try:
             fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
@@ -598,7 +606,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 ).strip()
 _REMOTE_JOB_WORKER = textwrap.dedent(
     """
-    import fcntl, json, os, resource, signal, subprocess, tempfile, time
+    import fcntl, json, os, signal, subprocess, tempfile, threading, time
     from datetime import datetime, timezone
     from pathlib import Path
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
@@ -644,87 +652,117 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     record["state"] = "running"
     limits = record.get("limits") or {}
     output_limit = int(limits.get("outputBytes") or (1024 * 1024))
-    def _child_limits():
-        resource.setrlimit(resource.RLIMIT_FSIZE, (output_limit, output_limit))
-    with (job_dir / "stdout").open("wb") as stdout, (job_dir / "stderr").open("wb") as stderr:
-        child = subprocess.Popen(
-            [payload["executable"], *payload["argv"]],
-            cwd=payload.get("cwd"),
-            stdin=subprocess.PIPE,
-            stdout=stdout,
-            stderr=stderr,
-            start_new_session=True,
-            preexec_fn=_child_limits,
-        )
-        lock_fd = acquire_lock()
-        try:
-            record = read_record()
-            if record.get("state") == "cancelled":
-                try:
-                    os.killpg(os.getpgid(child.pid), signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    pass
-                raise SystemExit(0)
-            record["state"] = "running"
-            record["startedAt"] = datetime.now(timezone.utc).isoformat()
-            record["runtimeIdentity"] = {
-                "pid": str(child.pid),
-                "pgid": str(os.getpgid(child.pid)),
-                "startTicks": start_ticks(child.pid),
-            }
-            record.pop("payload", None)
-            write_record(record)
-        finally:
-            release_lock(lock_fd)
-        worker_failed = False
-        stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
-        try:
-            if child.stdin is not None:
-                try:
-                    if stdin_bytes is not None:
-                        child.stdin.write(stdin_bytes)
-                except (BrokenPipeError, OSError):
-                    pass
-                finally:
-                    try:
-                        child.stdin.close()
-                    except OSError:
-                        pass
-            code = child.wait()
-        except Exception:
-            worker_failed = True
-            try:
-                os.killpg(os.getpgid(child.pid), signal.SIGKILL)
-            except OSError:
-                pass
-            try:
-                child.wait()
-            except OSError:
-                pass
-            code = child.returncode
-        stdout_size = (job_dir / "stdout").stat().st_size
-        stderr_size = (job_dir / "stderr").stat().st_size
-    child_failed = code is None or code != 0
-    overflowed = child_failed and (
-        stdout_size >= output_limit or stderr_size >= output_limit
+    child = subprocess.Popen(
+        [payload["executable"], *payload["argv"]],
+        cwd=payload.get("cwd"),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     lock_fd = acquire_lock()
     try:
         record = read_record()
+        if record.get("state") == "cancelled":
+            try:
+                os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            raise SystemExit(0)
+        record["state"] = "running"
+        record["startedAt"] = datetime.now(timezone.utc).isoformat()
+        record["runtimeIdentity"] = {
+            "pid": str(child.pid),
+            "pgid": str(os.getpgid(child.pid)),
+            "startTicks": start_ticks(child.pid),
+        }
+        record.pop("payload", None)
+        write_record(record)
+    finally:
+        release_lock(lock_fd)
+    stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
+    if child.stdin is not None:
+        try:
+            if stdin_bytes is not None:
+                child.stdin.write(stdin_bytes)
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            try:
+                child.stdin.close()
+            except OSError:
+                pass
+    def drain_capped(pipe, fileobj, state):
+        stored = 0
+        truncated = False
+        discarded = 0
+        while True:
+            chunk = pipe.read(65536)
+            if not chunk:
+                break
+            room = output_limit - stored
+            if room > 0:
+                keep = chunk[:room]
+                fileobj.write(keep)
+                fileobj.flush()
+                stored += len(keep)
+            if len(chunk) > room:
+                truncated = True
+                discarded += len(chunk) - room
+            elif room == 0:
+                truncated = truncated or False
+        state["stored"] = stored
+        state["truncated"] = truncated or discarded > 0
+        state["discarded"] = discarded
+        try:
+            pipe.close()
+        except OSError:
+            pass
+    stdout_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stderr_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stdout_file = (job_dir / "stdout").open("wb")
+    stderr_file = (job_dir / "stderr").open("wb")
+    threads = [
+        threading.Thread(target=drain_capped, args=(child.stdout, stdout_file, stdout_state)),
+        threading.Thread(target=drain_capped, args=(child.stderr, stderr_file, stderr_state)),
+    ]
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+    worker_failed = False
+    try:
+        code = child.wait()
+    except Exception:
+        worker_failed = True
+        try:
+            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            child.wait()
+        except OSError:
+            pass
+        code = child.returncode
+    for thread in threads:
+        thread.join(timeout=30)
+    stdout_file.close()
+    stderr_file.close()
+    child_failed = code is None or code != 0
+    overflowed = stdout_state["truncated"] or stderr_state["truncated"]
+    lock_fd = acquire_lock()
+    try:
+        record = read_record()
         if record.get("state") != "cancelled":
-            if overflowed:
-                record["state"] = "failed"
-                record["error"] = (
-                    "output storage bound exceeded; the process was terminated "
-                    "by SIGXFSZ after reaching the per-job output ceiling"
-                )
-            elif worker_failed or code != 0:
+            if worker_failed:
                 record["state"] = "failed"
             else:
-                record["state"] = "succeeded"
+                record["state"] = "succeeded" if code == 0 else "failed"
             if overflowed:
-                record["stdoutTruncated"] = stdout_size >= output_limit
-                record["stderrTruncated"] = stderr_size >= output_limit
+                record["stdoutTruncated"] = stdout_state["truncated"]
+                record["stderrTruncated"] = stderr_state["truncated"]
+                record["stdoutDiscardedBytes"] = stdout_state["discarded"]
+                record["stderrDiscardedBytes"] = stderr_state["discarded"]
+                record["outputCapped"] = True
             if code is not None:
                 record["exitCode"] = code
         record.pop("payload", None)
@@ -734,7 +772,6 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         release_lock(lock_fd)
     """
 ).strip()
-
 
 _FILE_PATCH_HELPER = textwrap.dedent(
     """
