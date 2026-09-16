@@ -385,7 +385,13 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 parsed = json.loads(raw_queue)
                 if (
                     isinstance(parsed, list)
-                    and all(isinstance(n, str) for n in parsed)
+                    and all(
+                        isinstance(n, str)
+                        and JOB_ID.fullmatch(n) is not None
+                        and "/" not in n
+                        and not n.startswith(".")
+                        for n in parsed
+                    )
                     and parsed
                 ):
                     pending = parsed
@@ -412,6 +418,11 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
         while pending and summary["scanned"] < budget:
             name = pending.pop(0)
+            if JOB_ID.fullmatch(name) is None:
+                # Defense-in-depth: queue names must satisfy the same strict
+                # job-id grammar as the managed root; anything else is never
+                # touched destructively.
+                continue
             path = root / name
             if not os.path.exists(path):
                 continue

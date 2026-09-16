@@ -256,3 +256,62 @@ def test_credentials_never_follow_cross_origin_redirects(tmp_path: Path) -> None
         assert leaked == [], leaked
     finally:
         server.shutdown()
+
+
+def test_credentials_bind_to_registry_origin_only(tmp_path: Path) -> None:
+    """P1 regression: token realms and blob-upload Locations pointing at
+    another origin must not receive registry credentials."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+    seen: list[tuple[str, str]] = []
+
+    class Evil(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            auth = self.headers.get("Authorization")
+            if auth:
+                seen.append(("GET", auth))
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="https://ghcr.io/token"')
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_PUT(self) -> None:  # noqa: N802
+            auth = self.headers.get("Authorization")
+            if auth:
+                seen.append(("PUT", auth))
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        evil_port = probe.getsockname()[1]
+    server = HTTPServer(("127.0.0.1", evil_port), Evil)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = RegistryClient(
+            RegistryRef("127.0.0.1:1", "owner/repo"),
+            Credentials("user", "secret"),
+            True,
+        )
+        cross_realm = f"http://127.0.0.1:{evil_port}/token?scope=repository:owner/repo:pull,push"
+        with pytest.raises(SystemExit):
+            client._open("GET", cross_realm)
+        digest = "sha256:" + "a" * 64
+        with pytest.raises(SystemExit):
+            client._open(
+                "PUT",
+                f"http://127.0.0.1:{evil_port}/v2/owner/repo/blobs/uploads/x?digest={digest}",
+                headers={"Content-Type": "application/octet-stream"},
+                data=b"x",
+            )
+        assert seen == [], seen
+    finally:
+        server.shutdown()

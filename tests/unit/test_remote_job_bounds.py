@@ -474,7 +474,7 @@ def test_gc_legacy_terminal_record_without_finished_at_uses_mtime(tmp_path: Path
             "retention_seconds": 5,
             "grace_seconds": 0,
             "max_entries": 256,
-            "shard": _shard_of(VALID_JOB_ID),
+            "shard": _shard_of("r" * 32),
         },
         home,
     )
@@ -697,3 +697,41 @@ def test_gc_queue_survives_churn_and_visits_every_stale_entry(tmp_path: Path) ->
                 still_stale.append(entry.name)
     assert still_stale == [], still_stale
     assert visited >= len(stale_names)
+
+
+def test_gc_queue_with_traversal_names_fails_closed(tmp_path: Path) -> None:
+
+    home = _home(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+    (outside / "precious.txt").write_text("keep", encoding="utf-8")
+
+    valid = "v" * 32
+    job_dir = _job_root(home) / valid
+    job_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
+    old = time.time() - 3600.0
+    record_path.write_text(
+        json.dumps({"jobId": valid, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+
+    poison = json.dumps(["../outside", "/etc", valid])
+    queue_path = _job_root(home) / f".gc-queue-{_shard_of(valid)}"
+    queue_path.write_text(poison, encoding="utf-8")
+
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 256,
+            "shard": _shard_of(valid),
+        },
+        home,
+    )
+    assert not (_job_root(home) / "../outside").exists()
+    assert (outside / "precious.txt").read_text() == "keep"
+    assert summary["removed"] == 1
+    assert (_job_root(home) / valid).exists() is False

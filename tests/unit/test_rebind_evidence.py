@@ -252,6 +252,9 @@ def test_verify_only_rejects_duplicate_assessed_revision(
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    with pytest.raises(SystemExit):
-        _run(root, "--revision", "HEAD", "--verify-only")
+    head_sha = _git(root, "rev-parse", "HEAD")
+    assert head_sha != "HEAD"
+    with pytest.raises(SystemExit) as duplicate_error:
+        _run(root, "--revision", head_sha, "--verify-only")
+    assert "exactly one assessed_revision" in str(duplicate_error.value)
     del second
