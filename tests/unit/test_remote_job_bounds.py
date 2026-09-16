@@ -424,9 +424,16 @@ def test_gc_is_restart_safe_across_fresh_helper_processes(tmp_path: Path) -> Non
 
 def test_gc_honors_bounded_scan_budget(tmp_path: Path) -> None:
     home = _home(tmp_path)
+    old = time.time() - 7200.0
     for index in range(6):
         job_dir = _job_root(home) / (str(index) * 32)
         job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": str(index) * 32, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
     total_scanned = 0
     for shard in range(16):
         summary = _run_helper(
@@ -599,13 +606,21 @@ def test_gc_visit_budget_bounds_enumeration_with_thousands_of_entries(
         index += 1
         if shard_of(candidate) == 0:
             names.append(candidate)
+    old = time.time() - 7200.0
     for name in names:
-        (_job_root(home) / name).mkdir(parents=True)
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
     summary = _run_helper(
         {
             "operation": "gc",
             "retention_seconds": 5,
-            "grace_seconds": 0,
+            "grace_seconds": 3600,
             "max_entries": 3,
             "shards": 16,
             "shard": 0,
@@ -855,13 +870,21 @@ def test_gc_stays_bounded_when_legacy_queue_size_cap_is_exceeded(
         index += 1
         if shard_of(candidate) == 0:
             names.append(candidate)
+    old = time.time() - 7200.0
     for name in names:
-        (_job_root(home) / name).mkdir(parents=True)
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
 
     payload = {
         "operation": "gc",
         "retention_seconds": 5,
-        "grace_seconds": 0,
+        "grace_seconds": 3600,
         "max_entries": 3,
         "shards": 16,
         "shard": 0,

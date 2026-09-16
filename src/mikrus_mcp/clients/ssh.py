@@ -343,9 +343,19 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 return False
             return identity.get("startTicks") == fields[21]
 
-        def remove_dir(path):
+        def discard(path, is_link):
+            # The processing budget counts only entries this pass attempts
+            # to remove; fresh or live entries consume visit work but never
+            # the removal budget, so a stable front of survivors cannot
+            # starve removable entries inside the same sweep window.
+            if summary["scanned"] >= budget:
+                return
+            summary["scanned"] += 1
             try:
-                shutil.rmtree(path)
+                if is_link:
+                    os.unlink(path)
+                else:
+                    shutil.rmtree(path)
                 summary["removed"] += 1
             except OSError:
                 summary["errors"] += 1
@@ -412,12 +422,9 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 if shard_of(name) != shard:
                     continue
                 summary["enumerated"] += 1
-                if summary["scanned"] >= budget:
-                    continue
                 path = PathLib(entry.path)
                 if not os.path.exists(path):
                     continue
-                summary["scanned"] += 1
                 try:
                     st_meta = os.lstat(path / "record.json")
                 except OSError:
@@ -435,17 +442,13 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     if fresh:
                         summary["keptRecent"] += 1
                     else:
-                        try:
-                            os.unlink(path)
-                            summary["removed"] += 1
-                        except OSError:
-                            summary["errors"] += 1
+                        discard(path, True)
                     continue
                 if not record_regular:
                     if fresh:
                         summary["keptRecent"] += 1
                     else:
-                        remove_dir(path)
+                        discard(path, False)
                     continue
                 try:
                     record_fd = os.open(
@@ -462,7 +465,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     if fresh:
                         summary["keptRecent"] += 1
                     else:
-                        remove_dir(path)
+                        discard(path, False)
                     continue
                 try:
                     record = json.loads(raw_record)
@@ -470,7 +473,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     if fresh:
                         summary["keptRecent"] += 1
                     else:
-                        remove_dir(path)
+                        discard(path, False)
                     continue
                 state = record.get("state")
                 if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
@@ -478,7 +481,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     if not isinstance(finished, (int, float)):
                         finished = st_meta.st_mtime
                     if (now - float(finished)) > retention:
-                        remove_dir(path)
+                        discard(path, False)
                     else:
                         summary["keptRecent"] += 1
                     continue
@@ -488,7 +491,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 if fresh:
                     summary["keptActive"] += 1
                 else:
-                    remove_dir(path)
+                    discard(path, False)
             else:
                 exhausted = True
         next_skip = 0 if exhausted else iterated
