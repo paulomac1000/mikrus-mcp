@@ -148,3 +148,10 @@ def test_rebind_is_idempotent_for_current_binding(
     assert _run(root, "--revision", second) == 0
     with pytest.raises(SystemExit):
         _run(root, "--revision", second)
+
+
+def test_allowed_evidence_paths_stay_in_sync_with_freshness_gate() -> None:
+    from scripts.check_evidence_freshness import DEFAULT_ALLOWED_EVIDENCE_PATHS
+    from scripts.rebind_evidence import ALLOWED_EVIDENCE_PATHS
+
+    assert ALLOWED_EVIDENCE_PATHS == set(DEFAULT_ALLOWED_EVIDENCE_PATHS)

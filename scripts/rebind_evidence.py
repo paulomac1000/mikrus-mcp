@@ -31,11 +31,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-from scripts.check_evidence_freshness import DEFAULT_ALLOWED_EVIDENCE_PATHS
-
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 BINDING_DOCUMENT = Path("docs") / "compliance-status.md"
 ASSESSMENT_LINE = re.compile(r"^assessed_revision: [0-9a-f]{40}$", re.MULTILINE)
+ALLOWED_EVIDENCE_PATHS = frozenset(
+    {
+        "migration-assessment.yaml",
+        "docs/compliance-status.md",
+        "docs/ai-skills-review.md",
+        "CHANGELOG.md",
+    }
+)
 
 
 class RebindError(SystemExit):
@@ -184,7 +190,7 @@ def main() -> int:
                 f"evidence binding {bound} is not an ancestor of exact candidate "
                 f"{revision}; rebind after fresh provider evidence"
             )
-        allowed = set(DEFAULT_ALLOWED_EVIDENCE_PATHS)
+        allowed = set(ALLOWED_EVIDENCE_PATHS)
         changed = {
             line
             for line in _git(root, "diff", "--name-only", f"{bound}..{revision}").splitlines()

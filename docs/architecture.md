@@ -157,3 +157,17 @@ credentials.
 
 Production SLOs, metrics export, durable audit storage, and distributed tracing remain
 deployment-profile responsibilities recorded in the compliance status.
+
+## Durable remote-job storage
+
+Durable remote jobs keep their working state under one managed remote root
+(`~/.cache/mikrus-mcp/remote-jobs/<job-id>`) with the following bounded
+lifecycle: worker stdout/stderr are capped per stream through a POSIX
+file-size limit whose overflow produces a typed terminal outcome with explicit
+truncation markers; stream reads are bounded seek/range reads with stable
+cursor metadata; and a bounded, idempotent retention pass collects terminal
+job directories past the retention horizon, orphaned or partial directories,
+and dead-identity running records, while never following symlinks, never
+leaving the managed root, and never removing a job whose recorded process
+identity is alive. Expired jobs retain machine-readable tombstones in the
+owner-bound store after remote payload bytes are removed.

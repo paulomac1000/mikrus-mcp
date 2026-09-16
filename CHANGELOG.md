@@ -2,6 +2,63 @@
 
 All notable changes to mikrus-mcp are recorded here.
 
+## [Unreleased]
+
+### Changed
+
+- Dependency-lock policy split into two lanes: ordinary candidate CI installs
+  and validates the committed platform-exact hash locks and never re-resolves
+  dependencies (`lock-evidence` re-resolution job removed;
+  `scripts/check_lock_policy.py` enforces the policy without network I/O).
+  Deliberate dependency refresh moves to the scheduled/manual
+  `dependency-refresh.yml` lane with pinned resolver tooling, a fresh isolated
+  cache, all three Python variants, and reviewable lock diffs — nothing is
+  committed automatically. Documented pip toolchain unified on 26.2.1
+  (AGENTS.md/README.md previously said 26.1.2 while CI said 26.2.1). #30
+- Release initiation converged on one canonical path: the stale v2.0.0-only
+  `release-v2-tag.yml` workflow is removed; an operator creates or selects an
+  exact `vX.Y.Z` tag and the generic `publish.yml` validates
+  tag/version/SHA against `pyproject.toml`, requires a green CI release bundle
+  for the exact SHA, and publishes idempotently. #31
+- Release trust boundary enforced mechanically (SECURITY.md model): the
+  unprivileged validation stage loads, smokes, and pushes the candidate to a
+  quarantine registry and records the immutable digest; the protected
+  publisher promotes that exact digest registry-to-registry over the OCI
+  Distribution API via `scripts/promote_digest.py` (bundled in the
+  digest-checked CI release bundle), verifies every production tag resolves
+  to the promoted digest before attestation, and has no candidate checkout
+  and never runs `docker load`/`docker run`/`docker build`. A
+  disposable-registry regression (registry pinned by digest) proves validated
+  digest == promoted digest, idempotent re-promotion, and substituted-digest
+  rejection. #32
+- Exact-candidate evidence rebinding automated via
+  `scripts/rebind_evidence.py`: verifies the exact candidate, optionally
+  requires a successful provider CI run for that SHA, and atomically rewrites
+  only the `assessed_revision` binding. `--verify-only` lets release tooling
+  fail closed on stale or drifted bindings; squash/integration revisions
+  explicitly require fresh provider evidence. `docs/ci-troubleshooting.md`
+  now documents the canonical workflow and no longer suggests weakening
+  exact-candidate freshness. #33
+
+### Fixed
+
+- Remote durable-job storage is bounded across the full lifecycle (#29):
+  worker stdout/stderr are capped per stream (`MAX_REMOTE_OUTPUT_BYTES`,
+  clamped 4 KiB–16 MiB) via a POSIX file-size limit; a process that writes
+  past the bound reaches a typed `failed` outcome with
+  `stdoutTruncated`/`stderrTruncated` markers, and stored bytes never exceed
+  the documented limit. `remote_job_output` performs a true bounded seek/read
+  (a 64 KiB slice of a multi-megabyte stream reads only that slice) with
+  deterministic `offset`/`nextOffset`/`eof` continuation. A bounded, idempotent
+  retention GC runs after every successful `remote_job_start`: terminal job
+  directories are removed after the retention horizon, orphaned/partial
+  directories and dead-identity records are collected after a grace period,
+  running jobs with live identities are never removed, symlinks are never
+  followed, the managed root is never escaped, and scans are capped at 256
+  entries. GC failures surface as a typed `gc` error without failing the
+  start, and expired jobs keep machine-readable tombstones
+  (`remotePayloadRemoved`) after payload bytes are removed. #29
+
 ## [2.2.0] - 2026-09-16
 
 ### Changed

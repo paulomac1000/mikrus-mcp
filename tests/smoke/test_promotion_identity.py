@@ -75,7 +75,9 @@ class TestExactDigestPromotion:
             RegistryRef(f"127.0.0.1:{port}", repository), Credentials(None, None), True
         )
 
-    def _push_synthetic_image(self, client: RegistryClient, *, layer_body: bytes = b"synthetic-layer-bytes") -> str:
+    def _push_synthetic_image(
+        self, client: RegistryClient, *, layer_body: bytes = b"synthetic-layer-bytes"
+    ) -> str:
         config = json.dumps(
             {"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}}
         ).encode()
