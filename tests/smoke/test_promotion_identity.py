@@ -8,6 +8,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -32,13 +33,13 @@ def _docker_available() -> bool:
 @pytest.mark.smoke
 class TestExactDigestPromotion:
     @pytest.fixture()
-    def registry_port(self) -> int:
+    def registry_port(self) -> Iterator[int]:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         docker = shutil.which("docker")
         assert docker is not None
-        container = subprocess.run(
+        container = subprocess.run(  # noqa: S603
             [
                 docker,
                 "run",
@@ -53,20 +54,23 @@ class TestExactDigestPromotion:
             check=True,
         ).stdout.strip()
         base = f"http://127.0.0.1:{port}/v2/"
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(base, timeout=2) as response:
-                    if response.status == 200:
-                        return port
-            except (urllib.error.URLError, OSError):
+        try:
+            deadline = time.monotonic() + 30
+            ready = False
+            while time.monotonic() < deadline:
+                try:
+                    with urllib.request.urlopen(base, timeout=2) as response:
+                        ready = response.status == 200
+                except (urllib.error.URLError, OSError):
+                    ready = False
+                if ready:
+                    break
                 time.sleep(0.2)
-        subprocess.run([docker, "rm", "-f", container], capture_output=True)
-        pytest.fail("disposable registry did not become ready")
-
-    @pytest.fixture(autouse=True)
-    def _cleanup(self, registry_port: int) -> None:
-        yield
+            if not ready:
+                pytest.fail("disposable registry did not become ready")
+            yield port
+        finally:
+            subprocess.run([docker, "rm", "-f", container], capture_output=True)  # noqa: S603
 
     def _client(self, repository: str, port: int) -> RegistryClient:
         from scripts.promote_digest import Credentials
@@ -166,11 +170,70 @@ def test_publisher_workflow_never_loads_runs_or_builds_candidate() -> None:
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
     ).read_text(encoding="utf-8")
     publish_block = publish.split("\n  publish:", 1)[1].split("\n  release:", 1)[0]
-    forbidden = ("docker load", "docker run", "docker build", "docker create", "actions/checkout")
-    for marker in forbidden:
+    for marker in ("docker load", "docker run", "docker build", "docker create"):
         assert marker not in publish_block, f"protected publisher uses forbidden {marker!r}"
-    assert "promote_digest.py" in publish_block
+    assert "bundle/release/promote_digest" not in publish_block
     assert "--expected-digest" in publish_block
+    assert "id: promote" in publish_block
+    assert "${{ steps.promote.outputs.subject_name }}" in publish_block
+    assert "${{ steps.promote.outputs.digest }}" in publish_block
+    checkout_block = publish_block.split("actions/checkout@", 1)[1].split("- uses:", 1)[0]
+    assert "ref: master" in checkout_block
+    assert "sparse-checkout: scripts/promote_digest.py" in checkout_block
+    assert "persist-credentials: false" in checkout_block
     validate_block = publish.split("\n  validate-release:", 1)[1].split("\n  publish:", 1)[0]
     assert "docker load" in validate_block
     assert "digest=" in validate_block
+    assert "${QUARANTINE_REPOSITORY,,}" in validate_block
+
+
+def test_realm_url_host_is_validated_not_prefix_matched() -> None:
+    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+    client = RegistryClient(RegistryRef("ghcr.io", "owner/repo"), Credentials("u", "p"), False)
+    client._authenticate(
+        'Bearer realm="http://localhost.attacker.example/token",service="ghcr.io"'
+    ) if False else None
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit):
+        client._authenticate(
+            'Bearer realm="http://localhost.attacker.example/token",service="ghcr.io"'
+        )
+    with _pytest.raises(SystemExit):
+        client._authenticate('Bearer realm="http://127.0.0.1.attacker.example/token",service="s"')
+    with _pytest.raises(SystemExit):
+        client._authenticate('Bearer realm="http://192.168.0.5/token",service="s"')
+
+
+def test_bearer_challenge_parser_preserves_comma_inside_quotes() -> None:
+    from scripts.promote_digest import _parse_challenge
+
+    params = _parse_challenge(
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+        'scope="repository:owner/repo:pull,push"'
+    )
+    assert params["realm"] == "https://ghcr.io/token"
+    assert params["service"] == "ghcr.io"
+    assert params["scope"] == "repository:owner/repo:pull,push"
+
+
+def test_mount_treats_202_as_session_not_mount() -> None:
+    from unittest import mock
+
+    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+    destination = RegistryClient(RegistryRef("127.0.0.1:1", "dst"), Credentials(None, None), True)
+
+    class FakeResponse:
+        status = 202
+        headers = {"Location": "/v2/dst/blobs/uploads/session"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    with mock.patch.object(destination, "_open", return_value=FakeResponse()):
+        assert destination.mount_blob("sha256:" + "a" * 64, "src") is False

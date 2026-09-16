@@ -91,8 +91,44 @@ def _env_credentials(prefix: str) -> Credentials:
 
 
 def _assert_registry_scheme(url: str) -> None:
-    if not url.startswith(("https://", "http://localhost", "http://127.0.0.1", "http://[::1]")):
-        raise PromotionError(f"refusing non-registry URL scheme: {url[:60]!r}")
+    scheme, host = urllib.parse.urlsplit(url).scheme, urllib.parse.urlsplit(url).hostname
+    if scheme == "https":
+        return
+    if scheme == "http" and host is not None and host.lower() in LOOPBACK_HOSTS:
+        return
+    raise PromotionError(f"refusing non-registry URL: {url[:60]!r}")
+
+
+def _parse_challenge(challenge: str) -> dict[str, str]:
+    body = challenge[len("bearer ") :]
+    params: dict[str, str] = {}
+    index = 0
+    length = len(body)
+    while index < length:
+        equals = body.find("=", index)
+        if equals == -1:
+            break
+        key = body[index:equals].strip()
+        index = equals + 1
+        if index < length and body[index] == '"':
+            closing = body.find('"', index + 1)
+            if closing == -1:
+                break
+            value = body[index + 1 : closing]
+            index = closing + 1
+        else:
+            comma = body.find(",", index)
+            if comma == -1:
+                value = body[index:].strip()
+                index = length
+            else:
+                value = body[index:comma].strip()
+                index = comma
+        if key:
+            params[key] = value
+        while index < length and body[index] == ",":
+            index += 1
+    return params
 
 
 class RegistryClient:
@@ -115,9 +151,7 @@ class RegistryClient:
             raise PromotionError(
                 f"{self.ref.registry}: unsupported authentication challenge: {challenge[:80]!r}"
             )
-        params = dict(
-            item.split("=", 1) for item in challenge[len("bearer ") :].split(",") if "=" in item
-        )
+        params = _parse_challenge(challenge)
         realm = params.get("realm", "").strip('"')
         if not realm:
             raise PromotionError(f"{self.ref.registry}: bearer challenge without realm")
@@ -200,9 +234,14 @@ class RegistryClient:
             return response.status != 404
 
     def mount_blob(self, digest: str, source_repository: str) -> bool:
+        """Mount only when the registry reports the cross-repository mount (201).
+
+        202 Accepted means an upload session was started without mounting; the
+        caller must then fall back to streaming the blob from the source.
+        """
         url = self._url("blobs/uploads/", mount=digest, **{"from": source_repository})
         with self._open("POST", url) as response:
-            return 200 <= response.status < 300
+            return response.status == 201
 
     def upload_blob(self, digest: str, data: bytes) -> None:
         with self._open("POST", self._url("blobs/uploads/")) as response:
