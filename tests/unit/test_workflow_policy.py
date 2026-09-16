@@ -160,3 +160,25 @@ def test_documented_toolchain_matches_canonical_pip(
     assert _run_lock_policy(root) == 1
     captured = capsys.readouterr()
     assert "does not match canonical" in captured.err
+
+
+def test_release_has_single_generic_entrypoint_without_hardcoded_version() -> None:
+    workflow_dir = ROOT / ".github" / "workflows"
+    assert not (workflow_dir / "release-v2-tag.yml").exists()
+    publish = (workflow_dir / "publish.yml").read_text(encoding="utf-8")
+    for stale_marker in ("2.0.0", "v2.0.0"):
+        assert stale_marker not in publish
+    publish_workflows = [path.name for path in workflow_dir.glob("*.yml") if "publish" in path.name]
+    assert publish_workflows == ["publish.yml"]
+
+
+def test_publish_fails_closed_on_tag_version_mismatch() -> None:
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    assert 'test "$release_tag" = "v$version"' in publish
+    assert 'test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$release_sha"' in publish
+
+
+def test_publish_existing_release_is_idempotent() -> None:
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    assert 'if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then' in publish
+    assert "GitHub Release already exists" in publish
