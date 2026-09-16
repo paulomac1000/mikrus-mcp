@@ -39,7 +39,11 @@ from mikrus_mcp.docker_ops import (
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.jobs import ProgramJobRegistry
 from mikrus_mcp.provenance import ProvenanceSnapshot
-from mikrus_mcp.remote_jobs import DurableRemoteJobRegistry, request_digest
+from mikrus_mcp.remote_jobs import (
+    MAX_REMOTE_ERROR_BYTES,
+    DurableRemoteJobRegistry,
+    request_digest,
+)
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 
@@ -407,6 +411,11 @@ class ExecutionMixin:
                     gc_summary: dict[str, Any] = await client.remote_job_gc()
                 except AppError as gc_exc:
                     gc_summary = {"gcError": gc_exc.code.value, "gcMessage": gc_exc.message}
+                except Exception as gc_error:  # gc must never fail a started job
+                    gc_summary = {
+                        "gcError": ErrorCode.INTERNAL.value,
+                        "gcMessage": str(gc_error)[:MAX_REMOTE_ERROR_BYTES],
+                    }
                 return {**record.as_dict(), "reused": reused, "gc": gc_summary}
             return {**record.as_dict(), "reused": reused}
 
@@ -420,7 +429,6 @@ class ExecutionMixin:
             if self.remote_jobs is None or client is None:
                 raise AppError(ErrorCode.UNAVAILABLE, "durable remote jobs are not configured")
             job_id = str(arguments["job_id"])
-            tombstone_states = {"expired"}
             try:
                 if name == "remote_job_status":
                     remote = await client.remote_job_status(job_id=job_id)
@@ -448,7 +456,7 @@ class ExecutionMixin:
                     and self.remote_jobs is not None
                 ):
                     record = self.remote_jobs.get(job_id=job_id, principal=caller.principal)
-                    if record.state in tombstone_states:
+                    if record.terminal:
                         return {**record.as_dict(), "remotePayloadRemoved": True}
                 raise
             state = remote.get("state")

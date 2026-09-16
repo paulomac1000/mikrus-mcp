@@ -413,7 +413,7 @@ def _expired_record_client_kernel(tmp_path: Path, client: Any) -> tuple[Any, Any
         request_digest_value="a" * 64,
         now="2026-09-10T12:00:00Z",
     )
-    record.transition("expired", now="2026-09-17T12:00:00Z")
+    record.transition("succeeded", now="2026-09-10T12:05:00Z")
     store.save(record)
     kernel = InvocationKernel(
         settings,
@@ -452,7 +452,7 @@ async def test_status_returns_expired_tombstone_after_remote_payload_removal(
     )
     result = await kernel.invoke("remote_job_status", {"job_id": record.job_id}, caller)
     assert result["success"] is True
-    assert result["data"]["state"] == "expired"
+    assert result["data"]["state"] == "succeeded"
     assert result["data"]["remotePayloadRemoved"] is True
 
 
@@ -481,7 +481,7 @@ async def test_result_returns_expired_tombstone_after_remote_payload_removal(
     )
     result = await kernel.invoke("remote_job_result", {"job_id": record.job_id}, caller)
     assert result["success"] is True
-    assert result["data"]["state"] == "expired"
+    assert result["data"]["state"] == "succeeded"
     assert result["data"]["remotePayloadRemoved"] is True
 
 
@@ -557,3 +557,72 @@ async def test_start_reports_gc_summary_and_typed_gc_failure(tmp_path: Path, fai
             "keptRecent": 2,
             "errors": 0,
         }
+
+
+def test_worker_closes_stdin_so_eof_readers_terminate(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    _start_job(home, code="import sys\nsys.stdin.read()\nprint('done')\n")
+    record = _run_to_terminal(home, timeout=20.0)
+    assert record["state"] == "succeeded"
+
+
+def test_gc_legacy_terminal_record_without_finished_at_uses_mtime(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_dir = _job_root(home) / VALID_JOB_ID
+    job_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
+    record_path.write_text(json.dumps({"jobId": VALID_JOB_ID, "state": "succeeded"}))
+    old = time.time() - 10.0
+    os.utime(record_path, (old, old))
+    summary = _run_helper(
+        {"operation": "gc", "retention_seconds": 5, "grace_seconds": 0, "max_entries": 256},
+        home,
+    )
+    assert summary["removed"] == 1
+
+    recent_job = _job_root(home) / ("r" * 32)
+    recent_job.mkdir(parents=True)
+    recent_record = recent_job / "record.json"
+    recent_record.write_text(json.dumps({"jobId": "r" * 32, "state": "succeeded"}))
+    summary = _run_helper(
+        {"operation": "gc", "retention_seconds": 5, "grace_seconds": 0, "max_entries": 256},
+        home,
+    )
+    assert summary["removed"] == 0
+    assert recent_job.exists()
+
+
+def test_gc_collects_stale_queued_record_without_identity(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_dir = _job_root(home) / VALID_JOB_ID
+    job_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
+    record_path.write_text(json.dumps({"jobId": VALID_JOB_ID, "state": "queued"}))
+    old = time.time() - 7200.0
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+    summary = _run_helper(
+        {"operation": "gc", "retention_seconds": 604_800, "grace_seconds": 1, "max_entries": 256},
+        home,
+    )
+    assert summary["removed"] == 1
+    assert not job_dir.exists()
+
+
+def test_gc_keeps_fresh_queued_record_without_identity(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_dir = _job_root(home) / VALID_JOB_ID
+    job_dir.mkdir(parents=True)
+    (job_dir / "record.json").write_text(json.dumps({"jobId": VALID_JOB_ID, "state": "queued"}))
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 604_800,
+            "grace_seconds": 3600,
+            "max_entries": 256,
+        },
+        home,
+    )
+    assert summary["removed"] == 0
+    assert summary["keptRecent"] == 1
+    assert job_dir.exists()

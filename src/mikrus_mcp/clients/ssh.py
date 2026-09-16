@@ -316,11 +316,6 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 return entry.stat(follow_symlinks=False).st_mtime
             except OSError:
                 return None
-        def record_mtime(path):
-            try:
-                return os.lstat(path / "record.json").st_mtime
-            except OSError:
-                return None
         def pid_alive(identity):
             if not isinstance(identity, dict):
                 return False
@@ -344,62 +339,68 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             except OSError:
                 summary["errors"] += 1
         try:
-            entries = sorted(os.scandir(root), key=lambda item: item.name)
+            entry_iterator = os.scandir(root)
         except OSError:
             return summary
-        for entry in entries:
-            if summary["scanned"] >= budget:
-                break
-            summary["scanned"] += 1
-            path = root / entry.name
-            fresh_mtime = max(
-                filter(None, (entry_mtime(entry), record_mtime(path))), default=None
-            )
-            fresh = fresh_mtime is not None and (now - fresh_mtime) <= grace
-            if not entry.is_dir(follow_symlinks=False):
-                if fresh:
+        with entry_iterator:
+            for entry in entry_iterator:
+                if summary["scanned"] >= budget:
+                    break
+                summary["scanned"] += 1
+                path = root / entry.name
+                try:
+                    st_meta = os.lstat(path / "record.json")
+                except OSError:
+                    st_meta = None
+                record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
+                if record_regular and (now - st_meta.st_mtime) <= grace:
                     summary["keptRecent"] += 1
-                else:
-                    try:
-                        os.unlink(path)
-                        summary["removed"] += 1
-                    except OSError:
-                        summary["errors"] += 1
-                continue
-            st_meta = None
-            try:
-                st_meta = os.lstat(path / "record.json")
-            except OSError:
-                st_meta = None
-            if st_meta is None or not stat.S_ISREG(st_meta.st_mode):
+                    continue
+                fresh_mtime = entry_mtime(entry)
+                fresh = fresh_mtime is not None and (now - fresh_mtime) <= grace
+                if not entry.is_dir(follow_symlinks=False):
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        try:
+                            os.unlink(path)
+                            summary["removed"] += 1
+                        except OSError:
+                            summary["errors"] += 1
+                    continue
+                if not record_regular:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                try:
+                    record = json.loads(
+                        (path / "record.json").read_text(encoding="utf-8")[:65536]
+                    )
+                except (OSError, ValueError):
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                state = record.get("state")
+                if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                    finished = record.get("finishedAt")
+                    if not isinstance(finished, (int, float)):
+                        finished = st_meta.st_mtime
+                    if (now - float(finished)) > retention:
+                        remove_dir(path)
+                    else:
+                        summary["keptRecent"] += 1
+                    continue
+                if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                    summary["keptActive"] += 1
+                    continue
                 if fresh:
-                    summary["keptRecent"] += 1
+                    summary["keptActive"] += 1
                 else:
                     remove_dir(path)
-                continue
-            try:
-                record = json.loads((path / "record.json").read_text(encoding="utf-8")[:65536])
-            except (OSError, ValueError):
-                summary["keptActive"] += 1
-                continue
-            state = record.get("state")
-            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                finished = record.get("finishedAt")
-                if not isinstance(finished, (int, float)) or (now - float(finished)) > retention:
-                    remove_dir(path)
-                else:
-                    summary["keptRecent"] += 1
-                continue
-            if fresh:
-                summary["keptRecent"] += 1
-                continue
-            if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                summary["keptActive"] += 1
-                continue
-            if state == "queued" and record.get("runtimeIdentity") == {}:
-                summary["keptActive"] += 1
-                continue
-            remove_dir(path)
         return summary
     def start_ticks(pid):
         try:
@@ -678,12 +679,17 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         worker_failed = False
         stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
         try:
-            if stdin_bytes is not None and child.stdin is not None:
+            if child.stdin is not None:
                 try:
-                    child.stdin.write(stdin_bytes)
-                    child.stdin.close()
+                    if stdin_bytes is not None:
+                        child.stdin.write(stdin_bytes)
                 except (BrokenPipeError, OSError):
                     pass
+                finally:
+                    try:
+                        child.stdin.close()
+                    except OSError:
+                        pass
             code = child.wait()
         except Exception:
             worker_failed = True
