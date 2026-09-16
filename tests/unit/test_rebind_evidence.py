@@ -126,9 +126,12 @@ def test_verify_only_accepts_evidence_only_drift(tmp_path: Path) -> None:
     (root / BINDING_RELATIVE).write_text(
         "---\nassessed_revision: " + "1" * 40 + "\n---\nbody\n", encoding="utf-8"
     )
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+    git = shutil.which("git") or "git"
+    subprocess.run([git, "init", "-q"], cwd=root, check=True)  # noqa: S603
+    subprocess.run(  # noqa: S603
+        [git, "config", "user.email", "t@example.com"], cwd=root, check=True
+    )
+    subprocess.run([git, "config", "user.name", "t"], cwd=root, check=True)  # noqa: S603
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "implementation")
     implementation = _git(root, "rev-parse", "HEAD")

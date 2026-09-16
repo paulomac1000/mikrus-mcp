@@ -162,9 +162,10 @@ deployment-profile responsibilities recorded in the compliance status.
 
 Durable remote jobs keep their working state under one managed remote root
 (`~/.cache/mikrus-mcp/remote-jobs/<job-id>`) with the following bounded
-lifecycle: worker stdout/stderr are capped per stream through a POSIX
-file-size limit whose overflow produces a typed terminal outcome with explicit
-truncation markers; stream reads are bounded seek/range reads with stable
+lifecycle: worker stdout/stderr are drained through parent-owned pipes and
+capped per stream, with overflow recorded through explicit truncation markers
+and discarded-byte counters while the process runs to normal completion;
+stream reads are bounded seek/range reads with stable
 cursor metadata; and a bounded, idempotent retention pass collects terminal
 job directories past the retention horizon, orphaned or partial directories,
 and dead-identity running records, while never following symlinks, never

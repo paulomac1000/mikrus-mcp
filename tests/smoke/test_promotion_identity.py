@@ -178,13 +178,30 @@ def test_publisher_workflow_never_loads_runs_or_builds_candidate() -> None:
     assert "${{ steps.promote.outputs.subject_name }}" in publish_block
     assert "${{ steps.promote.outputs.digest }}" in publish_block
     checkout_block = publish_block.split("actions/checkout@", 1)[1].split("- uses:", 1)[0]
-    assert "ref: master" in checkout_block
+    assert "ref: ${{ env.PROMOTER_REVISION }}" in checkout_block
+    assert "ref: master" not in checkout_block
     assert "sparse-checkout: scripts/promote_digest.py" in checkout_block
     assert "persist-credentials: false" in checkout_block
+    assert 'test "$(git rev-parse HEAD)" = "$PINNED_PROMOTER_REVISION"' in publish_block
     validate_block = publish.split("\n  validate-release:", 1)[1].split("\n  publish:", 1)[0]
     assert "docker load" in validate_block
     assert "digest=" in validate_block
     assert "${QUARANTINE_REPOSITORY,,}" in validate_block
+
+
+def test_promoter_revision_pin_is_immutable_full_sha() -> None:
+    import re
+
+    publish = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"PROMOTER_REVISION: ([0-9a-f]{40})", publish)
+    assert match is not None, "PROMOTER_REVISION must be a pinned full 40-character SHA"
+    pin = match.group(1)
+    assert pin != Path(__file__).resolve().parents[2].name
+    workflow_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    assert "PROMOTER_REVISION: master" not in publish
+    del workflow_dir
 
 
 def test_realm_url_host_is_validated_not_prefix_matched() -> None:

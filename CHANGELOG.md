@@ -43,11 +43,12 @@ All notable changes to mikrus-mcp are recorded here.
 ### Fixed
 
 - Remote durable-job storage is bounded across the full lifecycle (#29):
-  worker stdout/stderr are capped per stream (`MAX_REMOTE_OUTPUT_BYTES`,
-  clamped 4 KiB–16 MiB) via a POSIX file-size limit; a process that writes
-  past the bound reaches a typed `failed` outcome with
-  `stdoutTruncated`/`stderrTruncated` markers, and stored bytes never exceed
-  the documented limit. `remote_job_output` performs a true bounded seek/read
+  worker stdout/stderr are drained through parent-owned pipes and capped per
+  stream (`MAX_REMOTE_OUTPUT_BYTES`, clamped 4 KiB–16 MiB); beyond the bound
+  bytes are counted (`stdoutDiscardedBytes`/`stderrDiscardedBytes`) and the
+  record carries `outputCapped` plus per-stream truncation markers while the
+  process runs to normal completion, and stored bytes never exceed the
+  documented limit. `remote_job_output` performs a true bounded seek/read
   (a 64 KiB slice of a multi-megabyte stream reads only that slice) with
   deterministic `offset`/`nextOffset`/`eof` continuation. A bounded, idempotent
   retention GC runs after every successful `remote_job_start`: terminal job

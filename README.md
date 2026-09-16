@@ -274,12 +274,14 @@ registry read.
 
 Remote durable-job storage is bounded throughout the job lifecycle:
 
-- **Live output bound.** Worker stdout and stderr are capped per stream
-  (`MAX_REMOTE_OUTPUT_BYTES = 1000000`, clamped 4 KiB–16 MiB) through a per-process
-  file-size limit. A process that attempts to write past the bound is terminated
-  (POSIX file-size limit; CPython children see `EFBIG`), the job reaches a typed
-  `failed` outcome with `stdoutTruncated`/`stderrTruncated` markers and a bounded
-  error message, and stored bytes never exceed the documented limit.
+- **Live output bound.** Worker stdout and stderr are drained by the worker
+  through parent-owned pipes and stored only up to the per-stream bound
+  (`MAX_REMOTE_OUTPUT_BYTES = 1000000`, clamped 4 KiB–16 MiB); beyond the bound
+  bytes are drained and counted (`stdoutDiscardedBytes`/`stderrDiscardedBytes`),
+  `stdoutTruncated`/`stderrTruncated` and `outputCapped` mark the loss explicitly,
+  and stored bytes never exceed the documented limit. The process keeps running to
+  normal completion — output policy never terminates the job and never constrains
+  the child's own file writes.
 - **Bounded range reads.** `remote_job_output` performs a true bounded seek/read of
   the requested byte range; a 64 KiB slice of a multi-megabyte stream reads only
   that slice. Continuation metadata (`offset`/`nextOffset`/`eof`) is deterministic

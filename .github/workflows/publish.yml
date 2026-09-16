@@ -34,6 +34,10 @@ concurrency:
 env:
   QUARANTINE_REGISTRY: ghcr.io
   QUARANTINE_REPOSITORY: ${{ github.repository }}-quarantine
+  # Immutable revision of the promoter script executed by the protected
+  # publisher. Bumped only by a reviewed commit; never a mutable branch and
+  # never the candidate revision.
+  PROMOTER_REVISION: b600e7a3526e8820d7ab9ebe040a236d71a8931d
 
 jobs:
   validate-release:
@@ -195,11 +199,19 @@ jobs:
       # of the promoter script, never the candidate revision.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: master
+          ref: ${{ env.PROMOTER_REVISION }}
           sparse-checkout: scripts/promote_digest.py
           sparse-checkout-cone: false
           fetch-depth: 1
           persist-credentials: false
+      - name: Verify pinned promoter identity before any credential use
+        shell: bash
+        env:
+          PINNED_PROMOTER_REVISION: ${{ env.PROMOTER_REVISION }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PINNED_PROMOTER_REVISION"
+          test -f scripts/promote_digest.py
       - name: Promote exact tested digest registry-to-registry without candidate bytes
         id: copy
         shell: bash
