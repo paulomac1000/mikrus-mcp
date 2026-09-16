@@ -182,9 +182,7 @@ def main() -> int:
         closing = committed_doc.index("\n---\n", 4)
         match = ASSESSMENT_LINE.search(committed_doc[4:closing])
         if match is None:
-            raise RebindError(
-                f"{BINDING_DOCUMENT} in revision {revision} has no assessed_revision"
-            )
+            raise RebindError(f"{BINDING_DOCUMENT} in revision {revision} has no assessed_revision")
         bound = match.group(0).split(":", 1)[1].strip()
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", bound, revision],
