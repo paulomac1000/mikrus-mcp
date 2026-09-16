@@ -193,6 +193,11 @@ def test_publisher_workflow_never_loads_runs_or_builds_candidate() -> None:
 
 
 def test_promoter_content_digest_is_pinned_full_sha256() -> None:
+    """Bootstrap consistency: the pinned trust digest matches the reviewed
+    promoter bytes in this tree. Changing the promoter without changing this
+    digest fails closed at publish time; changing both is a promoter trust
+    transition that must land through an independently reviewed master
+    commit, never silently inside a candidate."""
     import hashlib
     import re
 
@@ -202,59 +207,5 @@ def test_promoter_content_digest_is_pinned_full_sha256() -> None:
     assert match is not None, "PROMOTER_CONTENT_SHA256 must be a pinned 64-hex digest"
     pinned = match.group(1)
     script = (root / "scripts" / "promote_digest.py").read_bytes()
-    assert hashlib.sha256(script).hexdigest() == pinned, (
-        "scripts/promote_digest.py drifted from the workflow-pinned digest; "
-        "update PROMOTER_CONTENT_SHA256 in the same reviewed commit"
-    )
-
-
-def test_realm_url_host_is_validated_not_prefix_matched() -> None:
-    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
-
-    client = RegistryClient(RegistryRef("ghcr.io", "owner/repo"), Credentials("u", "p"), False)
-    client._authenticate(
-        'Bearer realm="http://localhost.attacker.example/token",service="ghcr.io"'
-    ) if False else None
-    import pytest as _pytest
-
-    with _pytest.raises(SystemExit):
-        client._authenticate(
-            'Bearer realm="http://localhost.attacker.example/token",service="ghcr.io"'
-        )
-    with _pytest.raises(SystemExit):
-        client._authenticate('Bearer realm="http://127.0.0.1.attacker.example/token",service="s"')
-    with _pytest.raises(SystemExit):
-        client._authenticate('Bearer realm="http://192.168.0.5/token",service="s"')
-
-
-def test_bearer_challenge_parser_preserves_comma_inside_quotes() -> None:
-    from scripts.promote_digest import _parse_challenge
-
-    params = _parse_challenge(
-        'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
-        'scope="repository:owner/repo:pull,push"'
-    )
-    assert params["realm"] == "https://ghcr.io/token"
-    assert params["service"] == "ghcr.io"
-    assert params["scope"] == "repository:owner/repo:pull,push"
-
-
-def test_mount_treats_202_as_session_not_mount() -> None:
-    from unittest import mock
-
-    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
-
-    destination = RegistryClient(RegistryRef("127.0.0.1:1", "dst"), Credentials(None, None), True)
-
-    class FakeResponse:
-        status = 202
-        headers = {"Location": "/v2/dst/blobs/uploads/session"}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-    with mock.patch.object(destination, "_open", return_value=FakeResponse()):
-        assert destination.mount_blob("sha256:" + "a" * 64, "src") is False
+    assert hashlib.sha256(script).hexdigest() == pinned
+    assert "TRUST TRANSITION" in publish

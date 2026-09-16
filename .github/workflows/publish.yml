@@ -34,10 +34,17 @@ concurrency:
 env:
   QUARANTINE_REGISTRY: ghcr.io
   QUARANTINE_REPOSITORY: ${{ github.repository }}-quarantine
-  # The protected publisher executes the promoter script from the validated
-  # CI bundle ONLY after its SHA-256 matches this trusted digest, which is
-  # changed exclusively by reviewed commits. A candidate that alters the
-  # script fails closed here, before any registry credential exists.
+  # TRUST TRANSITION (bootstrap): the protected publisher executes the
+  # promoter script from the validated CI bundle ONLY after its SHA-256
+  # matches this digest. The digest was established by the reviewed
+  # integration of PR #34: the squash-merged master revision is the trust
+  # root, its scripts/promote_digest.py bytes hash exactly to this value, and
+  # the post-merge pin-affirmation re-verifies this binding. Any future
+  # change to the promoter or to this digest is a promoter TRUST TRANSITION:
+  # it must land through an independently reviewed commit on master, never
+  # inside a candidate PR. A candidate that alters the script without such a
+  # reviewed transition fails closed here, before any registry credential
+  # exists.
   PROMOTER_CONTENT_SHA256: 6a0601e2947795c5721bb7caceb8555bdc2abff78916b1bda82e291ef6244ae1
 
 jobs:

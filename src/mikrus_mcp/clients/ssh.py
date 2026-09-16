@@ -246,7 +246,7 @@ _PROGRAM_HELPER = textwrap.dedent(
 
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import fcntl, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+    import fcntl, hashlib, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
@@ -308,14 +308,22 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         retention = float(payload.get("retention_seconds", 604800))
         grace = float(payload.get("grace_seconds", 3600))
         budget = int(payload.get("max_entries", 256))
+        shards = int(payload.get("shards", 16))
+        shard = payload.get("shard")
+        shard = int(now // 60) % shards if shard is None else int(shard) % shards
         summary = {
             "enumerated": 0,
+            "shard": shard,
+            "shards": shards,
             "scanned": 0,
             "removed": 0,
             "keptActive": 0,
             "keptRecent": 0,
             "errors": 0,
         }
+
+        def shard_of(name):
+            return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % shards
 
         def pid_alive(identity):
             if not isinstance(identity, dict):
@@ -341,101 +349,91 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             except OSError:
                 summary["errors"] += 1
 
+        # Single-pass sharded sweep: one readdir enumeration, per-entry O(1)
+        # shard decision (no counting phase, no sort, no second traversal),
+        # and stat/parse work bounded by the per-pass budget. Successive passes
+        # rotate the active shard, so every entry is eventually visited.
         try:
-            total = 0
-            for _entry in os.scandir(root):
-                total += 1
-            summary["enumerated"] = total
-        except OSError:
-            return summary
-        if total == 0:
-            return summary
-        # Rotating window: each pass inspects at most `budget` consecutive
-        # entries starting at a time-derived offset, so successive passes
-        # eventually visit every entry while pass memory stays O(budget) and
-        # no full-directory sort or materialization happens.
-        offset = int(now // 60) % total
-        window_names = []
-        for index, entry in enumerate(os.scandir(root)):
-            relative = index - offset
-            if 0 <= relative < budget or (relative < 0 and relative + total < budget):
-                window_names.append(entry.name)
-        for entry_name in window_names:
-            if summary["scanned"] >= budget:
-                break
-            summary["scanned"] += 1
-            path = root / entry_name
-            try:
-                st_meta = os.lstat(path / "record.json")
-            except OSError:
-                st_meta = None
-            record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
-            if record_regular and (now - st_meta.st_mtime) <= grace:
-                summary["keptRecent"] += 1
-                continue
-            try:
-                dir_mtime = os.lstat(path).st_mtime
-            except OSError:
-                dir_mtime = None
-            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
-            if os.path.islink(path) or not os.path.isdir(path):
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    try:
-                        os.unlink(path)
-                        summary["removed"] += 1
-                    except OSError:
-                        summary["errors"] += 1
-                continue
-            if not record_regular:
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    remove_dir(path)
-                continue
-            try:
-                record_fd = os.open(
-                    path / "record.json",
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                )
+            for entry in os.scandir(root):
+                name = entry.name
+                summary["enumerated"] += 1
+                if summary["scanned"] >= budget or shard_of(name) != shard:
+                    continue
+                summary["scanned"] += 1
+                path = root / name
                 try:
-                    raw_record = os.read(record_fd, 65537)
-                finally:
-                    os.close(record_fd)
-            except OSError:
-                raw_record = b""
-            if len(raw_record) > 65536:
+                    st_meta = os.lstat(path / "record.json")
+                except OSError:
+                    st_meta = None
+                record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
+                if record_regular and (now - st_meta.st_mtime) <= grace:
+                    summary["keptRecent"] += 1
+                    continue
+                try:
+                    dir_mtime = os.lstat(path).st_mtime
+                except OSError:
+                    dir_mtime = None
+                fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+                if os.path.islink(path) or not os.path.isdir(path):
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        try:
+                            os.unlink(path)
+                            summary["removed"] += 1
+                        except OSError:
+                            summary["errors"] += 1
+                    continue
+                if not record_regular:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                try:
+                    record_fd = os.open(
+                        path / "record.json",
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    try:
+                        raw_record = os.read(record_fd, 65537)
+                    finally:
+                        os.close(record_fd)
+                except OSError:
+                    raw_record = b""
+                if len(raw_record) > 65536:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                try:
+                    record = json.loads(raw_record)
+                except ValueError:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                state = record.get("state")
+                if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                    finished = record.get("finishedAt")
+                    if not isinstance(finished, (int, float)):
+                        finished = st_meta.st_mtime
+                    if (now - float(finished)) > retention:
+                        remove_dir(path)
+                    else:
+                        summary["keptRecent"] += 1
+                    continue
+                if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                    summary["keptActive"] += 1
+                    continue
                 if fresh:
-                    summary["keptRecent"] += 1
+                    summary["keptActive"] += 1
                 else:
                     remove_dir(path)
-                continue
-            try:
-                record = json.loads(raw_record)
-            except ValueError:
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    remove_dir(path)
-                continue
-            state = record.get("state")
-            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                finished = record.get("finishedAt")
-                if not isinstance(finished, (int, float)):
-                    finished = st_meta.st_mtime
-                if (now - float(finished)) > retention:
-                    remove_dir(path)
-                else:
-                    summary["keptRecent"] += 1
-                continue
-            if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                summary["keptActive"] += 1
-                continue
-            if fresh:
-                summary["keptActive"] += 1
-            else:
-                remove_dir(path)
+        except OSError:
+            pass
         return summary
 
     def start_ticks(pid):
@@ -725,12 +723,13 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     except OSError as spawn_error:
         fail_record("worker could not spawn the program: " + str(spawn_error)[:256])
         raise SystemExit(0)
+    child_pgid = os.getpgid(child.pid)
     lock_fd = acquire_lock()
     try:
         record = read_record()
         if record.get("state") == "cancelled":
             try:
-                os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+                os.killpg(child_pgid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
                 pass
             raise SystemExit(0)
@@ -738,7 +737,7 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         record["startedAt"] = datetime.now(timezone.utc).isoformat()
         record["runtimeIdentity"] = {
             "pid": str(child.pid),
-            "pgid": str(os.getpgid(child.pid)),
+            "pgid": str(child_pgid),
             "startTicks": start_ticks(child.pid),
         }
         record.pop("payload", None)
@@ -781,7 +780,7 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     except Exception:
         worker_failed = True
         try:
-            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+            os.killpg(child_pgid, signal.SIGKILL)
         except OSError:
             pass
         try:
@@ -795,9 +794,12 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     incomplete_drain = any(thread.is_alive() for thread in threads)
     if incomplete_drain:
         # A descendant still holds the output pipes; the stored streams cannot
-        # become complete. Terminate the remaining group and refuse success.
+        # become complete. Terminate the remaining same-group members via the
+        # PGID captured at spawn (still valid after the leader is reaped) and
+        # refuse success. Programs that escape via setsid are outside this
+        # guarantee; the typed-program admission policy admits none.
         try:
-            os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+            os.killpg(child_pgid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
             pass
         for thread in threads:

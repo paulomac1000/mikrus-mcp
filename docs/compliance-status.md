@@ -184,6 +184,19 @@ The following cannot be established by repository mocks or self-review:
   and from the host against the exact wheel); registry publication and promotion of the
   immutable image remain provider steps for any real release;
 - published-image digest smoke for any release platform actually promoted;
+- Promoter trust transition (bootstrap): the protected publisher executes
+  `scripts/promote_digest.py` from the validated CI bundle only after its
+  SHA-256 matches `PROMOTER_CONTENT_SHA256` in `publish.yml`. That digest was
+  established by the reviewed integration of PR #34 — the squash-merged master
+  revision is the trust root for the first promotion; its promoter bytes hash
+  to the pinned value and the post-merge pin-affirmation re-verifies the
+  binding. Every later promoter or digest change is a promoter TRUST
+  TRANSITION and must land through an independently reviewed master commit,
+  never inside a candidate PR; a candidate that alters the promoter bytes
+  without such a reviewed transition fails closed before any registry
+  credential exists. The durable end-state (a pinned external reusable
+  promotion workflow as an independent authority) remains a TODO(provider)
+  evolution of this bootstrap.
 - TODO(provider): quarantine-registry publication path in `publish.yml` requires
   `QUARANTINE_REGISTRY_USERNAME`/`QUARANTINE_REGISTRY_PASSWORD` secrets scoped to the
   `<repository>-quarantine` package namespace; provisioning and a live GHCR quarantine
