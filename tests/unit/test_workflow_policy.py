@@ -45,7 +45,8 @@ def test_sha_only_release_does_not_create_stable_version_tag() -> None:
     assert 'echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"' in workflow
     assert "RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}" in workflow
     assert 'if [[ -n "$RELEASE_TAG" ]]; then' in workflow
-    assert 'version_ref="$repository:$VERSION"' in workflow
+    assert 'tags+=(--tag "$VERSION")' in workflow
+    assert 'test "$RELEASE_TAG" = "v$VERSION"' in workflow
 
 
 def _write_lock(path: Path, *, pip_version: str | None) -> None:

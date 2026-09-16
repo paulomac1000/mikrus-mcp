@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+from scripts.promote_digest import Promoter, RegistryClient, RegistryRef
+
+REGISTRY_IMAGE = (
+    "registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+)
+_CONFIG_MEDIA = "application/vnd.oci.image.config.v1+json"
+_LAYER_MEDIA = "application/vnd.oci.image.layer.v1.tar+gzip"
+_MANIFEST_MEDIA = "application/vnd.oci.image.manifest.v1+json"
+
+
+def _docker_available() -> bool:
+    return shutil.which("docker") is not None
+
+
+@pytest.mark.skipif(
+    not _docker_available(), reason="TODO(disposable-registry): docker CLI unavailable"
+)
+@pytest.mark.smoke
+class TestExactDigestPromotion:
+    @pytest.fixture()
+    def registry_port(self) -> int:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        docker = shutil.which("docker")
+        assert docker is not None
+        container = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "-d",
+                "-p",
+                f"127.0.0.1:{port}:5000",
+                REGISTRY_IMAGE,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        base = f"http://127.0.0.1:{port}/v2/"
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(base, timeout=2) as response:
+                    if response.status == 200:
+                        return port
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.2)
+        subprocess.run([docker, "rm", "-f", container], capture_output=True)
+        pytest.fail("disposable registry did not become ready")
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self, registry_port: int) -> None:
+        yield
+
+    def _client(self, repository: str, port: int) -> RegistryClient:
+        from scripts.promote_digest import Credentials
+
+        return RegistryClient(
+            RegistryRef(f"127.0.0.1:{port}", repository), Credentials(None, None), True
+        )
+
+    def _push_synthetic_image(self, client: RegistryClient, *, layer_body: bytes = b"synthetic-layer-bytes") -> str:
+        config = json.dumps(
+            {"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}}
+        ).encode()
+        layer = layer_body
+        config_digest = f"sha256:{hashlib.sha256(config).hexdigest()}"
+        layer_digest = f"sha256:{hashlib.sha256(layer).hexdigest()}"
+        client.upload_blob(config_digest, config)
+        client.upload_blob(layer_digest, layer)
+        manifest = json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": _MANIFEST_MEDIA,
+                "config": {
+                    "mediaType": _CONFIG_MEDIA,
+                    "digest": config_digest,
+                    "size": len(config),
+                },
+                "layers": [{"mediaType": _LAYER_MEDIA, "digest": layer_digest, "size": len(layer)}],
+            }
+        ).encode()
+        manifest_digest = f"sha256:{hashlib.sha256(manifest).hexdigest()}"
+        client.put_manifest(manifest_digest, manifest, _MANIFEST_MEDIA)
+        return manifest_digest
+
+    def test_validated_digest_equals_promoted_digest(self, registry_port: int) -> None:
+        quarantine = self._client("campaign-quarantine", registry_port)
+        digest = self._push_synthetic_image(quarantine)
+        production = self._client("campaign-production", registry_port)
+        results = Promoter(quarantine, production).promote(
+            digest, [f"sha-campaign-{digest[7:19]}", "v0.0.0-campaign"]
+        )
+        assert all(verified == digest for verified in results.values())
+        body, media_type = production.get_manifest("v0.0.0-campaign")
+        assert f"sha256:{hashlib.sha256(body).hexdigest()}" == digest
+        assert media_type == _MANIFEST_MEDIA
+
+    def test_promotion_is_idempotent_for_same_digest(self, registry_port: int) -> None:
+        quarantine = self._client("idem-quarantine", registry_port)
+        digest = self._push_synthetic_image(quarantine)
+        production = self._client("idem-production", registry_port)
+        Promoter(quarantine, production).promote(digest, ["v0.0.0-idem"])
+        Promoter(quarantine, production).promote(digest, ["v0.0.0-idem"])
+        body, _ = production.get_manifest("v0.0.0-idem")
+        assert f"sha256:{hashlib.sha256(body).hexdigest()}" == digest
+
+    def test_substituted_digest_fails_closed(self, registry_port: int) -> None:
+        import sys as _sys
+
+        from scripts.promote_digest import main as promote_main
+
+        quarantine = self._client("subst-quarantine", registry_port)
+        digest = self._push_synthetic_image(quarantine)
+        other = self._push_synthetic_image(quarantine, layer_body=b"substituted-layer-bytes")
+        assert other != digest
+        production_repo = "subst-production"
+        argv = _sys.argv
+        _sys.argv = [
+            "promote_digest.py",
+            "--source-ref",
+            f"127.0.0.1:{registry_port}/subst-quarantine",
+            "--digest",
+            other,
+            "--expected-digest",
+            digest,
+            "--destination-ref",
+            f"127.0.0.1:{registry_port}/{production_repo}",
+            "--tag",
+            "v0.0.0-subst",
+            "--allow-insecure-loopback-registry",
+        ]
+        try:
+            with pytest.raises(SystemExit):
+                promote_main()
+        finally:
+            _sys.argv = argv
+        with pytest.raises(SystemExit):
+            self._client(production_repo, registry_port).get_manifest("v0.0.0-subst")
+
+    def test_http_outside_loopback_is_rejected(self) -> None:
+        with pytest.raises(SystemExit):
+            RegistryRef.parse("ghcr.io/owner/repo", "--source-ref").base_url(True)
+
+
+def test_publisher_workflow_never_loads_runs_or_builds_candidate() -> None:
+    publish = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
+    ).read_text(encoding="utf-8")
+    publish_block = publish.split("\n  publish:", 1)[1].split("\n  release:", 1)[0]
+    forbidden = ("docker load", "docker run", "docker build", "docker create", "actions/checkout")
+    for marker in forbidden:
+        assert marker not in publish_block, f"protected publisher uses forbidden {marker!r}"
+    assert "promote_digest.py" in publish_block
+    assert "--expected-digest" in publish_block
+    validate_block = publish.split("\n  validate-release:", 1)[1].split("\n  publish:", 1)[0]
+    assert "docker load" in validate_block
+    assert "digest=" in validate_block

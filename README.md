@@ -572,6 +572,21 @@ embedded build stamp; unstamped builds strip the stamp first):
 
 Hosted CI additionally validates the supported Python matrix, manifests, documentation, static security policy, exact wheel behavior, official MCP transports, dependency locks, and Linux/amd64 container behavior.
 
+### Releases
+
+The repository has exactly one canonical release initiation path: an authorized
+operator creates or selects an exact `vX.Y.Z` git tag whose version matches
+`pyproject.toml` and whose commit is reachable from `master`; the generic
+`publish.yml` workflow validates the tag, version, and exact SHA, verifies a
+green CI release bundle for that SHA, builds and smokes the candidate image in
+the unprivileged validation stage, and promotes the tested immutable OCI digest
+through the protected publisher. There is no automatic release-tagging
+workflow. Re-invoking publication for an already-published correct tag is
+idempotent; a tag at the wrong commit or with a mismatched version fails
+closed before publication. Dependency lock files are refreshed only through
+the scheduled/manual `dependency-refresh.yml` lane; ordinary candidate CI
+installs the committed locks and never re-resolves dependencies.
+
 ## Architecture
 
 ```text

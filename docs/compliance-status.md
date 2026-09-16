@@ -184,6 +184,13 @@ The following cannot be established by repository mocks or self-review:
   and from the host against the exact wheel); registry publication and promotion of the
   immutable image remain provider steps for any real release;
 - published-image digest smoke for any release platform actually promoted;
+- TODO(provider): quarantine-registry publication path in `publish.yml` requires
+  `QUARANTINE_REGISTRY_USERNAME`/`QUARANTINE_REGISTRY_PASSWORD` secrets scoped to the
+  `<repository>-quarantine` package namespace; provisioning and a live GHCR quarantine
+  promotion are provider steps. Repository-side promotion identity (validated digest ==
+  promoted digest, no `docker load`/run/build or candidate checkout in the protected
+  publisher) is proven mechanically by the disposable-registry regression in
+  `tests/smoke/test_promotion_identity.py`;
 
 ## Real-system evidence recorded 2026-09-10
 
