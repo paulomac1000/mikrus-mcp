@@ -166,7 +166,31 @@ class RegistryClient:
         self.ref = ref
         self.credentials = credentials
         self._base = ref.base_url(allow_http)
+        base_origin = urllib.parse.urlsplit(self._base)
+        self._credential_origin = (
+            base_origin.scheme,
+            (base_origin.hostname or "").lower(),
+            base_origin.port,
+        )
         self._token: str | None = None
+
+    def _authorize_into(self, request: urllib.request.Request, url: str) -> None:
+        """Attach credentials only when the target origin IS the registry.
+
+        Token realms and blob-upload Locations are registry-controlled
+        values and may point elsewhere; credentials travel only to the
+        exact registry origin this client was constructed for.
+        """
+        origin = urllib.parse.urlsplit(url)
+        target = (origin.scheme, (origin.hostname or "").lower(), origin.port)
+        if target != self._credential_origin:
+            return
+        if self._token is not None:
+            request.add_header("Authorization", f"Bearer {self._token}")
+        else:
+            basic = self.credentials.basic_header()
+            if basic is not None:
+                request.add_header("Authorization", basic)
 
     def _url(self, path: str, **query: str) -> str:
         base = f"{self._base}/{path}"
@@ -193,9 +217,7 @@ class RegistryClient:
         url = f"{realm}?{urllib.parse.urlencode(query)}" if query else realm
         _assert_registry_scheme(url)
         request = urllib.request.Request(url)
-        basic = self.credentials.basic_header()
-        if basic is not None:
-            request.add_header("Authorization", basic)
+        self._authorize_into(request, url)
         try:
             token_opener = urllib.request.build_opener(_SafeRedirectHandler)
             with token_opener.open(request, timeout=60) as token_response:
@@ -221,12 +243,7 @@ class RegistryClient:
         request.add_header("Accept", ACCEPT_MANIFESTS)
         for key, value in (headers or {}).items():
             request.add_header(key, value)
-        if self._token is not None:
-            request.add_header("Authorization", f"Bearer {self._token}")
-        else:
-            basic = self.credentials.basic_header()
-            if basic is not None:
-                request.add_header("Authorization", basic)
+        self._authorize_into(request, url)
         try:
             opener = urllib.request.build_opener(_SafeRedirectHandler)
             response = opener.open(request, timeout=300)
