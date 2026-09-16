@@ -149,6 +149,7 @@ class Settings:
     docker_plan_store_file: Path | None = None
     http_bearer_token: str | None = None
     allow_insecure_ssh: bool = False
+    curl_destination_allowlist: frozenset[str] = frozenset()
 
     def validate(self) -> Settings:
         if not self.targets:

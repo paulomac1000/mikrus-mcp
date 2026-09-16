@@ -16,6 +16,7 @@ GOVERNED = [
     ROOT / "SECURITY.md",
     ROOT / "MIGRATION.md",
     ROOT / "docs/architecture.md",
+    ROOT / "docs/ci-troubleshooting.md",
     ROOT / "docs/compliance-status.md",
     ROOT / "docs/ai-skills-review.md",
 ]

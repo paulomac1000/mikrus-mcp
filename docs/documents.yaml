@@ -6,5 +6,6 @@ governed:
   - MIGRATION.md
   - CHANGELOG.md
   - docs/architecture.md
+  - docs/ci-troubleshooting.md
   - docs/compliance-status.md
   - docs/ai-skills-review.md

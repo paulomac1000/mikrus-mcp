@@ -279,3 +279,36 @@ def test_stamped_revision_rejects_deployment_receipt_of_other_revision(
         environ={},
     )
     assert matching_a.deployment.binding == "verified"
+
+
+def test_same_human_tag_cannot_hide_a_divergent_source_revision(tmp_path: Path) -> None:
+    package_a = copy_package(tmp_path / "pkg-a")
+    package_b = copy_package(tmp_path / "pkg-b")
+    diverged = package_b / "errors.py"
+    diverged.write_text(
+        diverged.read_text(encoding="utf-8") + "\n# divergent source\n", encoding="utf-8"
+    )
+    stamp(package_a, source_revision=SOURCE_REVISION)
+    stamp(package_b, source_revision="c" * 40)
+
+    stamp_a = json.loads((package_a / "_build_provenance.json").read_text(encoding="utf-8"))
+    stamp_b = json.loads((package_b / "_build_provenance.json").read_text(encoding="utf-8"))
+
+    # Both builds carry the identical human-facing tag.
+    assert stamp_a["buildId"] == stamp_b["buildId"] == BUILD_ID
+    assert stamp_a["builtAt"] == stamp_b["builtAt"] == BUILT_AT
+    # The embedded identity fields still separate the builds.
+    assert stamp_a["sourceRevision"] == SOURCE_REVISION
+    assert stamp_b["sourceRevision"] == "c" * 40
+    assert stamp_a["packageContentDigest"] != stamp_b["packageContentDigest"]
+
+    # Both stamps verify against their own trees, so the divergence is genuine
+    # provenance rather than corruption.
+    assert (
+        capture_runtime_provenance(package_dir=package_a, environ={}).package_integrity
+        == "verified"
+    )
+    assert (
+        capture_runtime_provenance(package_dir=package_b, environ={}).package_integrity
+        == "verified"
+    )
