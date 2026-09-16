@@ -212,6 +212,14 @@ def _curl_constrain_value(flag: str, value: str | None) -> None:
             "PROGRAM_ARGUMENT_NOT_PERMITTED",
             "curl write-out format from a file is not permitted by the diagnostic curl policy",
         )
+    if flag in {"-H", "--header"} and value is not None and value.startswith("@"):
+        # @file/@- makes curl read headers from a file or stdin and transmit
+        # their contents to the destination — a local file disclosure channel.
+        raise ProgramPolicyError(
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+            "curl header values from a file or stdin are not permitted by the "
+            "diagnostic curl policy",
+        )
     if flag == "-o" and value != _CURL_NULL_OUTPUT:
         raise ProgramPolicyError(
             "PROGRAM_ARGUMENT_NOT_PERMITTED",

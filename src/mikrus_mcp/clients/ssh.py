@@ -59,6 +59,41 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _analyze_disk_remote_command(path: str) -> str:
+    """POSIX sh diagnostic; EXIT/INT/TERM traps remove the mktemp files even
+    when the run is interrupted, without altering the reported statuses."""
+    return (
+        _remote_read_prefix(path)
+        + 'df -h -- "$resolved"; fs_status=$?; echo ---TOP20---; '
+        + "duerr=$(mktemp) && duout=$(mktemp) && "
+        + 'trap \'rm -f "$duerr" "$duout"\' EXIT && '
+        + "trap 'exit 130' INT && trap 'exit 143' TERM HUP && "
+        + 'set -- "$resolved"/*; '
+        + 'if [ -e "$1" ]; then du -sh -- "$@" 2>"$duerr" >"$duout"; '
+        + 'else : > "$duout"; : > "$duerr"; fi; '
+        + "du_status=$?; "
+        + 'sort -rh "$duout" 2>/dev/null | head -n 20; '
+        + 'printf "\\n---DUERR---"; head -c 400 "$duerr"; '
+        + 'printf "\\n---ENDDUERR---\\n---PHASE---fs:%s\\n---PHASE---du:%s\\n" '
+        + '"$fs_status" "$du_status"; '
+        + 'rm -f "$duerr" "$duout"'
+    )
+
+
+def _list_processes_remote_command() -> str:
+    """POSIX sh snapshot with the same interruption-safe tempfile cleanup."""
+    return (
+        "pserr=$(mktemp) && psout=$(mktemp) && "
+        + 'trap \'rm -f "$pserr" "$psout"\' EXIT && '
+        + "trap 'exit 130' INT && trap 'exit 143' TERM HUP && "
+        + 'ps aux --sort=-%mem >"$psout" 2>"$pserr"; ps_status=$?; '
+        + 'head -n 401 "$psout"; '
+        + 'printf "\\n---PSERR---"; head -c 300 "$pserr"; '
+        + 'printf "\\n---ENDPSERR---\\n---PSSTATUS---%s\\n" "$ps_status"; '
+        + 'rm -f "$pserr" "$psout"'
+    )
+
+
 def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
     """Issue #23 contract: typed, phased disk-analysis outcomes. The
     large-files phase status is the producer (du) status, captured before the
@@ -1731,21 +1766,7 @@ class SshClient:
         )
 
     async def analyze_disk(self, path: str = "/") -> Any:
-        result = await self._run(
-            _remote_read_prefix(path)
-            + 'df -h -- "$resolved"; fs_status=$?; echo ---TOP20---; '
-            + "duerr=$(mktemp); duout=$(mktemp); "
-            + 'set -- "$resolved"/*; '
-            + 'if [ -e "$1" ]; then du -sh -- "$@" 2>"$duerr" >"$duout"; '
-            + 'else : > "$duout"; : > "$duerr"; fi; '
-            + "du_status=$?; "
-            + 'sort -rh "$duout" 2>/dev/null | head -n 20; '
-            + 'printf "\\n---DUERR---"; head -c 400 "$duerr"; '
-            + 'printf "\\n---ENDDUERR---\\n---PHASE---fs:%s\\n---PHASE---du:%s\\n" '
-            + '"$fs_status" "$du_status"; '
-            + 'rm -f "$duerr" "$duout"',
-            timeout=30,
-        )
+        result = await self._run(_analyze_disk_remote_command(path), timeout=30)
         return _analyze_disk_result(result)
 
     async def check_port(self, port: str) -> Any:
@@ -1755,15 +1776,7 @@ class SshClient:
         )
 
     async def list_processes(self) -> Any:
-        result = await self._run(
-            "pserr=$(mktemp); psout=$(mktemp); "
-            'ps aux --sort=-%mem >"$psout" 2>"$pserr"; ps_status=$?; '
-            'head -n 401 "$psout"; '
-            'printf "\\n---PSERR---"; head -c 300 "$pserr"; '
-            'printf "\\n---ENDPSERR---\\n---PSSTATUS---%s\\n" "$ps_status"; '
-            'rm -f "$psout" "$pserr"',
-            timeout=20,
-        )
+        result = await self._run(_list_processes_remote_command(), timeout=20)
         output = str(result.get("output", ""))
         pserr_match = re.search(r"---PSERR---\n(.*?)---ENDPSERR---", output, re.S)
         ps_stderr = pserr_match.group(1).strip() if pserr_match is not None else ""

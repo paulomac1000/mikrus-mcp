@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import shlex
 import signal
+import subprocess
 import sys
 import types
 from collections import deque
@@ -1425,3 +1428,117 @@ def test_docker_line_decode_preserves_non_string_types_and_nesting() -> None:
     assert decoded["Labels"] is None
     assert decoded["Mounts"][0]["RW"] is False
     assert decoded["NetworkSettings"]["Ports"]["80/tcp"][0]["HostPort"] == "8080"
+
+
+def _run_shell_in_tmp(command: str, workdir, tmpdir) -> subprocess.Popen:
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmpdir)
+    return subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+
+
+def _tempfile_count(tmpdir) -> int:
+    return len([entry for entry in tmpdir.iterdir() if entry.name.startswith("tmp.")])
+
+
+@pytest.mark.asyncio
+async def test_analyze_disk_remote_command_cleans_tempfiles_on_normal_exit(
+    tmp_path: Path,
+) -> None:
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    command = ssh_module._analyze_disk_remote_command(str(tmp_path))
+    process = _run_shell_in_tmp(command, tmp_path, tmp_path)
+    process.wait(timeout=30)
+    assert _tempfile_count(tmp_path) == 0
+
+
+def test_analyze_disk_remote_command_cleans_tempfiles_on_termination(
+    tmp_path: Path,
+) -> None:
+    """SIGTERM mid-run must still remove the mktemp files via the EXIT trap."""
+    import time as time_module
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "du").write_text("#!/bin/sh\nexec sleep 30\n")
+    (fakebin / "du").chmod(0o755)
+    command = ssh_module._analyze_disk_remote_command(str(tmp_path))
+
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmp_path)
+    environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
+    process = subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        deadline = time_module.monotonic() + 5
+        while time_module.monotonic() < deadline:
+            if _tempfile_count(tmp_path) > 0:
+                break
+            time_module.sleep(0.05)
+        assert _tempfile_count(tmp_path) > 0, "du never created its tempfiles"
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.wait(timeout=10)
+        for _ in range(50):
+            if _tempfile_count(tmp_path) == 0:
+                break
+            time_module.sleep(0.1)
+        assert _tempfile_count(tmp_path) == 0, "trap did not clean up tempfiles"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+
+
+def test_list_processes_remote_command_cleans_tempfiles_on_termination(
+    tmp_path: Path,
+) -> None:
+    """SIGTERM mid-run must still remove the ps snapshot tempfiles."""
+    import time as time_module
+
+    from mikrus_mcp.clients import ssh as ssh_module
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "ps").write_text("#!/bin/sh\nexec sleep 30\n")
+    (fakebin / "ps").chmod(0o755)
+    command = ssh_module._list_processes_remote_command()
+
+    environment = dict(os.environ)
+    environment["TMPDIR"] = str(tmp_path)
+    environment["PATH"] = f"{fakebin}:{environment.get('PATH', '')}"
+    process = subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        deadline = time_module.monotonic() + 5
+        while time_module.monotonic() < deadline:
+            if _tempfile_count(tmp_path) > 0:
+                break
+            time_module.sleep(0.05)
+        assert _tempfile_count(tmp_path) > 0, "ps never created its tempfiles"
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.wait(timeout=10)
+        for _ in range(50):
+            if _tempfile_count(tmp_path) == 0:
+                break
+            time_module.sleep(0.1)
+        assert _tempfile_count(tmp_path) == 0, "trap did not clean up tempfiles"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
