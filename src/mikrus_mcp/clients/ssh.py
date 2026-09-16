@@ -352,104 +352,156 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
         # Bounded visit-frontier sweep: one streamed readdir pass visits at
         # most a small multiple of the processing budget, so directory
-        # enumeration, memory, record processing, and summary mutation are
-        # all bounded per invocation regardless of total root size. Removing
-        # stale entries advances the readdir frontier, so repeated
-        # invocations make eventual progress. No persistent queue exists,
-        # so an oversized/rejected queue can never force a full-root
-        # rebuild loop; legacy .gc-queue-* dot entries are skipped by the
-        # same grammar and prefix filters as every other entry.
+        # enumeration, memory, record processing, and mutation are all
+        # bounded per invocation regardless of total root size. A per-shard
+        # cursor persists how many leading readdir entries the next pass
+        # skips, so a stable front of active, recent, malformed, or
+        # other-shard entries cannot starve stale entries that sort after
+        # it: consecutive passes advance through the whole directory until
+        # the pass exhausts it and the cursor resets. Removing stale entries
+        # also advances the frontier, preserving eventual progress. No
+        # serialized queue exists, so an oversized/rejected queue can never
+        # force a full-root rebuild loop; legacy .gc-queue-* and the cursor
+        # itself are dot entries skipped by the same prefix and grammar
+        # filters as every other entry.
         enum_budget = max(64, 4 * budget)
-
-        for entry in os.scandir(root):
-            if summary["visited"] >= enum_budget:
-                break
-            summary["visited"] += 1
-            name = entry.name
-            if name.startswith(".gc-"):
-                continue
-            if JOB_ID.fullmatch(name) is None:
-                continue
-            if shard_of(name) != shard:
-                continue
-            summary["enumerated"] += 1
-            if summary["scanned"] >= budget:
-                continue
-            path = PathLib(entry.path)
-            if not os.path.exists(path):
-                continue
-            summary["scanned"] += 1
+        cursor_path = root / f".gc-sweep-{shard}"
+        original_skip = 0
+        try:
+            cursor_fd = os.open(
+                cursor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
             try:
-                st_meta = os.lstat(path / "record.json")
-            except OSError:
-                st_meta = None
-            record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
-            if record_regular and (now - st_meta.st_mtime) <= grace:
-                summary["keptRecent"] += 1
-                continue
-            try:
-                dir_mtime = os.lstat(path).st_mtime
-            except OSError:
-                dir_mtime = None
-            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
-            if os.path.islink(path) or not os.path.isdir(path):
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    try:
-                        os.unlink(path)
-                        summary["removed"] += 1
-                    except OSError:
-                        summary["errors"] += 1
-                continue
-            if not record_regular:
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    remove_dir(path)
-                continue
-            try:
-                record_fd = os.open(
-                    path / "record.json",
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                raw_cursor = os.read(cursor_fd, 65)
+            finally:
+                os.close(cursor_fd)
+            if len(raw_cursor) <= 64:
+                original_skip = max(
+                    0, min(int(raw_cursor.decode() or "0"), 2_000_000_000)
                 )
+        except (OSError, ValueError):
+            original_skip = 0
+        skip = original_skip
+        exhausted = False
+        iterated = 0
+        # Skipped entries consume readdir yields but not the processing
+        # visit budget, so a large cursor position cannot hide every new
+        # entry behind the skip; the total-yield cap bounds each pass.
+        iterated_budget = max(enum_budget, 4096)
+        try:
+            entries = os.scandir(root)
+        except OSError:
+            return summary
+        with entries:
+            for entry in entries:
+                if (
+                    iterated >= iterated_budget
+                    or summary["visited"] >= enum_budget
+                ):
+                    break
+                iterated += 1
+                if skip:
+                    skip -= 1
+                    continue
+                summary["visited"] += 1
+                name = entry.name
+                if name.startswith(".gc-"):
+                    continue
+                if JOB_ID.fullmatch(name) is None:
+                    continue
+                if shard_of(name) != shard:
+                    continue
+                summary["enumerated"] += 1
+                if summary["scanned"] >= budget:
+                    continue
+                path = PathLib(entry.path)
+                if not os.path.exists(path):
+                    continue
+                summary["scanned"] += 1
                 try:
-                    raw_record = os.read(record_fd, 65537)
-                finally:
-                    os.close(record_fd)
-            except OSError:
-                raw_record = b""
-            if len(raw_record) > 65536:
+                    st_meta = os.lstat(path / "record.json")
+                except OSError:
+                    st_meta = None
+                record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
+                if record_regular and (now - st_meta.st_mtime) <= grace:
+                    summary["keptRecent"] += 1
+                    continue
+                try:
+                    dir_mtime = os.lstat(path).st_mtime
+                except OSError:
+                    dir_mtime = None
+                fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+                if os.path.islink(path) or not os.path.isdir(path):
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        try:
+                            os.unlink(path)
+                            summary["removed"] += 1
+                        except OSError:
+                            summary["errors"] += 1
+                    continue
+                if not record_regular:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                try:
+                    record_fd = os.open(
+                        path / "record.json",
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    try:
+                        raw_record = os.read(record_fd, 65537)
+                    finally:
+                        os.close(record_fd)
+                except OSError:
+                    raw_record = b""
+                if len(raw_record) > 65536:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                try:
+                    record = json.loads(raw_record)
+                except ValueError:
+                    if fresh:
+                        summary["keptRecent"] += 1
+                    else:
+                        remove_dir(path)
+                    continue
+                state = record.get("state")
+                if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                    finished = record.get("finishedAt")
+                    if not isinstance(finished, (int, float)):
+                        finished = st_meta.st_mtime
+                    if (now - float(finished)) > retention:
+                        remove_dir(path)
+                    else:
+                        summary["keptRecent"] += 1
+                    continue
+                if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                    summary["keptActive"] += 1
+                    continue
                 if fresh:
-                    summary["keptRecent"] += 1
+                    summary["keptActive"] += 1
                 else:
                     remove_dir(path)
-                continue
-            try:
-                record = json.loads(raw_record)
-            except ValueError:
-                if fresh:
-                    summary["keptRecent"] += 1
-                else:
-                    remove_dir(path)
-                continue
-            state = record.get("state")
-            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                finished = record.get("finishedAt")
-                if not isinstance(finished, (int, float)):
-                    finished = st_meta.st_mtime
-                if (now - float(finished)) > retention:
-                    remove_dir(path)
-                else:
-                    summary["keptRecent"] += 1
-                continue
-            if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                summary["keptActive"] += 1
-                continue
-            if fresh:
-                summary["keptActive"] += 1
             else:
-                remove_dir(path)
+                exhausted = True
+        next_skip = 0 if exhausted else iterated
+        if next_skip != original_skip:
+            fd, temporary = tempfile.mkstemp(prefix=f".gc-sweep-{shard}.", dir=root)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(str(next_skip))
+                os.replace(temporary, cursor_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
         return summary
 
     def start_ticks(pid):

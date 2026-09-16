@@ -875,3 +875,125 @@ def test_gc_stays_bounded_when_legacy_queue_size_cap_is_exceeded(
     assert second["removed"] == 3
     assert second["errors"] == 0
     assert list(_job_root(home).glob(".gc-queue-*")) == []
+
+
+def test_gc_cursor_prevents_starvation_behind_stable_front(tmp_path: Path) -> None:
+    """Greptile P1 regression: a stable front of recent entries larger than
+    the visit budget cannot starve stale entries that follow it. The
+    per-shard cursor advances through the directory across passes until the
+    stale tail is collected, while every pass stays within the budgets."""
+    home = _home(tmp_path)
+    stale_names: list[str] = []
+    index = 0
+    while len(stale_names) < 4:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            stale_names.append(candidate)
+    front_names: list[str] = []
+    while len(front_names) < 200:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            front_names.append(candidate)
+
+    old = time.time() - 7200.0
+    for name in front_names:
+        (_job_root(home) / name).mkdir(parents=True)
+    for name in stale_names:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 3600,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    first = _run_helper(payload, home)
+    assert first["visited"] <= 64
+    assert first["scanned"] <= 3
+
+    removed_total = first["removed"]
+    collected = False
+    for _ in range(8):
+        summary = _run_helper(payload, home)
+        assert summary["visited"] <= 64
+        assert summary["scanned"] <= 3
+        assert summary["errors"] == 0
+        removed_total += summary["removed"]
+        if removed_total >= len(stale_names):
+            collected = True
+            break
+    assert collected, f"stale entries starved: removed_total={removed_total}"
+    for name in stale_names:
+        assert (_job_root(home) / name).exists() is False
+    for name in front_names:
+        assert (_job_root(home) / name).exists()
+
+
+def test_gc_cursor_survives_corruption_and_symlink(tmp_path: Path) -> None:
+    """A corrupt or symlinked cursor is tolerated as offset zero and never
+    followed; cleanup still makes progress."""
+    home = _home(tmp_path)
+    stale = "c" * 32
+    job_dir = _job_root(home) / stale
+    job_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
+    old = time.time() - 7200.0
+    record_path.write_text(
+        json.dumps({"jobId": stale, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+
+    job_shard = _shard_of(stale)
+    corrupt = _job_root(home) / f".gc-sweep-{job_shard}"
+    corrupt.write_text("not-a-number", encoding="utf-8")
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 3,
+            "shards": 16,
+            "shard": job_shard,
+        },
+        home,
+    )
+    assert summary["removed"] == 1
+
+    symlinked = _job_root(home) / f".gc-sweep-{job_shard}"
+    if symlinked.exists() or symlinked.is_symlink():
+        symlinked.unlink()
+    symlinked.symlink_to("/etc/hostname")
+    link_name = "d" * 32
+    index = 0
+    while _shard_of(link_name) != job_shard:
+        link_name = f"d{index:031d}"
+        index += 1
+    dir_link = str(_job_root(home) / link_name)
+    os.symlink("/etc", dir_link)
+    os.utime(dir_link, (old, old), follow_symlinks=False)
+    second = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 3,
+            "shards": 16,
+            "shard": job_shard,
+        },
+        home,
+    )
+    assert second["removed"] >= 1
+    assert os.path.islink(dir_link) is False
+    assert os.path.isdir("/etc")
