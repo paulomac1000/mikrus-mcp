@@ -21,7 +21,7 @@ def _git(root: Path, *args: str) -> str:
 
 
 @pytest.fixture()
-def evidence_repo(tmp_path: Path) -> tuple[Path, str, str]:
+def evidence_repo(tmp_path: Path) -> tuple[Path, str, str]:  # noqa: RET504
     root = tmp_path / "repo"
     (root / "docs").mkdir(parents=True)
     (root / BINDING_RELATIVE).write_text(
@@ -51,11 +51,12 @@ body text that must never be touched by the rebind helper
     )
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "bind evidence to assessed implementation")
+    binding_commit = _git(root, "rev-parse", "HEAD")
     (root / "src.txt").write_text("implementation drift", encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "implementation commit after assessment")
     second = _git(root, "rev-parse", "HEAD")
-    return root, first, second
+    return root, binding_commit, second
 
 
 BINDING_RELATIVE = Path("docs") / "compliance-status.md"
@@ -103,31 +104,44 @@ def test_rebind_rejects_short_revision(evidence_repo: tuple[Path, str, str]) -> 
 def test_verify_only_accepts_current_exact_binding(
     evidence_repo: tuple[Path, str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root, first, second = evidence_repo
+    root, binding_commit, second = evidence_repo
     del second
-    _git(root, "checkout", "-q", "HEAD^")  # tree at the evidence-binding commit
-    assert _run(root, "--revision", first, "--verify-only") == 0
+    _git(root, "checkout", "-q", binding_commit)
+    assert _run(root, "--revision", binding_commit, "--verify-only") == 0
     assert "evidence binding verified" in capsys.readouterr().out
 
 
-def test_verify_only_rejects_candidate_drift_but_accepts_evidence_only_drift(
-    evidence_repo: tuple[Path, str, str], tmp_path: Path
-) -> None:
-    root, first, second = evidence_repo
+def test_verify_only_rejects_candidate_drift(evidence_repo: tuple[Path, str, str]) -> None:
+    root, _binding_commit, second = evidence_repo
     before = (root / BINDING_RELATIVE).read_text(encoding="utf-8")
     with pytest.raises(SystemExit):
         _run(root, "--revision", second, "--verify-only")
     assert (root / BINDING_RELATIVE).read_text(encoding="utf-8") == before
 
-    del tmp_path
-    _git(root, "checkout", "-qb", "evidence-only")
+
+def test_verify_only_accepts_evidence_only_drift(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "docs").mkdir(parents=True)
+    (root / "src.txt").write_text("implementation", encoding="utf-8")
+    (root / BINDING_RELATIVE).write_text(
+        "---\nassessed_revision: " + "1" * 40 + "\n---\nbody\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "implementation")
+    implementation = _git(root, "rev-parse", "HEAD")
+    binding = root / BINDING_RELATIVE
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("1" * 40, implementation),
+        encoding="utf-8",
+    )
     (root / "CHANGELOG.md").write_text("## evidence-only entry\n", encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "evidence-only rebind")
-    candidate = _git(root, "rev-parse", "HEAD")
-    _run(root, "--revision", candidate)
-    assert _run(root, "--revision", candidate, "--verify-only") == 0
-    del first
+    evidence_commit = _git(root, "rev-parse", "HEAD")
+    assert _run(root, "--revision", evidence_commit, "--verify-only") == 0
 
 
 def test_provider_run_required_fails_without_gh(
@@ -185,3 +199,19 @@ def test_rebind_rejects_revision_that_is_not_head(
         _run(root, "--revision", first)
     assert (root / BINDING_RELATIVE).read_text(encoding="utf-8") == before
     del second
+
+
+def test_verify_only_reads_binding_from_the_revision_not_working_tree(
+    evidence_repo: tuple[Path, str, str],
+) -> None:
+    root, binding_commit, second = evidence_repo
+    del second
+    _git(root, "checkout", "-q", binding_commit)
+    binding = root / BINDING_RELATIVE
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace(
+            f"assessed_revision: {binding_commit}", "assessed_revision: " + "9" * 40
+        ),
+        encoding="utf-8",
+    )
+    assert _run(root, "--revision", binding_commit, "--verify-only") == 0
