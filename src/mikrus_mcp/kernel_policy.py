@@ -316,7 +316,9 @@ class PolicyMixin:
                 executable = required_text("executable", maximum=255)
                 normalized["executable"] = executable
                 normalized["argv"] = validate_program_invocation(
-                    executable, normalized.get("argv", [])
+                    executable,
+                    normalized.get("argv", []),
+                    curl_destinations=self.settings.curl_destination_allowlist,
                 )
                 if "cwd" in normalized and normalized["cwd"] is not None:
                     normalized["cwd"] = validate_path(required_text("cwd"))
@@ -329,7 +331,9 @@ class PolicyMixin:
                 executable = required_text("executable", maximum=255)
                 normalized["executable"] = executable
                 normalized["argv"] = validate_program_invocation(
-                    executable, normalized.get("argv", [])
+                    executable,
+                    normalized.get("argv", []),
+                    curl_destinations=self.settings.curl_destination_allowlist,
                 )
                 if normalized.get("cwd") is not None:
                     normalized["cwd"] = validate_path(required_text("cwd"))
@@ -371,7 +375,9 @@ class PolicyMixin:
                 executable = required_text("executable", maximum=255)
                 normalized["executable"] = executable
                 normalized["argv"] = validate_program_invocation(
-                    executable, normalized.get("argv", [])
+                    executable,
+                    normalized.get("argv", []),
+                    curl_destinations=self.settings.curl_destination_allowlist,
                 )
                 normalized["environment"] = validate_cron_environment(
                     normalized.get("environment", {})

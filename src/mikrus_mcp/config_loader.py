@@ -156,5 +156,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
             env.get("MCP_HTTP_BEARER_TOKEN_FILE"), name="MCP_HTTP_BEARER_TOKEN_FILE"
         ),
         allow_insecure_ssh=_boolean(env, "MCP_ALLOW_INSECURE_SSH", False),
+        curl_destination_allowlist=frozenset(
+            entry.strip().lower()
+            for entry in env.get("MCP_CURL_DESTINATION_ALLOWLIST", "").split(",")
+            if entry.strip()
+        ),
     )
     return settings.validate()

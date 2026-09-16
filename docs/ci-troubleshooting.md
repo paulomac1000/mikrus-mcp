@@ -76,20 +76,26 @@ next push, and batch unrelated review-triggering commits.
 **Durable options.** Paid CodeRabbit tier or a self-hosted review bot removes
 the quota constraint; neither is configured for this repository.
 
-## 4. No external SSH path to the mikr.us VPS
+## 4. No external TCP/22 forward to the mikr.us VPS
 
-**Symptom.** Real-system tests cannot reach the production VPS; attempts to
-treat it as a test target fail at the transport layer.
+**Symptom.** Standard SSH (TCP/22) cannot reach the production mikr.us VPS
+from outside the platform, so the production host is not reachable as a
+real-system test target over the conventional port.
 
-**Root cause.** The mikr.us platform does not forward TCP/22 to the VPS. The
-SSH daemon runs internally, but no external forward exists, so the production
-host cannot serve as a real-system test target.
+**Root cause.** The mikr.us platform port-forward set for this VPS does not
+expose TCP/22 (verified refused from two independent networks during PR #25).
+The SSH daemon runs internally on TCP/22 only. Any external SSH access exists
+solely through operator-assigned platform forwards (for example a non-standard
+port), and is available only as actually configured for the specific server.
 
 **Verified mitigation.** Collect real-system evidence on a dedicated
-operator-directed target. `tests/real_system/` carries the deferred tests with
+operator-directed target, reached through whatever operator-assigned endpoint
+that target provides. `tests/real_system/` carries the deferred tests with
 concrete `TODO(real-system)` reasons; they stay skipped without dedicated
 credentials, explicit target selection, write policy, and approval records.
-Never repurpose production infrastructure as a test target.
+Never repurpose production infrastructure as a test target. Every real-system
+evidence record states which target it was collected against
+(see `docs/compliance-status.md`, "real-system evidence").
 
 **Durable options.** A working TCP/22 forward from the platform, or a
 permanently provisioned dedicated test host.

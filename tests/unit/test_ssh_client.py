@@ -411,6 +411,10 @@ async def test_docker_listing_mixed_output_is_partial_with_diagnostics() -> None
     assert len(result["containers"]) == 1
 
 
+def _ps_output(body: str, status: int = 0, pserr: str = "") -> str:
+    return f"{body}\n---PSERR---\n{pserr}\n---ENDPSERR---\n---PSSTATUS---{status}\n"
+
+
 def _ps_line(
     pid: int,
     user: str,
@@ -431,7 +435,7 @@ async def test_list_processes_returns_structured_records_with_time() -> None:
             _ps_line(103, "app", 0.4, "postgres -D /var/lib/data"),
         ]
     )
-    client = _analyze_process(body.encode("utf-8"))
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
     result = await client.list_processes()
     assert result["state"] == "complete"
     assert len(result["processes"]) == 3
@@ -448,7 +452,7 @@ async def test_list_processes_returns_structured_records_with_time() -> None:
 @pytest.mark.asyncio
 async def test_list_processes_excludes_wrapper_command_from_inventory() -> None:
     wrapper = _ps_line(900, "root", 0.1, "bash -c ps aux --sort=-%mem | head -n 21")
-    client = _analyze_process(wrapper.encode("utf-8"))
+    client = _analyze_process(_ps_output(wrapper).encode("utf-8"))
     result = await client.list_processes()
     assert result["state"] == "partial"
     assert result["processes"] == []
@@ -461,10 +465,36 @@ async def test_list_processes_truncates_at_line_budget() -> None:
     body = "\n".join(
         [header] + [_ps_line(1000 + index, "u", 0.1, "sleeper") for index in range(20)]
     )
-    client = _analyze_process(body.encode("utf-8"))
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert result["processesTruncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_processes_reports_truncated_with_usable_lookahead() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    body = "\n".join(
+        [header] + [_ps_line(2000 + index, "u", 0.1, "sleeper") for index in range(21)]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
     result = await client.list_processes()
     assert len(result["processes"]) == 20
     assert result["processesTruncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_processes_wrapper_does_not_consume_top_n_budget() -> None:
+    header = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+    wrapper = _ps_line(900, "root", 0.1, "bash -c ps aux --sort=-%mem | head -n 21")
+    body = "\n".join(
+        [header, wrapper] + [_ps_line(3000 + index, "u", 0.1, "sleeper") for index in range(20)]
+    )
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
+    result = await client.list_processes()
+    assert len(result["processes"]) == 20
+    assert all(record["pid"] != 900 for record in result["processes"])
+    assert result["processesTruncated"] is False
 
 
 @pytest.mark.asyncio
@@ -476,7 +506,7 @@ async def test_list_processes_redacts_secret_arguments() -> None:
             _ps_line(77, "app", 0.2, "curl --password hunter2 -s http://example.com"),
         ]
     )
-    client = _analyze_process(body.encode("utf-8"))
+    client = _analyze_process(_ps_output(body).encode("utf-8"))
     result = await client.list_processes()
     serialized = json.dumps(result)
     assert "hunter2" not in serialized
@@ -485,13 +515,27 @@ async def test_list_processes_redacts_secret_arguments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_processes_failure_is_typed_not_raw_text() -> None:
-    client = _analyze_process(b"", stderr=[b"ps: error reading"], status=1)
+async def test_list_processes_ps_failure_is_typed_even_when_pipeline_exits_zero() -> None:
+    """The remote command reports the ps producer status explicitly; a ps
+    failure must surface as a typed upstream failure even though the wrapping
+    shell pipeline exits 0."""
+    client = _analyze_process(
+        _ps_output("", status=1, pserr="ps: error reading /proc").encode("utf-8")
+    )
     with pytest.raises(AppError) as exc_info:
         await client.list_processes()
     assert exc_info.value.code == ErrorCode.UPSTREAM
     assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
-    assert "hunter2" not in exc_info.value.message or "hunter2" not in str(exc_info.value.message)
+    assert "exit_code=1" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_list_processes_missing_status_marker_is_parser_failed() -> None:
+    client = _analyze_process(b"USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\n")
+    with pytest.raises(AppError) as exc_info:
+        await client.list_processes()
+    assert exc_info.value.code == ErrorCode.UPSTREAM_PROTOCOL
+    assert "PARSER_FAILED" in exc_info.value.message
 
 
 def _run_helper(
@@ -1313,3 +1357,71 @@ async def test_collect_process_termination_fits_inside_caller_deadline(
     assert process.terminated is True
     assert process.closed is True
     assert elapsed < 0.35, f"termination exceeded caller deadline: {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_cli_failure_is_typed_not_empty_inventory() -> None:
+    client = _analyze_process(b"", stderr=[b"Cannot connect to the Docker daemon"], status=1)
+    with pytest.raises(AppError) as exc_info:
+        await client.list_docker_containers()
+    assert exc_info.value.code == ErrorCode.UPSTREAM
+    assert "(REMOTE_COMMAND_FAILED)" in exc_info.value.message
+    assert "Cannot connect to the Docker daemon" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_docker_stats_cli_failure_with_permission_denied() -> None:
+    client = _analyze_process(b"", stderr=[b"permission denied while talking to socket"], status=1)
+    with pytest.raises(AppError) as exc_info:
+        await client.get_docker_stats()
+    assert "(PERMISSION_DENIED)" in exc_info.value.message
+    assert len(exc_info.value.message) < 600
+
+
+@pytest.mark.asyncio
+async def test_docker_listing_exit_zero_empty_output_is_legitimate() -> None:
+    client = _analyze_process(b"")
+    result = await client.list_docker_containers()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == []
+
+
+@pytest.mark.asyncio
+async def test_docker_stats_exit_zero_with_records_is_complete() -> None:
+    line = '{"BlockIO":"0B / 0B","Name":"web"}'
+    client = _analyze_process((line + "\n").encode("utf-8"))
+    result = await client.get_docker_stats()
+    assert result["parseState"] == "complete"
+    assert result["containers"] == [{"BlockIO": "0B / 0B", "Name": "web"}]
+
+
+def test_docker_line_decode_preserves_entities_inside_valid_json() -> None:
+    line = '{"Command":"echo &quot;hi&quot;","Names":"web&amp;db"}'
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["Command"] == 'echo "hi"'
+    assert decoded["Names"] == "web&db"
+
+
+def test_docker_line_decode_handles_historical_whole_record_escaping() -> None:
+    line = (
+        "{&#34;Command&#34;:&#34;\\&#34;docker-entrypoint…\\&#34;&#34;,"
+        "&#34;Names&#34;:&#34;web&amp;db&#34;}"
+    )
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["Names"] == "web&db"
+    assert decoded["Command"].startswith('"docker-entrypoint')
+
+
+def test_docker_line_decode_preserves_non_string_types_and_nesting() -> None:
+    line = (
+        '{"SizeRootFs":123456789,"Running":true,"Created":1700000000.5,"Labels":null,'
+        '"Mounts":[{"Destination":"/data","RW":false}],'
+        '"NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}}}'
+    )
+    decoded = SshClient._parse_docker_line(line)
+    assert decoded["SizeRootFs"] == 123456789
+    assert decoded["Running"] is True
+    assert decoded["Created"] == 1700000000.5
+    assert decoded["Labels"] is None
+    assert decoded["Mounts"][0]["RW"] is False
+    assert decoded["NetworkSettings"]["Ports"]["80/tcp"][0]["HostPort"] == "8080"

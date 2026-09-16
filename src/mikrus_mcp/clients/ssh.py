@@ -60,7 +60,9 @@ def _utc_now_iso() -> str:
 
 
 def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Issue #23 contract: typed, phased disk-analysis outcomes."""
+    """Issue #23 contract: typed, phased disk-analysis outcomes. The
+    large-files phase status is the producer (du) status, captured before the
+    sort/head pipeline, with bounded redacted du stderr evidence."""
     output = str(result.get("output", ""))
     stderr = result.get("stderr", "")
     marker = _DISK_PHASE_MARKER.search(output)
@@ -72,6 +74,10 @@ def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
         )
     fs_status = int(marker.group(1))
     du_status = int(marker.group(2))
+    du_stderr = ""
+    duerr_match = re.search(r"---DUERR---\n(.*?)---ENDDUERR---", output, re.S)
+    if duerr_match is not None:
+        du_stderr = sanitize_text(duerr_match.group(1).strip())[-_FAILURE_EXCERPT_BYTES:]
     sections = output[: marker.start()].split("---TOP20---", 1)
     summary_text = sections[0].strip()
     files_text = sections[1].strip() if len(sections) > 1 else ""
@@ -98,7 +104,8 @@ def _analyze_disk_result(result: dict[str, Any]) -> dict[str, Any]:
             "largeFiles": {
                 "state": "failed",
                 "exitCode": du_status,
-                "failureClass": _failure_class(stderr),
+                "failureClass": _failure_class(du_stderr),
+                "stderr": du_stderr,
             },
             "observedAt": _utc_now_iso(),
         }
@@ -1727,8 +1734,16 @@ class SshClient:
         result = await self._run(
             _remote_read_prefix(path)
             + 'df -h -- "$resolved"; fs_status=$?; echo ---TOP20---; '
-            + 'du -sh -- "$resolved"/* 2>/dev/null | sort -rh | head -n 20; du_status=$?; '
-            + 'printf "\\n---PHASE---fs:%s\\n---PHASE---du:%s\\n" "$fs_status" "$du_status"',
+            + "duerr=$(mktemp); duout=$(mktemp); "
+            + 'set -- "$resolved"/*; '
+            + 'if [ -e "$1" ]; then du -sh -- "$@" 2>"$duerr" >"$duout"; '
+            + 'else : > "$duout"; : > "$duerr"; fi; '
+            + "du_status=$?; "
+            + 'sort -rh "$duout" 2>/dev/null | head -n 20; '
+            + 'printf "\\n---DUERR---"; head -c 400 "$duerr"; '
+            + 'printf "\\n---ENDDUERR---\\n---PHASE---fs:%s\\n---PHASE---du:%s\\n" '
+            + '"$fs_status" "$du_status"; '
+            + 'rm -f "$duerr" "$duout"',
             timeout=30,
         )
         return _analyze_disk_result(result)
@@ -1741,27 +1756,40 @@ class SshClient:
 
     async def list_processes(self) -> Any:
         result = await self._run(
-            f"{_PROCESS_SNAPSHOT_COMMAND} | head -n {_PROCESS_SNAPSHOT_LINE_BUDGET + 1}",
+            "pserr=$(mktemp); psout=$(mktemp); "
+            'ps aux --sort=-%mem >"$psout" 2>"$pserr"; ps_status=$?; '
+            'head -n 401 "$psout"; '
+            'printf "\\n---PSERR---"; head -c 300 "$pserr"; '
+            'printf "\\n---ENDPSERR---\\n---PSSTATUS---%s\\n" "$ps_status"; '
+            'rm -f "$psout" "$pserr"',
             timeout=20,
         )
-        if result.get("exit_code", 0) != 0:
-            stderr = result.get("stderr")
+        output = str(result.get("output", ""))
+        pserr_match = re.search(r"---PSERR---\n(.*?)---ENDPSERR---", output, re.S)
+        ps_stderr = pserr_match.group(1).strip() if pserr_match is not None else ""
+        status_match = re.search(r"---PSSTATUS---(\d+)\s*$", output)
+        if status_match is None:
+            raise AppError(
+                ErrorCode.UPSTREAM_PROTOCOL,
+                "process snapshot output could not be parsed (PARSER_FAILED)",
+                retryable=False,
+            )
+        ps_status = int(status_match.group(1))
+        if ps_status != 0:
             raise AppError(
                 ErrorCode.UPSTREAM,
                 "process snapshot failed "
-                f"({_failure_class(stderr)}) "
-                f"exit_code={result.get('exit_code')} stderr={_failure_excerpt(stderr)}",
+                f"({_failure_class(ps_stderr)}) "
+                f"exit_code={ps_status} stderr={_failure_excerpt(ps_stderr)}",
                 retryable=False,
             )
-        raw = "\n".join(
-            line
-            for line in str(result.get("output", "")).splitlines()
-            if _PROCESS_SNAPSHOT_COMMAND not in line
-        )
+        body = output[: pserr_match.start()] if pserr_match is not None else output
+        raw = "\n".join(line for line in body.splitlines() if _PROCESS_SNAPSHOT_COMMAND not in line)
         snapshot = _parse_process_snapshot(raw)
-        records = snapshot.get("processes", [])
+        usable = snapshot.get("processes", [])
         snapshot["processLimit"] = _PROCESS_SNAPSHOT_LINE_BUDGET
-        snapshot["processesTruncated"] = len(records) >= _PROCESS_SNAPSHOT_LINE_BUDGET
+        snapshot["processesTruncated"] = len(usable) > _PROCESS_SNAPSHOT_LINE_BUDGET
+        snapshot["processes"] = usable[:_PROCESS_SNAPSHOT_LINE_BUDGET]
         snapshot["observedAt"] = _utc_now_iso()
         return snapshot
 
@@ -1806,7 +1834,9 @@ class SshClient:
         return await self._run("ps auxf | head -n 100")
 
     async def list_docker_containers(self) -> Any:
-        return self._parse_docker_jsonl(await self._run("docker ps -a --format '{{json .}}'"))
+        result = await self._run("docker ps -a --format '{{json .}}'")
+        self._reject_docker_command_failure(result)
+        return self._parse_docker_jsonl(result)
 
     async def get_docker_logs(self, container: str, lines: int = 50) -> Any:
         return await self._run(
@@ -1815,16 +1845,59 @@ class SshClient:
         )
 
     async def get_docker_stats(self) -> Any:
-        return self._parse_docker_jsonl(
-            await self._run("docker stats --no-stream --format '{{json .}}'")
-        )
+        result = await self._run("docker stats --no-stream --format '{{json .}}'")
+        self._reject_docker_command_failure(result)
+        return self._parse_docker_jsonl(result)
+
+    @staticmethod
+    def _reject_docker_command_failure(result: dict[str, Any]) -> None:
+        if result.get("exit_code", 0) != 0:
+            stderr = result.get("stderr")
+            raise AppError(
+                ErrorCode.UPSTREAM,
+                "docker listing failed "
+                f"({_failure_class(stderr)}) exit_code={result.get('exit_code')} "
+                f"stderr={_failure_excerpt(stderr)}",
+                retryable=False,
+            )
+
+    @staticmethod
+    def _decode_entities(value: Any) -> Any:
+        if isinstance(value, str):
+            return html.unescape(value)
+        if isinstance(value, dict):
+            return {
+                html.unescape(str(key)): SshClient._decode_entities(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [SshClient._decode_entities(item) for item in value]
+        return value
+
+    @staticmethod
+    def _parse_docker_line(line: str) -> dict[str, Any]:
+        # Parse valid JSON first; unescape entities only inside string
+        # keys/values afterwards. The whole-line unescape fallback covers the
+        # historical double-encoded transport and must never corrupt valid
+        # JSON (e.g. &quot; inside an ordinary string value).
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            value = json.loads(html.unescape(line))
+        if not isinstance(value, dict):
+            raise ValueError("docker listing record is not a JSON object")
+        decoded = SshClient._decode_entities(value)
+        if not isinstance(decoded, dict):
+            raise ValueError("docker listing record is not a JSON object")
+        return decoded
 
     @staticmethod
     def _parse_docker_jsonl(result: dict[str, Any]) -> dict[str, Any]:
         """Issue #17 contract: entity-escaped records decode to ordinary JSON
         strings; non-empty output with zero records is PARSER_FAILED, never a
         successful empty inventory; mixed output is partial with bounded
-        diagnostics."""
+        diagnostics. The CLI exit status is checked by the caller before this
+        parser runs, so an empty success here means a genuinely empty listing."""
         raw = str(result.get("output", ""))
         parsed: list[dict[str, Any]] = []
         rejected = 0
@@ -1833,17 +1906,11 @@ class SshClient:
             if not line.strip():
                 continue
             try:
-                value = json.loads(html.unescape(line))
-            except json.JSONDecodeError:
+                parsed.append(SshClient._parse_docker_line(line))
+            except (json.JSONDecodeError, ValueError):
                 rejected += 1
-            else:
-                if isinstance(value, dict):
-                    parsed.append(value)
-                else:
-                    rejected += 1
-                continue
-            if excerpt is None:
-                excerpt = sanitize_text(line[:_DOCKER_PARSE_EXCERPT_BYTES])
+                if excerpt is None:
+                    excerpt = sanitize_text(line[:_DOCKER_PARSE_EXCERPT_BYTES])
         if not parsed and raw.strip():
             raise AppError(
                 ErrorCode.UPSTREAM_PROTOCOL,

@@ -1762,7 +1762,18 @@ async def test_execute_program_reaches_client_with_byte_for_byte_argv() -> None:
 
     acceptance_invocations = [
         ("docker", ["inspect", "--format", "{{.Id}}", "abc123"]),
-        ("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://example.com"]),
+        (
+            "curl",
+            [
+                "-q",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "http://example.com/status",
+            ],
+        ),
     ]
     for executable, argv in acceptance_invocations:
         arguments = {"executable": executable, "argv": argv}
@@ -1785,9 +1796,24 @@ async def test_execute_program_rejects_disallowed_subcommands_before_dispatch() 
     kernel, approvals = _program_kernel(client)
     caller = CallerContext("principal", kernel.settings.allowed_scopes)
 
-    for arguments in (
-        {"executable": "docker", "argv": ["rm", "abc123"]},
-        {"executable": "systemctl", "argv": ["restart", "nginx"]},
+    for arguments, expected_code in (
+        ({"executable": "docker", "argv": ["rm", "abc123"]}, "PROGRAM_SUBCOMMAND_NOT_PERMITTED"),
+        (
+            {"executable": "systemctl", "argv": ["restart", "nginx"]},
+            "PROGRAM_SUBCOMMAND_NOT_PERMITTED",
+        ),
+        (
+            {"executable": "curl", "argv": ["-q", "-X", "POST", "https://example.com/"]},
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+        ),
+        (
+            {"executable": "curl", "argv": ["-q", "-s", "http://169.254.169.254/"]},
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+        ),
+        (
+            {"executable": "curl", "argv": ["-s", "https://example.com/"]},
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+        ),
     ):
         approvals.issue_for_test(
             "execute_program",
@@ -1799,5 +1825,5 @@ async def test_execute_program_rejects_disallowed_subcommands_before_dispatch() 
         result = await kernel.invoke("execute_program", arguments, caller)
         assert result["success"] is False
         assert result["error"]["code"] == "VALIDATION_FAILED"
-        assert "PROGRAM_SUBCOMMAND_NOT_PERMITTED" in result["error"]["message"]
+        assert expected_code in result["error"]["message"]
     assert client.calls == []

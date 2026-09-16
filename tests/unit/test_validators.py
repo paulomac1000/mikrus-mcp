@@ -262,15 +262,79 @@ def test_program_invocation_admits_diagnostic_subcommands_per_issue_27() -> None
     ):
         assert validate_program_invocation("docker", argv) == argv
 
-    for argv in (
-        ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://example.com"],
-        ["-sI", "http://example.com"],
-        ["-L", "-s", "http://example.com"],
-        ["--max-time", "5", "http://example.com"],
-        ["-H", "X-Test: 1", "-X", "GET", "http://example.com"],
-        ["-d", "inline=body", "http://example.com"],
-    ):
+    curl_allowed = (
+        ["-q", "-s", "-o", "/dev/null", "-w", "%{http_code}", "https://example.com/status"],
+        ["-q", "-sI", "http://example.com/health"],
+        ["-q", "-s", "--max-time", "5", "http://example.com/"],
+        ["-q", "-s", "-H", "X-Test: 1", "-X", "GET", "https://example.com/api"],
+        ["-q", "-I", "--url", "https://example.com/"],
+        ["-q", "-s", "-X", "HEAD", "https://example.com/"],
+        ["-q", "-s", "https://example.com/"],
+        ["--disable", "-s", "https://example.com/"],
+    )
+    for argv in curl_allowed:
         assert validate_program_invocation("curl", argv) == argv
+    with_destinations = ["-q", "-s", "https://api.example.com/v1/status"]
+    assert (
+        validate_program_invocation(
+            "curl", with_destinations, curl_destinations=frozenset({"example.com"})
+        )
+        == with_destinations
+    )
+
+    for argv in (
+        ["-s", "-o", "/dev/null", "-w", "%{http_code}", "https://example.com/"],
+        ["-q", "-d", "inline=body", "https://example.com/"],
+        ["-q", "--data-raw", "x", "https://example.com/"],
+        ["-q", "--json", '{"a":1}', "https://example.com/"],
+        ["-q", "-F", "a=b", "https://example.com/"],
+        ["-q", "-T", "/tmp/f", "https://example.com/"],
+        ["-q", "-X", "POST", "https://example.com/"],
+        ["-q", "--request", "DELETE", "https://example.com/"],
+        ["-q", "--request=PUT", "https://example.com/"],
+        ["-q", "-K", "/tmp/curlcfg", "https://example.com/"],
+        ["-q", "-Kfile", "https://example.com/"],
+        ["-q", "--config", "-", "https://example.com/"],
+        ["-q", "--config=/tmp/curlcfg", "https://example.com/"],
+        ["-q", "-D", "/tmp/headers", "https://example.com/"],
+        ["-q", "--dump-header", "/tmp/headers", "https://example.com/"],
+        ["-q", "-c", "/tmp/cookies", "https://example.com/"],
+        ["-q", "--cookie-jar", "/tmp/cookies", "https://example.com/"],
+        ["-q", "-b", "/tmp/cookies", "https://example.com/"],
+        ["-q", "--etag-save", "/tmp/etag", "https://example.com/"],
+        ["-q", "--trace", "/tmp/trace", "https://example.com/"],
+        ["-q", "--trace-ascii", "/tmp/trace", "https://example.com/"],
+        ["-q", "-x", "http://proxy:3128", "https://example.com/"],
+        ["-q", "--proxy", "socks5://h:1080", "https://example.com/"],
+        ["-q", "--unix-socket", "/var/run.sock", "https://example.com/"],
+        ["-q", "-L", "https://example.com/"],
+        ["-q", "-w", "@/tmp/format", "https://example.com/"],
+        ["-q", "-o", "/tmp/out", "https://example.com/"],
+        ["-q", "-s", "file:///etc/passwd"],
+        ["-q", "-s", "ftp://example.com/"],
+        ["-q", "-s", "example.com"],
+        ["-q", "-s", "http://localhost/"],
+        ["-q", "-s", "http://127.0.0.1/"],
+        ["-q", "-s", "http://[::1]/"],
+        ["-q", "-s", "http://169.254.169.254/latest/meta-data/"],
+        ["-q", "-s", "http://10.0.0.5/"],
+        ["-q", "-s", "http://192.168.1.10/"],
+        ["-q", "-s", "http://172.16.0.9/"],
+        ["-q", "-s", "http://100.64.0.1/"],
+        ["-q", "-s", "http://user@example.com/"],
+        ["-q", "-s", "http://service.internal/"],
+        ["-q", "-s", "http://host.local/"],
+        [],
+        ["-s", "https://example.com/"],
+    ):
+        with pytest.raises(ValidationError, match="PROGRAM_ARGUMENT_NOT_PERMITTED"):
+            validate_program_invocation("curl", argv)
+    with pytest.raises(ValidationError, match="allowlist"):
+        validate_program_invocation(
+            "curl",
+            ["-q", "-s", "https://other-host.example.net/"],
+            curl_destinations=frozenset({"example.com"}),
+        )
 
     for argv in (
         ["status", "nginx"],

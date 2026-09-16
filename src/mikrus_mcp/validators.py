@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import re
 from pathlib import PurePosixPath
 from typing import Final
@@ -102,33 +103,172 @@ _DOCKER_READ_SUBCOMMAND_PHRASES: Final = frozenset(
 )
 _DOCKER_GLOBAL_FLAGS: Final = frozenset({"--debug", "-D", "--help", "--version", "-v"})
 
-_CURL_UPLOAD_FLAGS: Final = frozenset(
-    {
-        "-T",
-        "--upload-file",
-        "-F",
-        "--form",
-        "--form-string",
-        "-O",
-        "--remote-name",
-        "--remote-name-all",
-        "-J",
-        "--remote-header-name",
-    }
-)
-_CURL_UPLOAD_LONG_FLAGS: Final = ("--upload-file=", "--form=", "--form-string=")
-_CURL_DATA_FLAGS: Final = frozenset(
-    {
-        "-d",
-        "--data",
-        "--data-ascii",
-        "--data-binary",
-        "--data-raw",
-        "--data-urlencode",
-    }
-)
-_CURL_OUTPUT_FLAGS: Final = frozenset({"-o", "--output"})
 _CURL_NULL_OUTPUT: Final = "/dev/null"
+# Diagnostic curl admission is an allowlist: anything not listed here is
+# rejected before dispatch. This is the fail-closed answer to config-file
+# injection (-K/--config/- reads caller-controlled stdin), implicit .curlrc
+# activation, and indirect file I/O reported in security review.
+_CURL_ALLOWED_FLAGS_WITH_VALUE: Final = frozenset(
+    {
+        "-o",  # value restricted to /dev/null
+        "-w",  # value restricted: format string, never @file
+        "-H",  # request header; method-safe
+        "-m",
+        "--max-time",
+        "--connect-timeout",
+        "--url",  # destination policy still applies
+        "-X",  # value restricted to GET/HEAD
+        "--request",
+        "-A",
+        "--user-agent",
+    }
+)
+_CURL_ALLOWED_FLAG_VALUE_PREFIXES: Final = ("--write-out=", "--header=", "--url=")
+_CURL_ALLOWED_FLAGS_NO_VALUE: Final = frozenset(
+    {
+        "-q",
+        "--disable",  # must be first; disables implicit .curlrc
+        "-s",
+        "--silent",
+        "-S",
+        "--show-error",
+        "-I",
+        "--head",
+        "-v",
+        "--verbose",
+        "-i",
+        "--include",
+        "--compressed",
+    }
+)
+_CURL_METHODS_ALLOWED: Final = frozenset({"GET", "HEAD"})
+_CURL_DISABLED_CONFIG_FLAGS: Final = frozenset({"-q", "--disable"})
+_CURL_SCHEMES_ALLOWED: Final = frozenset({"http", "https"})
+_CURL_LOCAL_HOST_SUFFIXES: Final = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".home.arpa",
+)
+_CURL_LOCAL_HOST_NAMES: Final = frozenset({"localhost", "metadata"})
+
+
+def _curl_host_is_private_literal(host: str) -> bool:
+    """True for IP literals in loopback, private, link-local, CGNAT,
+    unspecified, or v4-mapped private space (security: SSRF classes)."""
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    host = host.split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return not address.is_global
+
+
+def _curl_url_violation(url: str, destinations: frozenset[str]) -> str | None:
+    """Return a policy reason when a curl destination is not admitted."""
+    scheme, separator, remainder = url.lower().partition("://")
+    if separator != "://" or scheme not in _CURL_SCHEMES_ALLOWED:
+        return (
+            "destination scheme is not permitted; only explicit "
+            "http:// or https:// URLs are admitted"
+        )
+    authority = remainder.split("/", 1)[0].split("?", 1)[0]
+    if "@" in authority:
+        return "destination user-info (@) is not permitted"
+    if authority.startswith("["):
+        host = authority[1 : authority.index("]")] if "]" in authority else authority[1:]
+    else:
+        host = authority.rsplit(":", 1)[0]
+    if host in _CURL_LOCAL_HOST_NAMES or host.endswith(_CURL_LOCAL_HOST_SUFFIXES):
+        return "local destination hosts are not permitted by the diagnostic curl policy"
+    if _curl_host_is_private_literal(host):
+        return (
+            "loopback, private, link-local, or metadata destinations are not "
+            "permitted by the diagnostic curl policy"
+        )
+    if destinations:
+        normalized = host.lower()
+        if not any(
+            normalized == entry or normalized.endswith("." + entry) for entry in destinations
+        ):
+            return "destination is not on the configured curl destination allowlist"
+    return None
+
+
+def _curl_constrain_value(flag: str, value: str | None) -> None:
+    """Security constraints for allowlisted curl flags that carry a value."""
+    if flag in {"-X", "--request"} and (value or "").upper() not in _CURL_METHODS_ALLOWED:
+        raise ProgramPolicyError(
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+            f"curl method '{value or ''}' is not permitted; the diagnostic "
+            "curl policy admits only GET and HEAD",
+        )
+    if flag in {"-w", "--write-out"} and value is not None and value.startswith("@"):
+        raise ProgramPolicyError(
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+            "curl write-out format from a file is not permitted by the diagnostic curl policy",
+        )
+    if flag == "-o" and value != _CURL_NULL_OUTPUT:
+        raise ProgramPolicyError(
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+            f"curl output target '{value}' is not permitted; only "
+            f"'{_CURL_NULL_OUTPUT}' is admitted by the diagnostic curl policy",
+        )
+
+
+def _enforce_curl_program_policy(
+    argv: list[str], destinations: frozenset[str] = frozenset()
+) -> None:
+    if not argv or argv[0] not in _CURL_DISABLED_CONFIG_FLAGS:
+        raise ProgramPolicyError(
+            "PROGRAM_ARGUMENT_NOT_PERMITTED",
+            "curl must start with '-q' or '--disable' so the implicit .curlrc "
+            "configuration file cannot alter the admitted invocation",
+        )
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token.startswith("-"):
+            if token in _CURL_ALLOWED_FLAGS_NO_VALUE:
+                index += 1
+                continue
+            combined: str | None = None
+            if len(token) > 2 and not token.startswith("--"):
+                chars = token[1:]
+                if all(f"-{c}" in _CURL_ALLOWED_FLAGS_NO_VALUE for c in chars):
+                    index += 1
+                    continue
+                if (
+                    all(f"-{c}" in _CURL_ALLOWED_FLAGS_NO_VALUE for c in chars[:-1])
+                    and f"-{chars[-1]}" in _CURL_ALLOWED_FLAGS_WITH_VALUE
+                ):
+                    combined = f"-{chars[-1]}"
+            if combined is not None:
+                value, index = _curl_option_value(argv, index)
+                _curl_constrain_value(combined, value)
+                continue
+            if token in _CURL_ALLOWED_FLAGS_WITH_VALUE or token.startswith(
+                _CURL_ALLOWED_FLAG_VALUE_PREFIXES
+            ):
+                value, index = _curl_option_value(argv, index)
+                flag = token.partition("=")[0]
+                _curl_constrain_value(flag, value)
+                continue
+            raise ProgramPolicyError(
+                "PROGRAM_ARGUMENT_NOT_PERMITTED",
+                f"curl option '{token}' is not part of the diagnostic option "
+                "allowlist; request-body, upload, config-file, proxy, unix-socket, "
+                "trace, and file I/O options are rejected before dispatch",
+            )
+        reason = _curl_url_violation(token, destinations)
+        if reason is not None:
+            raise ProgramPolicyError("PROGRAM_ARGUMENT_NOT_PERMITTED", reason)
+        index += 1
+
 
 _SYSTEMCTL_READ_SUBCOMMANDS: Final = frozenset(
     {
@@ -324,43 +464,6 @@ def _curl_option_value(argv: list[str], index: int) -> tuple[str | None, int]:
     return (argv[index + 1] if index + 1 < len(argv) else None, index + 2)
 
 
-def _enforce_curl_program_policy(argv: list[str]) -> None:
-    index = 0
-    while index < len(argv):
-        token = argv[index]
-        if token in _CURL_UPLOAD_FLAGS or token.startswith(_CURL_UPLOAD_LONG_FLAGS):
-            raise ProgramPolicyError(
-                "PROGRAM_ARGUMENT_NOT_PERMITTED",
-                f"curl option '{token}' enables upload or file-write mode and is not "
-                "permitted by the diagnostic curl policy",
-            )
-        if token.startswith(("-T", "-F")):
-            raise ProgramPolicyError(
-                "PROGRAM_ARGUMENT_NOT_PERMITTED",
-                f"curl option '{token}' enables upload mode and is not permitted by "
-                "the diagnostic curl policy",
-            )
-        if token in _CURL_OUTPUT_FLAGS or token.startswith(("-o", "--output=")):
-            value, index = _curl_option_value(argv, index)
-            if value != _CURL_NULL_OUTPUT:
-                raise ProgramPolicyError(
-                    "PROGRAM_ARGUMENT_NOT_PERMITTED",
-                    f"curl output target '{value}' is not permitted; only "
-                    f"'{_CURL_NULL_OUTPUT}' is admitted by the diagnostic curl policy",
-                )
-            continue
-        if token in _CURL_DATA_FLAGS or token.startswith(("-d", "--data")):
-            value, index = _curl_option_value(argv, index)
-            if value is not None and value.startswith("@"):
-                raise ProgramPolicyError(
-                    "PROGRAM_ARGUMENT_NOT_PERMITTED",
-                    "curl request-body file references are not permitted by the "
-                    "diagnostic curl policy",
-                )
-            continue
-        index += 1
-
-
 def _enforce_systemctl_program_policy(argv: list[str]) -> None:
     index = 0
     while index < len(argv) and argv[index] in _SYSTEMCTL_GLOBAL_FLAGS:
@@ -388,9 +491,17 @@ _PROGRAM_POLICIES: Final = {
 }
 
 
-def validate_program_invocation(executable: str, argv: object) -> list[str]:
+def validate_program_invocation(
+    executable: str,
+    argv: object,
+    *,
+    curl_destinations: frozenset[str] = frozenset(),
+) -> list[str]:
     executable = validate_program_executable(executable)
     arguments = validate_program_arguments(argv)
+    if executable == "curl":
+        _enforce_curl_program_policy(arguments, curl_destinations)
+        return arguments
     policy = _PROGRAM_POLICIES.get(executable)
     if policy is not None:
         policy(arguments)

@@ -213,8 +213,12 @@ authorization; it is session evidence, not a durable CI gate:
   reviewed empty-stdin helper hang reproduced as EXIT with correct output;
 - SSH platform limitation recorded: the configured mikr.us VPS runs `sshd` on
   `0.0.0.0:22` internally, but the platform port-forward set does not expose TCP/22
-  externally (all assigned forwards refused from two independent networks); SSH-backed
-  real-system evidence was therefore collected on a dedicated operator-directed target;
+  externally (all assigned forwards refused from two independent networks). External
+  SSH to a mikr.us server exists only through operator-assigned non-standard forwards,
+  when such a forward is actually configured. SSH-backed real-system evidence listed
+  above was collected on a dedicated operator-directed target reached through its own
+  operator-assigned endpoint (`srv07.mikr.us:10359`), not through production TCP/22;
+  each evidence entry above identifies its target;
 - real SSH target, full kernel path with trusted-operator approvals bound to the
   verified ED25519 host fingerprint: durable remote jobs (start, cross-invocation
   idempotent reuse returning the same job id, bounded wait, output cursors,
