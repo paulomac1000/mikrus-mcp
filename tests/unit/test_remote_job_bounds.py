@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess  # noqa: S404
@@ -579,26 +580,61 @@ def test_gc_rotating_shards_eventually_reach_every_entry(tmp_path: Path) -> None
     assert remaining == []
 
 
-def test_gc_single_enumeration_per_pass(tmp_path: Path) -> None:
+def test_gc_visit_budget_bounds_enumeration_with_thousands_of_entries(
+    tmp_path: Path,
+) -> None:
+    """Supervisor round-9 regression: the enumerator reports the ACTUAL number
+    of root entries visited, and with max_entries=3 it must visit only the
+    small bounded multiple of that budget even when thousands of job dirs
+    exist — never the whole root."""
     home = _home(tmp_path)
-    for index in range(600):
-        job_dir = _job_root(home) / f"{index:032d}"
-        job_dir.mkdir(parents=True)
+
+    def shard_of(name: str) -> int:
+        return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 16
+
+    names: list[str] = []
+    index = 0
+    while len(names) < 2000:
+        candidate = f"{index:032d}"
+        index += 1
+        if shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        (_job_root(home) / name).mkdir(parents=True)
     summary = _run_helper(
         {
             "operation": "gc",
-            "retention_seconds": 604_800,
-            "grace_seconds": 3600,
-            "max_entries": 32,
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 3,
             "shards": 16,
             "shard": 0,
         },
         home,
     )
-    # Single readdir pass with an early stop once the budget is reached:
-    # fewer entries enumerated than exist, none materialized or sorted.
-    assert summary["enumerated"] < 600
-    assert summary["scanned"] <= 32
+    # Every entry lives in shard 0 and is stale, so every visited entry
+    # qualifies: visited == enum_budget == enumerated.
+    assert summary["visited"] == 64
+    assert summary["visited"] < len(names)
+    assert summary["enumerated"] == summary["visited"]
+    assert summary["removed"] == 3
+    assert summary["scanned"] == 3
+    assert summary["errors"] == 0
+
+    second = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 3,
+            "shards": 16,
+            "shard": 0,
+        },
+        home,
+    )
+    assert second["visited"] == 64
+    assert second["removed"] == 3
+    assert summary["removed"] + second["removed"] == 6
 
 
 def test_same_group_descendant_is_terminated_on_drain_timeout(tmp_path: Path) -> None:
@@ -637,9 +673,10 @@ def test_same_group_descendant_is_terminated_on_drain_timeout(tmp_path: Path) ->
     del pid
 
 
-def test_gc_queue_survives_churn_and_visits_every_stale_entry(tmp_path: Path) -> None:
+def test_gc_sweep_survives_churn_and_visits_every_stale_entry(tmp_path: Path) -> None:
     """Create + delete entries between passes; every stale job is eventually
-    visited while each pass stays within the budget (churn regression)."""
+    visited while per-pass enumeration stays within the visit budget
+    (churn regression)."""
     import hashlib
 
     home = _home(tmp_path)
@@ -675,6 +712,7 @@ def test_gc_queue_survives_churn_and_visits_every_stale_entry(tmp_path: Path) ->
             },
             home,
         )
+        assert summary["visited"] <= 64
         assert summary["scanned"] <= 3
         removed += summary["removed"]
         visited += summary["scanned"]
@@ -726,20 +764,25 @@ def test_gc_queue_with_traversal_names_fails_closed(tmp_path: Path) -> None:
             "operation": "gc",
             "retention_seconds": 5,
             "grace_seconds": 0,
-            "max_entries": 256,
+            "max_entries": 3,
             "shard": _shard_of(valid),
         },
         home,
     )
+    assert list(_job_root(home).glob(".gc-queue-*")) == [queue_path]
     assert not (_job_root(home) / "../outside").exists()
     assert (outside / "precious.txt").read_text() == "keep"
     assert summary["removed"] == 1
     assert (_job_root(home) / valid).exists() is False
+    assert summary["visited"] <= 64
+    assert queue_path.exists()
+    assert queue_path.read_text(encoding="utf-8") == poison
 
 
-def test_gc_rebuilt_queue_filters_malformed_same_shard_entries(tmp_path: Path) -> None:
-    """Greptile P2 regression: rebuild persists only strict job-id names, so a
-    malformed same-shard entry no longer forces re-enumeration on every pass."""
+def test_gc_sweep_skips_malformed_same_shard_entries(tmp_path: Path) -> None:
+    """Sweep regression: a malformed same-shard entry is never counted as
+    enumerated, never touched destructively, and inflates only the visit
+    budget — no queue write, no repeated full enumeration."""
     home = _home(tmp_path)
     malformed = "not-a-valid-job-id"
     anchor = "a" * 32
@@ -770,9 +813,11 @@ def test_gc_rebuilt_queue_filters_malformed_same_shard_entries(tmp_path: Path) -
         },
         home,
     )
+    assert summary["visited"] == len(job_ids) + 1
     assert summary["removed"] == len(job_ids)
     assert summary["enumerated"] == len(job_ids)
     assert (_job_root(home) / malformed).exists()
+    assert list(_job_root(home).glob(".gc-queue-*")) == []
 
     second = _run_helper(
         {
@@ -784,6 +829,49 @@ def test_gc_rebuilt_queue_filters_malformed_same_shard_entries(tmp_path: Path) -
         },
         home,
     )
+    assert second["visited"] == 1
     assert second["enumerated"] == 0
     assert second["removed"] == 0
     assert (_job_root(home) / malformed).exists()
+    assert list(_job_root(home).glob(".gc-queue-*")) == []
+
+
+def test_gc_stays_bounded_when_legacy_queue_size_cap_is_exceeded(
+    tmp_path: Path,
+) -> None:
+    """Supervisor round-9 regression: with enough same-shard entries to exceed
+    the historical 1 MiB serialized-queue read cap, the sweep must stay
+    bounded per pass and must never create any serialized queue, so the
+    oversized -> reject -> full rebuild -> oversized cycle is impossible."""
+    home = _home(tmp_path)
+
+    def shard_of(name: str) -> int:
+        return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 16
+
+    names: list[str] = []
+    index = 0
+    while len(names) < 26_000:
+        candidate = f"{index:032d}"
+        index += 1
+        if shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        (_job_root(home) / name).mkdir(parents=True)
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 0,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    first = _run_helper(payload, home)
+    assert first["visited"] == 64
+    assert first["removed"] == 3
+    assert first["errors"] == 0
+    second = _run_helper(payload, home)
+    assert second["visited"] == 64
+    assert second["removed"] == 3
+    assert second["errors"] == 0
+    assert list(_job_root(home).glob(".gc-queue-*")) == []

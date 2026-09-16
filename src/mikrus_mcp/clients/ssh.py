@@ -312,6 +312,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         shard = payload.get("shard")
         shard = int(now // 60) % shards if shard is None else int(shard) % shards
         summary = {
+            "visited": 0,
             "enumerated": 0,
             "shard": shard,
             "shards": shards,
@@ -349,85 +350,32 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             except OSError:
                 summary["errors"] += 1
 
-        # Persistent per-shard cleanup queue: a bounded JSON list of pending
-        # names with stable identity. It is rebuilt by one full enumeration
-        # only when exhausted; passes within a queue cycle perform zero
-        # enumeration and bounded stat/parse work, so per-pass work stays
-        # bounded even under directory churn.
-        queue_path = root / f".gc-queue-{shard}"
+        # Bounded visit-frontier sweep: one streamed readdir pass visits at
+        # most a small multiple of the processing budget, so directory
+        # enumeration, memory, record processing, and summary mutation are
+        # all bounded per invocation regardless of total root size. Removing
+        # stale entries advances the readdir frontier, so repeated
+        # invocations make eventual progress. No persistent queue exists,
+        # so an oversized/rejected queue can never force a full-root
+        # rebuild loop; legacy .gc-queue-* dot entries are skipped by the
+        # same grammar and prefix filters as every other entry.
+        enum_budget = max(64, 4 * budget)
 
-        def rebuild_queue():
-            names = sorted(
-                entry.name
-                for entry in os.scandir(root)
-                if (
-                    not entry.name.startswith(".gc-")
-                    and JOB_ID.fullmatch(entry.name) is not None
-                    and shard_of(entry.name) == shard
-                )
-            )
-            fd, temporary = tempfile.mkstemp(prefix=f".gc-queue-{shard}.", dir=root)
-            try:
-                os.fchmod(fd, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    json.dump(names, stream)
-                os.replace(temporary, queue_path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-            return names
-
-        pending = []
-        needs_rebuild = True
-        try:
-            queue_fd = os.open(queue_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                raw_queue = os.read(queue_fd, 1_048_577)
-            finally:
-                os.close(queue_fd)
-            if len(raw_queue) <= 1_048_576:
-                parsed = json.loads(raw_queue)
-                if (
-                    isinstance(parsed, list)
-                    and all(
-                        isinstance(n, str)
-                        and JOB_ID.fullmatch(n) is not None
-                        and "/" not in n
-                        and not n.startswith(".")
-                        for n in parsed
-                    )
-                    and parsed
-                ):
-                    pending = parsed
-                    needs_rebuild = False
-        except (OSError, ValueError):
-            needs_rebuild = True
-        if needs_rebuild:
-            try:
-                pending = rebuild_queue()
-                summary["enumerated"] = len(pending)
-            except OSError:
-                return summary
-
-        def save_queue(remaining):
-            fd, temporary = tempfile.mkstemp(prefix=f".gc-queue-{shard}.", dir=root)
-            try:
-                os.fchmod(fd, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    json.dump(remaining, stream)
-                os.replace(temporary, queue_path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-
-        while pending and summary["scanned"] < budget:
-            name = pending.pop(0)
-            if JOB_ID.fullmatch(name) is None:
-                # Defense-in-depth: queue names must satisfy the same strict
-                # job-id grammar as the managed root; anything else is never
-                # touched destructively.
+        for entry in os.scandir(root):
+            if summary["visited"] >= enum_budget:
+                break
+            summary["visited"] += 1
+            name = entry.name
+            if name.startswith(".gc-"):
                 continue
-            path = root / name
+            if JOB_ID.fullmatch(name) is None:
+                continue
+            if shard_of(name) != shard:
+                continue
+            summary["enumerated"] += 1
+            if summary["scanned"] >= budget:
+                continue
+            path = PathLib(entry.path)
             if not os.path.exists(path):
                 continue
             summary["scanned"] += 1
@@ -502,10 +450,6 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 summary["keptActive"] += 1
             else:
                 remove_dir(path)
-        try:
-            save_queue(pending)
-        except OSError:
-            summary["errors"] += 1
         return summary
 
     def start_ticks(pid):
