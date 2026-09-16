@@ -60,7 +60,7 @@ previously committed lock was unreproducible. Public PyPI is mutable upstream
 state; declaring a bit-for-bit reproducible refresh would require an immutable
 snapshot/mirror/wheelhouse identity, which this lane does not claim.
 
-## 2. Evidence-freshness binding invalidated by every commit
+## 2. Evidence-freshness binding invalidated by candidate drift
 
 **Symptom.** `scripts/check_evidence_freshness.py` fails after an ordinary
 implementation commit with a message about the assessed revision no longer
@@ -69,18 +69,33 @@ being an ancestor of `HEAD`.
 **Root cause.** `docs/compliance-status.md` frontmatter binds
 `assessed_revision` (a full 40-character SHA) that must be an ancestor of
 `HEAD` with only evidence-path drift after it. Any implementation commit after
-the last evidence binding invalidates the gate until evidence is rebound.
+the last evidence binding invalidates the gate. This is intentional:
+evidence for candidate C1 must never silently approve candidate C2.
 
-**Verified mitigation.** Follow each implementation commit with an
-evidence-only rebind commit (see the two `docs: rebind ...` commits in the
-2.1.0 history) after re-running the provider evidence for the new revision.
-Squash merges require fresh provider evidence for the squash commit before
-freshness can be claimed.
+**Canonical mitigation.** Do not hand-edit evidence frontmatter after every
+transient commit, and do not relax the gate. The freshness gate stays
+fail-closed; the candidate-selection moment owns the rebind:
 
-**Durable options.** Automate the assessed-revision binding into release
-tooling, or relax the gate to accept implementation commits between bindings
-within one PR. Neither is implemented; the manual rebind is currently the
-supported workflow.
+1. iterate on the branch without touching evidence frontmatter;
+2. select the exact acceptance candidate and freeze it;
+3. run the required provider and structural evidence for that exact SHA
+   (a green hosted CI run for the candidate, plus local `core_gate.py` and
+   `ci.py`);
+4. run `python scripts/rebind_evidence.py --revision <candidate-SHA>
+   --require-provider-run` — it verifies a successful provider run exists for
+   the exact SHA and atomically rewrites only the `assessed_revision` line;
+5. commit the evidence-only rebind (the freshness gate allows evidence-path
+   drift after the assessed revision by policy);
+6. if the candidate changes, the old binding becomes stale: repeat steps 3-5
+   for the new candidate. The helper never relabels stale evidence.
+
+**Squash/integration transforms.** A squash merge creates a new revision
+identity; evidence bound to the reviewed branch candidate does not transfer.
+After the merge, run fresh provider evidence for the integrated SHA and rebind
+through the same helper. Release/publication tooling must call
+`python scripts/rebind_evidence.py --verify-only --revision <accepted-SHA>`
+before accepting a candidate so a stale or drifted binding fails closed.
+Weakening exact-candidate freshness is not a supported recovery path.
 
 ## 3. CodeRabbit free-tier review quota
 
