@@ -98,6 +98,58 @@ All notable changes to mikrus-mcp are recorded here.
   (`435061ad67ee36d77e01a993bc4f9e4379a29666`); compliance documentation
   assesses the expanded 27-rule `mcp-server-architect` catalog.
 
+## [2.1.0] - 2026-09-12
+
+### Added
+
+- Typed SSH program execution with structured `executable`, `argv`, `cwd`, and
+  `stdin` inputs; arbitrary shell strings remain unavailable on the public MCP surface.
+- Durable SSH remote jobs (`remote_job_start/status/wait/result/output/cancel`)
+  with idempotency keys, owner-bound receipts, bounded output cursors,
+  disconnect/reconnect reconciliation, cancellation verified against the whole
+  process group, and a seven-day retention horizon; activated by
+  `MCP_REMOTE_JOB_STORE_FILE`.
+- Atomic compare-and-swap file patching through `file_patch_atomic`: a
+  caller-supplied content digest is verified against the same opened file
+  descriptor before an atomic write, with symlink-rejecting traversal and a
+  bounded `CONFLICT` failure that never writes.
+- Cron profile management (`cron_list/cron_upsert/cron_remove`) with typed
+  schedule fields, marker-anchored idempotent projection into the user
+  crontab, concurrent-modification detection, and target-aware removal;
+  activated by `MCP_CRON_PROFILE_STORE_FILE`.
+- Docker/Compose semantic operations: `docker_runtime_snapshot`, two-step
+  `docker_recreate_plan`/`docker_recreate_apply` bound to expiring server-side
+  plan receipts with record-derived `PLAN_STALE`/`IMAGE_DRIFT`/`ALREADY_APPLIED`
+  and a typed `RECREATE_CONFIG_DRIFT` refusal for unaccepted runtime-only
+  drift, plus bounded `service_wait` readiness polling; activated by
+  `MCP_DOCKER_PLAN_STORE_FILE`.
+- Bounded process-job handles with owner-scoped status, result, cancellation, and
+  process-local retention semantics.
+- Regression coverage for HTML-escaped mikr.us diagnostics and truthful disk-analysis failures.
+- Bounded structured process snapshots with partial-state reporting and secret redaction.
+- Immutable build provenance: the exact wheel is stamped at build time with the
+  candidate source revision, build ID, policy revision, and package content digest;
+  runtime reports `packageIntegrity` (verified/failed/unstamped), a process-local
+  `instanceGeneration`, and deployment binding (verified/missing/invalid) validated
+  against a deployment receipt. Environment variables can no longer establish
+  artifact identity. Wheel builds now run through
+  `scripts/build_wheel.py --provenance unstamped|stamped`, which refuses wheels
+  rebuilt from sources newer than the stamp.
+
+### Changed
+
+- The typed program execution allowlist is tightened fail-closed: general-purpose
+  or mutating executables were removed from `execute_program` and the program
+  helpers; service control stays on the dedicated service tools.
+- The capability catalog now reports machine-readable inactive reason codes and
+  a configuration generation alongside each capability.
+- Docker compose recreation requests that outlive the collector work budget can
+  no longer succeed silently after the deadline: the helper allowance matches
+  the 55-second work budget inside the 65-second execution limit.
+- The pinned standards authority migrated to AI Skills `1.4.0`
+  (`435061ad67ee36d77e01a993bc4f9e4379a29666`); compliance documentation
+  assesses the expanded 27-rule `mcp-server-architect` catalog.
+
 ## [2.0.0] - 2026-08-21
 
 ### Breaking
