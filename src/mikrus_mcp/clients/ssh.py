@@ -351,14 +351,48 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
         # Single-pass sharded sweep: one readdir enumeration, per-entry O(1)
         # shard decision (no counting phase, no sort, no second traversal),
-        # and stat/parse work bounded by the per-pass budget. Successive passes
-        # rotate the active shard, so every entry is eventually visited.
+        # stat/parse work bounded by the per-pass budget, and a persistent
+        # per-shard cursor making progress monotone: repeated passes over the
+        # same shard never reprocess entries at or before the cursor, and
+        # enumeration stops as soon as the budget is reached.
+        cursor_path = root / f".gc-cursor-{shard}"
+        cursor = 0
+        try:
+            cursor_fd = os.open(cursor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                cursor = int(os.read(cursor_fd, 64).decode().strip() or 0)
+            except ValueError:
+                cursor = 0
+            finally:
+                os.close(cursor_fd)
+        except OSError:
+            cursor = 0
+
+        def store_cursor(next_index):
+            fd, temporary = tempfile.mkstemp(prefix=f".gc-cursor-{shard}.", dir=root)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(str(next_index))
+                os.replace(temporary, cursor_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
+        budget_reached = False
+        match_index = -1
         try:
             for entry in os.scandir(root):
                 name = entry.name
                 summary["enumerated"] += 1
-                if summary["scanned"] >= budget or shard_of(name) != shard:
+                if shard_of(name) != shard:
                     continue
+                match_index += 1
+                if match_index < cursor:
+                    continue
+                if summary["scanned"] >= budget:
+                    budget_reached = True
+                    break
                 summary["scanned"] += 1
                 path = root / name
                 try:
@@ -434,6 +468,20 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     remove_dir(path)
         except OSError:
             pass
+        if budget_reached:
+            # Progress is monotone within this shard; the next pass resumes
+            # after the last processed matching index.
+            try:
+                store_cursor(cursor + budget)
+            except OSError:
+                summary["errors"] += 1
+        else:
+            # Shard exhausted within budget: clear the cursor so the next
+            # pass starts from the first matching entry again.
+            try:
+                os.unlink(cursor_path)
+            except OSError:
+                pass
         return summary
 
     def start_ticks(pid):

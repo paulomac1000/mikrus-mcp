@@ -439,9 +439,9 @@ def test_gc_honors_bounded_scan_budget(tmp_path: Path) -> None:
             },
             home,
         )
+        assert summary["scanned"] <= 3
         total_scanned += summary["scanned"]
     assert total_scanned == 6
-    assert all(summary["scanned"] <= 3 for _ in [1])
 
 
 def test_gc_legacy_terminal_record_without_finished_at_uses_mtime(tmp_path: Path) -> None:
@@ -595,8 +595,9 @@ def test_gc_single_enumeration_per_pass(tmp_path: Path) -> None:
         },
         home,
     )
-    # One readdir enumeration per pass (not two, not N materialized names).
-    assert summary["enumerated"] == 600
+    # Single readdir pass with an early stop once the budget is reached:
+    # fewer entries enumerated than exist, none materialized or sorted.
+    assert summary["enumerated"] < 600
     assert summary["scanned"] <= 32
 
 
