@@ -360,7 +360,11 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             names = sorted(
                 entry.name
                 for entry in os.scandir(root)
-                if not entry.name.startswith(".gc-") and shard_of(entry.name) == shard
+                if (
+                    not entry.name.startswith(".gc-")
+                    and JOB_ID.fullmatch(entry.name) is not None
+                    and shard_of(entry.name) == shard
+                )
             )
             fd, temporary = tempfile.mkstemp(prefix=f".gc-queue-{shard}.", dir=root)
             try:

@@ -735,3 +735,55 @@ def test_gc_queue_with_traversal_names_fails_closed(tmp_path: Path) -> None:
     assert (outside / "precious.txt").read_text() == "keep"
     assert summary["removed"] == 1
     assert (_job_root(home) / valid).exists() is False
+
+
+def test_gc_rebuilt_queue_filters_malformed_same_shard_entries(tmp_path: Path) -> None:
+    """Greptile P2 regression: rebuild persists only strict job-id names, so a
+    malformed same-shard entry no longer forces re-enumeration on every pass."""
+    home = _home(tmp_path)
+    malformed = "not-a-valid-job-id"
+    anchor = "a" * 32
+    job_ids = [
+        candidate * 32
+        for candidate in "abcdefghij"
+        if _shard_of(candidate * 32) == _shard_of(anchor)
+    ][:2]
+    stale = time.time() - 3600.0
+    for job_id in job_ids + [malformed]:
+        job_dir = _job_root(home) / job_id
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": job_id, "state": "succeeded", "finishedAt": stale - 5.0})
+        )
+        os.utime(record_path, (stale, stale))
+        os.utime(job_dir, (stale, stale))
+
+    shard = _shard_of(job_ids[0])
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 256,
+            "shard": shard,
+        },
+        home,
+    )
+    assert summary["removed"] == len(job_ids)
+    assert summary["enumerated"] == len(job_ids)
+    assert (_job_root(home) / malformed).exists()
+
+    second = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 256,
+            "shard": shard,
+        },
+        home,
+    )
+    assert second["enumerated"] == 0
+    assert second["removed"] == 0
+    assert (_job_root(home) / malformed).exists()
