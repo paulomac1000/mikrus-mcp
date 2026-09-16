@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: 487fbfbee8894716b98229b576d168a687ac4428
+assessed_revision: c9db442e590a21efc41756d54e827e83b06b381f
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
