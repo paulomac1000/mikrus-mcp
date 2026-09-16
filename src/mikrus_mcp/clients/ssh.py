@@ -349,139 +349,148 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             except OSError:
                 summary["errors"] += 1
 
-        # Single-pass sharded sweep: one readdir enumeration, per-entry O(1)
-        # shard decision (no counting phase, no sort, no second traversal),
-        # stat/parse work bounded by the per-pass budget, and a persistent
-        # per-shard cursor making progress monotone: repeated passes over the
-        # same shard never reprocess entries at or before the cursor, and
-        # enumeration stops as soon as the budget is reached.
-        cursor_path = root / f".gc-cursor-{shard}"
-        cursor = 0
-        try:
-            cursor_fd = os.open(cursor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                cursor = int(os.read(cursor_fd, 64).decode().strip() or 0)
-            except ValueError:
-                cursor = 0
-            finally:
-                os.close(cursor_fd)
-        except OSError:
-            cursor = 0
+        # Persistent per-shard cleanup queue: a bounded JSON list of pending
+        # names with stable identity. It is rebuilt by one full enumeration
+        # only when exhausted; passes within a queue cycle perform zero
+        # enumeration and bounded stat/parse work, so per-pass work stays
+        # bounded even under directory churn.
+        queue_path = root / f".gc-queue-{shard}"
 
-        def store_cursor(next_index):
-            fd, temporary = tempfile.mkstemp(prefix=f".gc-cursor-{shard}.", dir=root)
+        def rebuild_queue():
+            names = sorted(
+                entry.name
+                for entry in os.scandir(root)
+                if not entry.name.startswith(".gc-") and shard_of(entry.name) == shard
+            )
+            fd, temporary = tempfile.mkstemp(prefix=f".gc-queue-{shard}.", dir=root)
             try:
                 os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(str(next_index))
-                os.replace(temporary, cursor_path)
+                    json.dump(names, stream)
+                os.replace(temporary, queue_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            return names
+
+        pending = []
+        needs_rebuild = True
+        try:
+            queue_fd = os.open(queue_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                raw_queue = os.read(queue_fd, 1_048_577)
+            finally:
+                os.close(queue_fd)
+            if len(raw_queue) <= 1_048_576:
+                parsed = json.loads(raw_queue)
+                if (
+                    isinstance(parsed, list)
+                    and all(isinstance(n, str) for n in parsed)
+                    and parsed
+                ):
+                    pending = parsed
+                    needs_rebuild = False
+        except (OSError, ValueError):
+            needs_rebuild = True
+        if needs_rebuild:
+            try:
+                pending = rebuild_queue()
+                summary["enumerated"] = len(pending)
+            except OSError:
+                return summary
+
+        def save_queue(remaining):
+            fd, temporary = tempfile.mkstemp(prefix=f".gc-queue-{shard}.", dir=root)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(remaining, stream)
+                os.replace(temporary, queue_path)
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
 
-        budget_reached = False
-        match_index = -1
-        try:
-            for entry in os.scandir(root):
-                name = entry.name
-                summary["enumerated"] += 1
-                if shard_of(name) != shard:
-                    continue
-                match_index += 1
-                if match_index < cursor:
-                    continue
-                if summary["scanned"] >= budget:
-                    budget_reached = True
-                    break
-                summary["scanned"] += 1
-                path = root / name
-                try:
-                    st_meta = os.lstat(path / "record.json")
-                except OSError:
-                    st_meta = None
-                record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
-                if record_regular and (now - st_meta.st_mtime) <= grace:
-                    summary["keptRecent"] += 1
-                    continue
-                try:
-                    dir_mtime = os.lstat(path).st_mtime
-                except OSError:
-                    dir_mtime = None
-                fresh = dir_mtime is not None and (now - dir_mtime) <= grace
-                if os.path.islink(path) or not os.path.isdir(path):
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        try:
-                            os.unlink(path)
-                            summary["removed"] += 1
-                        except OSError:
-                            summary["errors"] += 1
-                    continue
-                if not record_regular:
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        remove_dir(path)
-                    continue
-                try:
-                    record_fd = os.open(
-                        path / "record.json",
-                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                    )
-                    try:
-                        raw_record = os.read(record_fd, 65537)
-                    finally:
-                        os.close(record_fd)
-                except OSError:
-                    raw_record = b""
-                if len(raw_record) > 65536:
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        remove_dir(path)
-                    continue
-                try:
-                    record = json.loads(raw_record)
-                except ValueError:
-                    if fresh:
-                        summary["keptRecent"] += 1
-                    else:
-                        remove_dir(path)
-                    continue
-                state = record.get("state")
-                if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                    finished = record.get("finishedAt")
-                    if not isinstance(finished, (int, float)):
-                        finished = st_meta.st_mtime
-                    if (now - float(finished)) > retention:
-                        remove_dir(path)
-                    else:
-                        summary["keptRecent"] += 1
-                    continue
-                if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                    summary["keptActive"] += 1
-                    continue
+        while pending and summary["scanned"] < budget:
+            name = pending.pop(0)
+            path = root / name
+            if not os.path.exists(path):
+                continue
+            summary["scanned"] += 1
+            try:
+                st_meta = os.lstat(path / "record.json")
+            except OSError:
+                st_meta = None
+            record_regular = st_meta is not None and stat.S_ISREG(st_meta.st_mode)
+            if record_regular and (now - st_meta.st_mtime) <= grace:
+                summary["keptRecent"] += 1
+                continue
+            try:
+                dir_mtime = os.lstat(path).st_mtime
+            except OSError:
+                dir_mtime = None
+            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+            if os.path.islink(path) or not os.path.isdir(path):
                 if fresh:
-                    summary["keptActive"] += 1
+                    summary["keptRecent"] += 1
+                else:
+                    try:
+                        os.unlink(path)
+                        summary["removed"] += 1
+                    except OSError:
+                        summary["errors"] += 1
+                continue
+            if not record_regular:
+                if fresh:
+                    summary["keptRecent"] += 1
                 else:
                     remove_dir(path)
+                continue
+            try:
+                record_fd = os.open(
+                    path / "record.json",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    raw_record = os.read(record_fd, 65537)
+                finally:
+                    os.close(record_fd)
+            except OSError:
+                raw_record = b""
+            if len(raw_record) > 65536:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    remove_dir(path)
+                continue
+            try:
+                record = json.loads(raw_record)
+            except ValueError:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    remove_dir(path)
+                continue
+            state = record.get("state")
+            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                finished = record.get("finishedAt")
+                if not isinstance(finished, (int, float)):
+                    finished = st_meta.st_mtime
+                if (now - float(finished)) > retention:
+                    remove_dir(path)
+                else:
+                    summary["keptRecent"] += 1
+                continue
+            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                summary["keptActive"] += 1
+                continue
+            if fresh:
+                summary["keptActive"] += 1
+            else:
+                remove_dir(path)
+        try:
+            save_queue(pending)
         except OSError:
-            pass
-        if budget_reached:
-            # Progress is monotone within this shard; the next pass resumes
-            # after the last processed matching index.
-            try:
-                store_cursor(cursor + budget)
-            except OSError:
-                summary["errors"] += 1
-        else:
-            # Shard exhausted within budget: clear the cursor so the next
-            # pass starts from the first matching entry again.
-            try:
-                os.unlink(cursor_path)
-            except OSError:
-                pass
+            summary["errors"] += 1
         return summary
 
     def start_ticks(pid):
@@ -507,13 +516,18 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         except (TypeError, ValueError):
             output_limit = 1024 * 1024
         output_limit = min(max(output_limit, 4096), 16 * 1024 * 1024)
+        try:
+            drain_grace = float(payload.get("drain_grace_seconds", 30.0))
+        except (TypeError, ValueError):
+            drain_grace = 30.0
+        drain_grace = min(max(drain_grace, 1.0), 60.0)
         record = {
             "jobId": job_id,
             "state": "queued",
             "requestDigest": payload["request_digest"],
             "createdAt": time.time(),
             "safeToRetry": False,
-            "limits": {"outputBytes": output_limit},
+            "limits": {"outputBytes": output_limit, "drainGraceSeconds": drain_grace},
             "payload": {
                 "executable": payload["executable"],
                 "argv": payload["argv"],
@@ -716,6 +730,7 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
     def drain_capped(pipe, fileobj, state, output_limit):
         stored = 0
         discarded = 0
+        truncated = False
         while True:
             chunk = pipe.read(65536)
             if not chunk:
@@ -728,8 +743,14 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
                 stored += len(keep)
             if len(chunk) > room:
                 discarded += len(chunk) - room
+                truncated = True
+            # Publish counters incrementally: a descendant that keeps the pipe
+            # open past the drain grace must not erase truncation evidence.
+            state["stored"] = stored
+            state["truncated"] = truncated
+            state["discarded"] = discarded
         state["stored"] = stored
-        state["truncated"] = discarded > 0
+        state["truncated"] = truncated
         state["discarded"] = discarded
         try:
             pipe.close()

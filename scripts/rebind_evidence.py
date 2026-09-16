@@ -180,10 +180,13 @@ def main() -> int:
     if args.verify_only:
         committed_doc = _git(root, "show", f"{revision}:{BINDING_DOCUMENT}")
         closing = committed_doc.index("\n---\n", 4)
-        match = ASSESSMENT_LINE.search(committed_doc[4:closing])
-        if match is None:
-            raise RebindError(f"{BINDING_DOCUMENT} in revision {revision} has no assessed_revision")
-        bound = match.group(0).split(":", 1)[1].strip()
+        matches = ASSESSMENT_LINE.findall(committed_doc[4:closing])
+        if len(matches) != 1:
+            raise RebindError(
+                f"{BINDING_DOCUMENT} in revision {revision} must declare exactly one "
+                f"assessed_revision; found {len(matches)}"
+            )
+        bound = matches[0].split(":", 1)[1].strip()
         ancestor = subprocess.run(
             ["git", "merge-base", "--is-ancestor", bound, revision],
             cwd=root,

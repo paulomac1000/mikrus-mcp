@@ -209,3 +209,50 @@ def test_promoter_content_digest_is_pinned_full_sha256() -> None:
     script = (root / "scripts" / "promote_digest.py").read_bytes()
     assert hashlib.sha256(script).hexdigest() == pinned
     assert "TRUST TRANSITION" in publish
+
+
+def test_credentials_never_follow_cross_origin_redirects(tmp_path: Path) -> None:
+    """P1 regression: a hostile registry redirect must not leak Basic or
+    Bearer credentials to another origin."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+    leaked: list[tuple[str, str]] = []
+
+    class Evil(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            auth = self.headers.get("Authorization")
+            if auth:
+                leaked.append(("GET", auth))
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    evil_port = 0
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        evil_port = probe.getsockname()[1]
+    server = HTTPServer(("127.0.0.1", evil_port), Evil)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = RegistryClient(
+            RegistryRef("127.0.0.1:1", "owner/repo"),
+            Credentials("user", "secret"),
+            True,
+        )
+        client._token = "bearer-token-value"
+        with pytest.raises(SystemExit):
+            client._open(
+                "GET",
+                f"http://127.0.0.1:1/v2/owner/repo/manifests/redirect"
+                f"?to=http://127.0.0.1:{evil_port}/steal",
+            )
+        assert leaked == [], leaked
+    finally:
+        server.shutdown()

@@ -635,3 +635,65 @@ def test_same_group_descendant_is_terminated_on_drain_timeout(tmp_path: Path) ->
 
     assert not group_alive(), "same-group descendant survived the drain-timeout kill"
     del pid
+
+
+def test_gc_queue_survives_churn_and_visits_every_stale_entry(tmp_path: Path) -> None:
+    """Create + delete entries between passes; every stale job is eventually
+    visited while each pass stays within the budget (churn regression)."""
+    import hashlib
+
+    home = _home(tmp_path)
+    stale_names = [f"{index:032d}" for index in range(20)]
+    old = time.time() - 7200.0
+
+    def shard_of(name: str) -> int:
+        return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 16
+
+    def make_stale(name: str) -> None:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+
+    for name in stale_names:
+        make_stale(name)
+
+    removed, visited = 0, 0
+    for shard_pass in range(48):
+        summary = _run_helper(
+            {
+                "operation": "gc",
+                "retention_seconds": 5,
+                "grace_seconds": 0,
+                "max_entries": 3,
+                "shards": 16,
+                "shard": shard_pass % 16,
+            },
+            home,
+        )
+        assert summary["scanned"] <= 3
+        removed += summary["removed"]
+        visited += summary["scanned"]
+        # churn between passes: delete one queued stale entry, add another
+        if shard_pass % 4 == 0 and removed < len(stale_names):
+            victim = stale_names[(removed + 2) % len(stale_names)]
+            victim_dir = _job_root(home) / victim
+            if victim_dir.exists():
+                import shutil as _shutil
+
+                _shutil.rmtree(victim_dir, ignore_errors=True)
+                removed += 0
+                make_stale(f"new{shard_pass:030d}")
+    still_stale = []
+    for entry in os.scandir(_job_root(home)):
+        record_path = Path(entry.path) / "record.json"
+        if record_path.exists():
+            data = json.loads(record_path.read_text(encoding="utf-8"))
+            if data.get("state") == "succeeded" and (time.time() - old) > 5:
+                still_stale.append(entry.name)
+    assert still_stale == [], still_stale
+    assert visited >= len(stale_names)

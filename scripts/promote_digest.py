@@ -99,6 +99,34 @@ def _assert_registry_scheme(url: str) -> None:
     raise PromotionError(f"refusing non-registry URL: {url[:60]!r}")
 
 
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only within the same registry origin.
+
+    Cross-origin redirects are allowed solely over HTTPS and are followed
+    WITHOUT the Authorization header, so registry credentials can never leak
+    to a different host (including attacker-controlled realms or CDNs that
+    bounce elsewhere).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _assert_registry_scheme(newurl)
+        old_origin = urllib.parse.urlsplit(req.full_url)
+        new_origin = urllib.parse.urlsplit(newurl)
+        same_origin = (
+            old_origin.scheme == new_origin.scheme
+            and (old_origin.hostname or "").lower() == (new_origin.hostname or "").lower()
+            and old_origin.port == new_origin.port
+        )
+        request = urllib.request.Request(newurl, data=req.data, method=req.get_method())
+        for key, value in req.header_items():
+            if key.lower() == "authorization" and not same_origin:
+                continue
+            request.add_header(key, value)
+        request.origin_req_host = req.origin_req_host
+        request.unverifiable = req.unverifiable
+        return request
+
+
 def _parse_challenge(challenge: str) -> dict[str, str]:
     body = challenge[len("bearer ") :]
     params: dict[str, str] = {}
@@ -169,7 +197,8 @@ class RegistryClient:
         if basic is not None:
             request.add_header("Authorization", basic)
         try:
-            with urllib.request.urlopen(request, timeout=60) as token_response:
+            token_opener = urllib.request.build_opener(_SafeRedirectHandler)
+            with token_opener.open(request, timeout=60) as token_response:
                 payload = json.load(token_response)
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise PromotionError(f"{self.ref.registry}: token request failed: {error}") from error
@@ -199,7 +228,8 @@ class RegistryClient:
             if basic is not None:
                 request.add_header("Authorization", basic)
         try:
-            response = urllib.request.urlopen(request, timeout=300)
+            opener = urllib.request.build_opener(_SafeRedirectHandler)
+            response = opener.open(request, timeout=300)
             return response  # type: ignore[no-any-return]
         except urllib.error.HTTPError as error:
             if error.code == 401 and self._token is None:
@@ -249,6 +279,7 @@ class RegistryClient:
         if not location:
             raise PromotionError(f"{self.ref.registry}: blob upload returned no location")
         upload_url = urllib.parse.urljoin(f"{self._base}/", location)
+        _assert_registry_scheme(upload_url)
         separator = "&" if "?" in upload_url else "?"
         upload_url = f"{upload_url}{separator}digest={urllib.parse.quote(digest)}"
         with self._open(

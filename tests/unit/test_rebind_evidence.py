@@ -218,3 +218,40 @@ def test_verify_only_reads_binding_from_the_revision_not_working_tree(
         encoding="utf-8",
     )
     assert _run(root, "--revision", binding_commit, "--verify-only") == 0
+
+
+def test_verify_only_rejects_duplicate_assessed_revision(
+    evidence_repo: tuple[Path, str, str],
+) -> None:
+    root, binding_commit, second = evidence_repo
+    binding = root / BINDING_RELATIVE
+    current = binding_commit[: len(binding_commit)]  # revision recorded in the doc
+    doc_text = binding.read_text(encoding="utf-8")
+    current_line = [
+        line
+        for line in doc_text.splitlines()
+        if line.startswith("assessed_revision: ") and line != ""
+    ][0]
+    current = current_line.split(":", 1)[1].strip()
+    text = doc_text.replace(
+        f"assessed_revision: {current}",
+        f"assessed_revision: {binding_commit}\nassessed_revision: " + "2" * 40,
+    )
+    binding.write_text(text, encoding="utf-8")
+    staged = subprocess.run(
+        [shutil.which("git") or "git", "add", "."],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert staged.returncode == 0, staged.stderr
+    result = subprocess.run(
+        [shutil.which("git") or "git", "commit", "-qm", "conflicting duplicate binding"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(SystemExit):
+        _run(root, "--revision", "HEAD", "--verify-only")
+    del second
