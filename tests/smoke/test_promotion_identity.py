@@ -170,38 +170,42 @@ def test_publisher_workflow_never_loads_runs_or_builds_candidate() -> None:
         Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
     ).read_text(encoding="utf-8")
     publish_block = publish.split("\n  publish:", 1)[1].split("\n  release:", 1)[0]
-    for marker in ("docker load", "docker run", "docker build", "docker create"):
+    for marker in (
+        "docker load",
+        "docker run",
+        "docker build",
+        "docker create",
+        "actions/checkout",
+    ):
         assert marker not in publish_block, f"protected publisher uses forbidden {marker!r}"
-    assert "bundle/release/promote_digest" not in publish_block
+    assert "bundle/release/promote_digest.py" in publish_block
     assert "--expected-digest" in publish_block
     assert "id: promote" in publish_block
     assert "${{ steps.promote.outputs.subject_name }}" in publish_block
     assert "${{ steps.promote.outputs.digest }}" in publish_block
-    checkout_block = publish_block.split("actions/checkout@", 1)[1].split("- uses:", 1)[0]
-    assert "ref: ${{ env.PROMOTER_REVISION }}" in checkout_block
-    assert "ref: master" not in checkout_block
-    assert "sparse-checkout: scripts/promote_digest.py" in checkout_block
-    assert "persist-credentials: false" in checkout_block
-    assert 'test "$(git rev-parse HEAD)" = "$PINNED_PROMOTER_REVISION"' in publish_block
+    digest_verify_block = publish_block.split("trusted digest before any credential use", 1)[1]
+    assert "sha256sum bundle/release/promote_digest.py" in digest_verify_block
+    assert "do not match the trusted digest; refusing" in digest_verify_block
     validate_block = publish.split("\n  validate-release:", 1)[1].split("\n  publish:", 1)[0]
     assert "docker load" in validate_block
     assert "digest=" in validate_block
     assert "${QUARANTINE_REPOSITORY,,}" in validate_block
 
 
-def test_promoter_revision_pin_is_immutable_full_sha() -> None:
+def test_promoter_content_digest_is_pinned_full_sha256() -> None:
+    import hashlib
     import re
 
-    publish = (
-        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "publish.yml"
-    ).read_text(encoding="utf-8")
-    match = re.search(r"PROMOTER_REVISION: ([0-9a-f]{40})", publish)
-    assert match is not None, "PROMOTER_REVISION must be a pinned full 40-character SHA"
-    pin = match.group(1)
-    assert pin != Path(__file__).resolve().parents[2].name
-    workflow_dir = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-    assert "PROMOTER_REVISION: master" not in publish
-    del workflow_dir
+    root = Path(__file__).resolve().parents[2]
+    publish = (root / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    match = re.search(r"PROMOTER_CONTENT_SHA256: ([0-9a-f]{64})", publish)
+    assert match is not None, "PROMOTER_CONTENT_SHA256 must be a pinned 64-hex digest"
+    pinned = match.group(1)
+    script = (root / "scripts" / "promote_digest.py").read_bytes()
+    assert hashlib.sha256(script).hexdigest() == pinned, (
+        "scripts/promote_digest.py drifted from the workflow-pinned digest; "
+        "update PROMOTER_CONTENT_SHA256 in the same reviewed commit"
+    )
 
 
 def test_realm_url_host_is_validated_not_prefix_matched() -> None:

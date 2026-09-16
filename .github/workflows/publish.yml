@@ -34,10 +34,11 @@ concurrency:
 env:
   QUARANTINE_REGISTRY: ghcr.io
   QUARANTINE_REPOSITORY: ${{ github.repository }}-quarantine
-  # Immutable revision of the promoter script executed by the protected
-  # publisher. Bumped only by a reviewed commit; never a mutable branch and
-  # never the candidate revision.
-  PROMOTER_REVISION: b600e7a3526e8820d7ab9ebe040a236d71a8931d
+  # The protected publisher executes the promoter script from the validated
+  # CI bundle ONLY after its SHA-256 matches this trusted digest, which is
+  # changed exclusively by reviewed commits. A candidate that alters the
+  # script fails closed here, before any registry credential exists.
+  PROMOTER_CONTENT_SHA256: 6a0601e2947795c5721bb7caceb8555bdc2abff78916b1bda82e291ef6244ae1
 
 jobs:
   validate-release:
@@ -194,24 +195,30 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
-      # The only checkout in the protected publisher: the reviewed master copy
-      # of the promoter script, never the candidate revision.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.PROMOTER_REVISION }}
-          sparse-checkout: scripts/promote_digest.py
-          sparse-checkout-cone: false
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Verify pinned promoter identity before any credential use
+      - name: Download exact validated CI artifact (promoter bytes under trusted digest)
         shell: bash
         env:
-          PINNED_PROMOTER_REVISION: ${{ env.PROMOTER_REVISION }}
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.validate-release.outputs.artifact_id }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$PINNED_PROMOTER_REVISION"
-          test -f scripts/promote_digest.py
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > release-bundle.zip
+          mkdir bundle
+          unzip -q release-bundle.zip -d bundle
+      - name: Verify promoter bytes against the trusted digest before any credential use
+        shell: bash
+        env:
+          EXPECTED_PROMOTER_SHA256: ${{ env.PROMOTER_CONTENT_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_PROMOTER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          actual="$(sha256sum bundle/release/promote_digest.py | cut -d' ' -f1)"
+          test "$actual" = "$EXPECTED_PROMOTER_SHA256" || {
+            echo "promoter script bytes do not match the trusted digest; refusing" >&2
+            exit 1
+          }
+          test "$(cat bundle/release/commit-sha.txt)" = "${{ needs.validate-release.outputs.sha }}"
+          (cd bundle && sha256sum --check release/bundle-sha256.txt)
       - name: Promote exact tested digest registry-to-registry without candidate bytes
         id: copy
         shell: bash
@@ -233,7 +240,7 @@ jobs:
             test "$RELEASE_TAG" = "v$VERSION"
             tags+=(--tag "$VERSION")
           fi
-          python3 scripts/promote_digest.py \
+          python3 bundle/release/promote_digest.py \
             --source-ref "$QUARANTINE_REGISTRY/${QUARANTINE_REPOSITORY,,}" \
             --digest "$QUARANTINED_DIGEST" \
             --expected-digest "$QUARANTINED_DIGEST" \
@@ -255,7 +262,7 @@ jobs:
           if [[ -n "$RELEASE_TAG" ]]; then
             tags+=("$VERSION")
           fi
-          python3 scripts/promote_digest.py \
+          python3 bundle/release/promote_digest.py \
             --verify-only \
             --digest "$QUARANTINED_DIGEST" \
             --destination-ref "ghcr.io/${GITHUB_REPOSITORY,,}" \

@@ -280,10 +280,11 @@ jobs:
           .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "$mcp_pin"
           .container-smoke/bin/python scripts/container_smoke.py --image "$image"
           mkdir -p release
+          cp scripts/promote_digest.py release/promote_digest.py
           docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
           docker save --output release/image.tar "$image"
           cp commit-sha.txt release/commit-sha.txt
-          sha256sum release/image.tar dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
+          sha256sum release/image.tar release/promote_digest.py dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
       - name: Upload immutable release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
