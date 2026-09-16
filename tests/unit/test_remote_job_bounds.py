@@ -106,7 +106,8 @@ def test_stdout_and_stderr_bounds_are_independent(tmp_path: Path) -> None:
     job_dir = _job_root(home) / VALID_JOB_ID
     assert (job_dir / "stdout").stat().st_size <= TEST_LIMIT_BYTES
     stderr_size = (job_dir / "stderr").stat().st_size
-    assert TEST_LIMIT_BYTES > stderr_size >= 1024
+    assert stderr_size <= TEST_LIMIT_BYTES
+    assert record["stderrTruncated"] is False
 
 
 def test_range_read_returns_bounded_slice_from_large_stream(tmp_path: Path) -> None:
