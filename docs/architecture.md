@@ -175,3 +175,24 @@ and dead-identity running records, while never following symlinks, never
 leaving the managed root, and never removing a job whose recorded process
 identity is alive. Expired jobs retain machine-readable tombstones in the
 owner-bound store after remote payload bytes are removed.
+
+The legacy flat-layout segment of the retention pass has a hard raw
+enumeration bound independent of the trie sweep: each GC invocation
+consumes at most `max(64, 4 × max_entries)` root `getdents64` entries (a
+single invocation therefore never reads more than the trie sweep bound
+plus that legacy bound) while keeping one 4 KiB buffer of kernel state —
+no full-corpus list, sort, or on-disk index exists at any point. Progress
+is kept in a 0600, `O_NOFOLLOW`, atomically replaced
+`.gc-legacy-cursor` file recording the last consumed entry's kernel
+`d_off`; a fresh helper process `lseek()`s to that cursor and resumes
+without replaying the consumed prefix, so every legacy job — including a
+stale job behind a retained prefix wider than many invocation budgets —
+is reached within `⌈legacy_size / legacy_raw_budget⌉` passes. Because
+kernel `d_off` resume semantics differ between filesystems (hash-based on
+ext4, ordinal on tmpfs), the first entry after a restart may repeat or
+advance by one; processing is idempotent, so that bounded difference is
+harmless. Reaching EOF clears the cursor, which is also how a flat job
+created after the sweep finished (rolling upgrade) becomes visible on a
+later pass. The obsolete bounded migration index from earlier 2.2.x
+candidates is removed on first touch (regular file or symlink only,
+never a directory, never followed).

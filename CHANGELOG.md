@@ -4,6 +4,21 @@ All notable changes to mikrus-mcp are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Legacy flat-layout durable jobs (pre-trie `<root>/<job-id>` directories)
+  are now reclaimed by a hard-bounded sweep: each GC invocation consumes at
+  most `max(64, 4 × max_entries)` raw root `getdents64` entries with O(1)
+  memory — no full-corpus list, sort, or on-disk migration index — and
+  resumes across helper restarts through a 0600, `O_NOFOLLOW`,
+  atomically-replaced `.gc-legacy-cursor` file holding the last consumed
+  kernel `d_off`. A stale legacy job behind a retained prefix wider than
+  many invocation budgets is therefore collected in
+  `⌈legacy_size / legacy_raw_budget⌉` passes; EOF clears the cursor so
+  rolling-upgrade writes stay visible; the obsolete
+  `.gc-legacy-index` internal file is removed on first touch without
+  following symlinks. #29
+
 ### Changed
 
 - Dependency-lock policy split into two lanes: ordinary candidate CI installs

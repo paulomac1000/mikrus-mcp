@@ -310,7 +310,18 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   previous release under the flat `<root>/<job_id>` layout remain fully
   discoverable by every remote-job operation and are collected by the same
   bounded sweep; existing flat directories are served in place and never
-  renamed, so detached workers keep their absolute paths.
+  renamed, so detached workers keep their absolute paths. The legacy
+  flat-layout segment carries its own hard raw bound — at most
+  `max(64, 4 x max_entries)` root `getdents64` entries per invocation with
+  O(1) memory (one 4 KiB buffer, no full-corpus list, sort, or on-disk
+  index) — and resumes across helper restarts through a 0600,
+  `O_NOFOLLOW`, atomically replaced `.gc-legacy-cursor` file holding the
+  last consumed kernel `d_off`; a stale legacy job behind a retained
+  prefix wider than many invocation budgets is therefore collected within
+  `⌈legacy_size / legacy_raw_budget⌉` passes, reaching EOF clears the
+  cursor so later rolling-upgrade writes stay visible, and the obsolete
+  `.gc-legacy-index` internal file is removed on first touch without
+  following symlinks.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
   `remotePayloadRemoved: true` instead of a raw not-found error.
