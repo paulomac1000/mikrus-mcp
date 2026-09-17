@@ -295,8 +295,10 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   whose recorded process identity is alive, never follows symlinks, never leaves
   the managed root, and enforces hard per-invocation bounds: removal attempts at
   most `max_entries` (default 256) entries, processing visits at most
-  `max(64, 4 x max_entries)` entries, and raw readdir yields at most
-  `max(4096, 4 x max_entries)` entries across the shard-scoped bucket leaves.
+  `max(64, 4 x max_entries)` entries, and each level scan or leaf walk at
+  most `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
+  never follow symlinks, so planted links cannot redirect the sweep outside
+  the managed root.
   Sweep position persists as a per-shard `(b1, b2, ordinal)` cursor over the
   `s<shard>/b<b1>/c<b2>/<job_id>` layout, so advancing never replays earlier
   leaves and progress is eventual regardless of how many entries precede or

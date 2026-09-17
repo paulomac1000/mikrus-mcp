@@ -1292,3 +1292,87 @@ def test_documented_gc_bounds_match_implementation(tmp_path: Path) -> None:
     assert summary["visited"] == 64
     assert summary["iterated"] <= 4096
     assert summary["scanned"] <= 3
+
+
+def test_gc_rejects_bucket_symlink_traversal(tmp_path: Path) -> None:
+    """Round-10 Greptile P1 regression: a "b" symlink planted under a managed
+    shard is never followed — its target directory keeps its contents and
+    the sweep stays inside the managed root."""
+    home = _home(tmp_path)
+    stale = "e" * 32
+    job_dir = _job_dir(home, stale)
+    job_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
+    old = time.time() - 7200.0
+    record_path.write_text(
+        json.dumps({"jobId": stale, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+
+    outside = tmp_path / "victim"
+    victim_job = outside / "victim-job"
+    victim_job.mkdir(parents=True)
+    (victim_job / "record.json").write_text(
+        json.dumps({"jobId": "victim-job", "state": "succeeded", "finishedAt": 0})
+    )
+
+    shard_root = _job_root(home) / f"s{_shard_of(stale):x}"
+    link_bucket = (0x1A0B >> 8) ^ 0xFF
+    link_path = shard_root / f"b{link_bucket:x}"
+    os.symlink(outside, link_path)
+
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 3,
+            "shards": 16,
+            "shard": _shard_of(stale),
+        },
+        home,
+    )
+    assert summary["removed"] == 1
+    assert link_path.is_symlink()
+    assert (victim_job / "record.json").exists()
+    assert (outside / "victim-job").exists()
+    assert _job_dir(home, stale).exists() is False
+
+
+def test_gc_level_scans_stay_bounded_under_junk_entries(tmp_path: Path) -> None:
+    """Round-10 Greptile P2 regression: thousands of malformed entries in a
+    shard directory cannot make a cleanup pass unbounded — level scans are
+    capped at the same readdir-yield budget as leaf iteration."""
+    home = _home(tmp_path)
+    shard_root = _job_root(home) / "s0"
+    shard_root.mkdir(parents=True, exist_ok=True)
+    junk = shard_root / "junk-payload"
+    junk.mkdir()
+    for index in range(6000):
+        (junk / f"pad{index:04d}").write_text("x", encoding="utf-8")
+
+    valid = "f" * 32
+    job_dir = _job_dir(home, valid)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    record_path = job_dir / "record.json"
+    old = time.time() - 7200.0
+    record_path.write_text(
+        json.dumps({"jobId": valid, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+
+    summary = _run_helper(
+        {
+            "operation": "gc",
+            "retention_seconds": 5,
+            "grace_seconds": 3600,
+            "max_entries": 3,
+            "shards": 16,
+            "shard": 0,
+        },
+        home,
+    )
+    assert summary["iterated"] <= 3 * 4096
+    assert summary["errors"] == 0

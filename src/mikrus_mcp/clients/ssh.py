@@ -462,35 +462,45 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             # unchanged.
             valid_hex = set("0123456789abcdef")
 
-            def _leaf_level_names(level_dir):
+            def _leaf_level_names(level_dir, min_value, cap):
+                # Level scans follow neither symlinks (a "b" or "c" symlink
+                # placed by another process on the shared account must never
+                # redirect the destructive sweep outside the managed root)
+                # nor exceed the readdir-yield cap, so hostile or junk
+                # entries cannot make cleanup unbounded.
                 names = []
+                yields = 0
                 try:
                     for entry in os.scandir(level_dir):
+                        if yields >= cap:
+                            break
+                        yields += 1
+                        summary["iterated"] += 1
                         name = entry.name
                         if (
-                            entry.is_dir()
+                            entry.is_dir(follow_symlinks=False)
                             and not name.startswith(".")
                             and name[0] in ("b", "c")
                             and len(name) <= 3
                             and name[1:]
                             and set(name[1:]) <= valid_hex
                         ):
-                            names.append(int(name[1:], 16))
+                            value = int(name[1:], 16)
+                            if value >= min_value:
+                                names.append(value)
                 except OSError:
-                    return []
+                    pass
                 return sorted(names)
 
-            existing_bs = [
-                b for b in _leaf_level_names(shard_root) if b >= bucket_index
-            ]
+            existing_bs = _leaf_level_names(shard_root, bucket_index, iterated_budget)
             first_b = bucket_index
             while existing_bs and summary["visited"] < visit_budget:
                 bucket_index = existing_bs[0]
-                existing_cs = [
-                    c
-                    for c in _leaf_level_names(shard_root / ("b%x" % bucket_index))
-                    if bucket_index != first_b or c >= sub_index
-                ]
+                existing_cs = _leaf_level_names(
+                    shard_root / ("b%x" % bucket_index),
+                    sub_index if bucket_index == first_b else 0,
+                    iterated_budget,
+                )
                 while existing_cs and summary["visited"] < visit_budget:
                     sub_index = existing_cs[0]
                     leaf = shard_root / ("b%x" % bucket_index) / ("c%x" % sub_index)
