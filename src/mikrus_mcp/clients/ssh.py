@@ -451,20 +451,59 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             bucket_index = 0
             sub_index = 0
             ordinal = 0
+        existing_bs: list[int] = []
         try:
             if shard_root.is_symlink() or not shard_root.is_dir():
                 return summary
-            while bucket_index < 256 and summary["visited"] < visit_budget:
-                while sub_index < 256 and summary["visited"] < visit_budget:
+            # Only existing leaves are visited: enumerating the shard's own
+            # subdirectories (at most 256 per level) keeps an empty or small
+            # shard at O(existing directories) instead of one stat per
+            # possible leaf, while the (b, c, ordinal) cursor semantics are
+            # unchanged.
+            valid_hex = set("0123456789abcdef")
+
+            def _leaf_level_names(level_dir):
+                names = []
+                try:
+                    for entry in os.scandir(level_dir):
+                        name = entry.name
+                        if (
+                            entry.is_dir()
+                            and not name.startswith(".")
+                            and name[0] in ("b", "c")
+                            and len(name) <= 3
+                            and name[1:]
+                            and set(name[1:]) <= valid_hex
+                        ):
+                            names.append(int(name[1:], 16))
+                except OSError:
+                    return []
+                return sorted(names)
+
+            existing_bs = [
+                b for b in _leaf_level_names(shard_root) if b >= bucket_index
+            ]
+            first_b = bucket_index
+            while existing_bs and summary["visited"] < visit_budget:
+                bucket_index = existing_bs[0]
+                existing_cs = [
+                    c
+                    for c in _leaf_level_names(shard_root / ("b%x" % bucket_index))
+                    if bucket_index != first_b or c >= sub_index
+                ]
+                while existing_cs and summary["visited"] < visit_budget:
+                    sub_index = existing_cs[0]
                     leaf = shard_root / ("b%x" % bucket_index) / ("c%x" % sub_index)
                     try:
                         if leaf.is_symlink() or not leaf.is_dir():
-                            sub_index += 1
+                            existing_cs.pop(0)
+                            sub_index = existing_cs[0] if existing_cs else sub_index
                             ordinal = 0
                             continue
                         stream = os.scandir(leaf)
                     except OSError:
-                        sub_index += 1
+                        existing_cs.pop(0)
+                        sub_index = existing_cs[0] if existing_cs else sub_index
                         ordinal = 0
                         continue
                     with stream:
@@ -488,6 +527,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                                 continue
                             if summary["visited"] >= visit_budget:
                                 exhausted_leaf = False
+                                # The yield that trips the visit budget is
+                                # not consumed; the cursor must point at it
+                                # on the next pass.
+                                leaf_consumed -= 1
                                 break
                             summary["visited"] += 1
                             summary["enumerated"] += 1
@@ -567,16 +610,19 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             break
                     if not exhausted_leaf:
                         break
-                    sub_index += 1
+                    existing_cs.pop(0)
                     ordinal = 0
                     leaf_consumed = 0
-                if bucket_index >= 256:
+                if summary["visited"] >= visit_budget:
+                    # The visit budget ran out inside this leaf; keep the
+                    # cursor on the same leaf so the next pass resumes at
+                    # the recorded ordinal instead of skipping the rest.
                     break
-                bucket_index += 1
+                existing_bs.pop(0)
                 sub_index = 0
                 ordinal = 0
         finally:
-            if bucket_index >= 256:
+            if not existing_bs:
                 try:
                     if cursor_path.is_symlink() or cursor_path.exists():
                         cursor_path.unlink()

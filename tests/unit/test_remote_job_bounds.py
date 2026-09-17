@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess  # noqa: S404
 import sys
 import time
@@ -1198,6 +1199,65 @@ def test_gc_rotation_reaches_every_shard_at_fixed_time(tmp_path: Path) -> None:
     assert sorted(second_sweep) == list(range(16))
 
 
+def test_gc_cursor_advances_past_fresh_prefix_within_leaf(tmp_path: Path) -> None:
+    """Round-10 Greptile follow-up: a leaf holding more fresh survivors than
+    the visit budget must not trap the cursor on the same prefix — the
+    ordinal records positions consumed, so stale jobs stored after the
+    survivors are reached on the following pass."""
+    home = _home(tmp_path)
+    leaf_bucket = 0x1A0B
+    leaf = _job_root(home) / "s0" / f"b{leaf_bucket >> 8:x}" / f"c{leaf_bucket & 0xFF:x}"
+    leaf.mkdir(parents=True, exist_ok=True)
+
+    names: list[str] = []
+    index = 0
+    while len(names) < 67:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        _job_dir(home, name).mkdir(parents=True, exist_ok=True)
+        shutil.move(str(_job_dir(home, name)), str(leaf / name))
+
+    order = os.listdir(leaf)
+    assert len(order) == 67
+    survivors, stale_group = order[:64], order[64:]
+    old = time.time() - 7200.0
+    for name in stale_group:
+        job_dir = leaf / name
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 3600,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    first = _run_helper(payload, home)
+    assert first["visited"] == 64
+    assert first["removed"] == 0
+
+    removed_total = first["removed"]
+    passes = 1
+    while removed_total < len(stale_group) and passes < 8:
+        summary = _run_helper(payload, home)
+        removed_total += summary["removed"]
+        passes += 1
+    assert removed_total >= len(stale_group)
+    for name in stale_group:
+        assert (leaf / name).exists() is False
+    for name in survivors:
+        assert (leaf / name).exists()
+
+
 def test_documented_gc_bounds_match_implementation(tmp_path: Path) -> None:
     """Round-10 regression C: the README documents the exact hard bounds the
     sweep enforces; the same constants must be observable in behavior and
@@ -1209,10 +1269,15 @@ def test_documented_gc_bounds_match_implementation(tmp_path: Path) -> None:
     assert "`max(4096, 4 x max_entries)`" in text
 
     home = _home(tmp_path)
-    for index in range(2000):
-        name = f"{index:032d}"
-        if _shard_of(name) == 0:
-            _job_dir(home, name).mkdir(parents=True)
+    names: list[str] = []
+    index = 0
+    while len(names) < 2000:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        _job_dir(home, name).mkdir(parents=True)
     summary = _run_helper(
         {
             "operation": "gc",
