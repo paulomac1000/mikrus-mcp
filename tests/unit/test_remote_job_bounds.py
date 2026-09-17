@@ -1333,8 +1333,10 @@ def test_gc_rejects_bucket_symlink_traversal(tmp_path: Path) -> None:
         },
         home,
     )
-    assert summary["removed"] == 1
-    assert link_path.is_symlink()
+    # The planted symlink itself is evicted as junk (never followed), the
+    # victim directory keeps its contents, and normal cleanup proceeds.
+    assert summary["removed"] == 2
+    assert link_path.is_symlink() is False
     assert (victim_job / "record.json").exists()
     assert (outside / "victim-job").exists()
     assert _job_dir(home, stale).exists() is False
@@ -1376,3 +1378,57 @@ def test_gc_level_scans_stay_bounded_under_junk_entries(tmp_path: Path) -> None:
     )
     assert summary["iterated"] <= 3 * 4096
     assert summary["errors"] == 0
+
+
+def test_gc_eviction_clears_junk_prefix_blocking_bucket_discovery(
+    tmp_path: Path,
+) -> None:
+    """Round-10 Greptile follow-up regression: a shard directory whose
+    readdir order is dominated by thousands of junk entries must not starve
+    valid buckets forever — junk files are evicted within the per-pass
+    budgets until the valid bucket is discovered and its stale tail
+    collected."""
+    home = _home(tmp_path)
+    shard_root = _job_root(home) / "s0"
+    shard_root.mkdir(parents=True, exist_ok=True)
+    junk_dir = shard_root / "junk-bucket"
+    junk_dir.mkdir()
+    for index in range(4096):
+        (junk_dir / f"junk{index:04d}").write_text("x", encoding="utf-8")
+
+    valid = None
+    index = 0
+    while valid is None:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            valid = candidate
+    job_dir = _job_dir(home, valid)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    record_path = job_dir / "record.json"
+    old = time.time() - 7200.0
+    record_path.write_text(
+        json.dumps({"jobId": valid, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(job_dir, (old, old))
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 0,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    collected = False
+    removed_total = 0
+    for _ in range(10):
+        summary = _run_helper(payload, home)
+        assert summary["iterated"] <= 3 * 4096
+        assert summary["errors"] == 0
+        removed_total += summary["removed"]
+        if _job_dir(home, valid).exists() is False:
+            collected = True
+            break
+    assert collected, f"valid bucket never reached: removed={removed_total}"

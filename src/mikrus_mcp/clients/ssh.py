@@ -462,12 +462,42 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             # unchanged.
             valid_hex = set("0123456789abcdef")
 
+            evict_budget = max(1024, iterated_budget // 4)
+
+            def evict(level_dir, name):
+                # The shard and bucket levels belong exclusively to this
+                # layout: stray files and symlinks there are junk that would
+                # otherwise clog every future readdir yield. Evicting them
+                # (after the same grace period as job entries, within a
+                # dedicated budget) restores eventual progress. Malformed
+                # directories are left for operator attention.
+                target = level_dir / name
+                try:
+                    st = os.lstat(target)
+                except OSError:
+                    return
+                if (now - st.st_mtime) <= grace:
+                    return
+                if summary["scanned"] >= budget + evict_budget:
+                    return
+                summary["scanned"] += 1
+                try:
+                    if stat.S_ISDIR(st.st_mode):
+                        shutil.rmtree(target)
+                    else:
+                        os.unlink(target)
+                    summary["removed"] += 1
+                except OSError:
+                    summary["errors"] += 1
+
             def _leaf_level_names(level_dir, min_value, cap):
                 # Level scans follow neither symlinks (a "b" or "c" symlink
                 # placed by another process on the shared account must never
                 # redirect the destructive sweep outside the managed root)
                 # nor exceed the readdir-yield cap, so hostile or junk
-                # entries cannot make cleanup unbounded.
+                # entries cannot make cleanup unbounded. Stray files and
+                # symlinks are evicted so a junk prefix cannot starve later
+                # buckets permanently.
                 names = []
                 yields = 0
                 try:
@@ -477,9 +507,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                         yields += 1
                         summary["iterated"] += 1
                         name = entry.name
+                        if name.startswith("."):
+                            continue
                         if (
                             entry.is_dir(follow_symlinks=False)
-                            and not name.startswith(".")
                             and name[0] in ("b", "c")
                             and len(name) <= 3
                             and name[1:]
@@ -488,6 +519,8 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             value = int(name[1:], 16)
                             if value >= min_value:
                                 names.append(value)
+                        elif not entry.is_dir(follow_symlinks=False):
+                            evict(level_dir, name)
                 except OSError:
                     pass
                 return sorted(names)
