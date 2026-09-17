@@ -679,26 +679,52 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 existing_bs.pop(0)
                 sub_index = 0
                 ordinal = 0
-            # Legacy flat-layout compatibility sweep: durable jobs created
-            # before the trie migration live directly under the managed
-            # root. The corpus is frozen (new jobs always use the trie) and
-            # shrinks as stale entries are collected, so a bounded scan of
-            # the root is sufficient for eventual progress. Grammar-valid
-            # entries are processed with the same rules as trie leaves
-            # (fresh/running entries are never removed); stray files and
-            # symlinks are evicted within the level budgets; malformed
-            # directories are skipped for operator attention.
-            # The flat corpus is frozen (new jobs always use the trie) and
-            # shrinks as stale entries are collected, so reading it once per
-            # invocation is bounded by the pre-upgrade population and cannot
-            # grow; the trie yields above remain subject to their own caps.
+            # Legacy flat-layout compatibility: durable jobs created before
+            # the trie migration live directly under the managed root. The
+            # flat corpus is frozen (new jobs always use the trie), so the
+            # one-time index build below is bounded by the pre-upgrade
+            # population; afterwards every invocation reads and rewrites the
+            # index file (bounded bytes), consumes at most max_entries
+            # entries from its front — ordered by record finish time, so the
+            # most reclaimable legacy payloads are reached first — and
+            # appends survivors to the tail, giving every legacy job
+            # eventual, never-skipped attention without unbounded
+            # enumeration.
+            legacy_index_path = root / ".gc-legacy-index"
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            legacy_names = None
             try:
-                legacy_stream = os.scandir(root)
-            except OSError:
-                legacy_stream = None
-            if legacy_stream is not None:
-                with legacy_stream:
-                    for legacy_entry in legacy_stream:
+                legacy_fd = os.open(
+                    legacy_index_path, os.O_RDONLY | nofollow
+                )
+                try:
+                    legacy_raw = os.read(legacy_fd, 1_048_577)
+                finally:
+                    os.close(legacy_fd)
+                if len(legacy_raw) <= 1_048_576:
+                    legacy_parsed = json.loads(legacy_raw)
+                    legacy_list = (
+                        legacy_parsed.get("n") if isinstance(legacy_parsed, dict) else None
+                    )
+                    if (
+                        isinstance(legacy_list, list)
+                        and legacy_list
+                        and all(
+                            isinstance(n, str) and JOB_ID.fullmatch(n) is not None
+                            for n in legacy_list
+                        )
+                    ):
+                        legacy_names = legacy_list
+            except (OSError, ValueError):
+                legacy_names = None
+            if legacy_names is None:
+                # One-time bounded migration index over the frozen corpus,
+                # ordered by record finish time (missing/invalid records sort
+                # first). Stray files and symlinks are evicted; malformed
+                # directories are skipped for operator attention.
+                scored = []
+                try:
+                    for legacy_entry in os.scandir(root):
                         legacy_name = legacy_entry.name
                         if legacy_name.startswith("."):
                             continue
@@ -706,7 +732,59 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             if not legacy_entry.is_dir(follow_symlinks=False):
                                 evict(root, legacy_name)
                             continue
-                        process_managed_job(PathLib(legacy_entry.path))
+                        finished_key = 0.0
+                        try:
+                            record_fd = os.open(
+                                root / legacy_name / "record.json",
+                                os.O_RDONLY | nofollow,
+                            )
+                            try:
+                                legacy_record_raw = os.read(record_fd, 65537)
+                            finally:
+                                os.close(record_fd)
+                            if len(legacy_record_raw) <= 65536:
+                                legacy_record = json.loads(legacy_record_raw)
+                                candidate = legacy_record.get("finishedAt")
+                                if isinstance(candidate, (int, float)):
+                                    finished_key = float(candidate)
+                        except (OSError, ValueError):
+                            pass
+                        scored.append((finished_key, legacy_name))
+                except OSError:
+                    scored = []
+                scored.sort()
+                legacy_names = [name for _, name in scored]
+                fd, temporary = tempfile.mkstemp(
+                    prefix=".gc-legacy-index.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump({"n": legacy_names}, stream)
+                    os.replace(temporary, legacy_index_path)
+                except OSError:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            if legacy_names:
+                take = legacy_names[:budget]
+                survivors = []
+                for legacy_name in take:
+                    legacy_path = root / legacy_name
+                    process_managed_job(legacy_path)
+                    if legacy_path.exists():
+                        survivors.append(legacy_name)
+                remaining = legacy_names[len(take):] + survivors
+                fd, temporary = tempfile.mkstemp(
+                    prefix=".gc-legacy-index.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump({"n": remaining}, stream)
+                    os.replace(temporary, legacy_index_path)
+                except OSError:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
         finally:
             if not existing_bs:
                 try:
