@@ -39,7 +39,11 @@ from mikrus_mcp.docker_ops import (
 from mikrus_mcp.errors import AppError, ErrorCode
 from mikrus_mcp.jobs import ProgramJobRegistry
 from mikrus_mcp.provenance import ProvenanceSnapshot
-from mikrus_mcp.remote_jobs import DurableRemoteJobRegistry, request_digest
+from mikrus_mcp.remote_jobs import (
+    MAX_REMOTE_ERROR_BYTES,
+    DurableRemoteJobRegistry,
+    request_digest,
+)
 from mikrus_mcp.sanitizer import sanitize_data
 from mikrus_mcp.targets import TargetRegistry
 
@@ -403,6 +407,16 @@ class ExecutionMixin:
                         job_id=record.job_id, principal=caller.principal, now=now
                     )
                     raise
+                try:
+                    gc_summary: dict[str, Any] = await client.remote_job_gc()
+                except AppError as gc_exc:
+                    gc_summary = {"gcError": gc_exc.code.value, "gcMessage": gc_exc.message}
+                except Exception as gc_error:  # gc must never fail a started job
+                    gc_summary = {
+                        "gcError": ErrorCode.INTERNAL.value,
+                        "gcMessage": str(gc_error)[:MAX_REMOTE_ERROR_BYTES],
+                    }
+                return {**record.as_dict(), "reused": reused, "gc": gc_summary}
             return {**record.as_dict(), "reused": reused}
 
         if name in {
@@ -415,25 +429,36 @@ class ExecutionMixin:
             if self.remote_jobs is None or client is None:
                 raise AppError(ErrorCode.UNAVAILABLE, "durable remote jobs are not configured")
             job_id = str(arguments["job_id"])
-            if name == "remote_job_status":
-                remote = await client.remote_job_status(job_id=job_id)
-            elif name == "remote_job_wait":
-                remote = await client.remote_job_wait(
-                    job_id=job_id, timeout_seconds=float(arguments.get("timeout_seconds", 30))
-                )
-            elif name == "remote_job_result":
-                remote = await client.remote_job_result(job_id=job_id)
-            elif name == "remote_job_output":
-                remote = await client.remote_job_output(
-                    job_id=job_id,
-                    stream=str(arguments["stream"]),
-                    offset=int(arguments.get("offset", 0)),
-                    max_bytes=int(arguments.get("max_bytes", 65_536)),
-                )
-            else:
-                remote = await client.remote_job_cancel(
-                    job_id=job_id, reason=str(arguments.get("reason", "operator request"))
-                )
+            try:
+                if name == "remote_job_status":
+                    remote = await client.remote_job_status(job_id=job_id)
+                elif name == "remote_job_wait":
+                    remote = await client.remote_job_wait(
+                        job_id=job_id, timeout_seconds=float(arguments.get("timeout_seconds", 30))
+                    )
+                elif name == "remote_job_result":
+                    remote = await client.remote_job_result(job_id=job_id)
+                elif name == "remote_job_output":
+                    remote = await client.remote_job_output(
+                        job_id=job_id,
+                        stream=str(arguments["stream"]),
+                        offset=int(arguments.get("offset", 0)),
+                        max_bytes=int(arguments.get("max_bytes", 65_536)),
+                    )
+                else:
+                    remote = await client.remote_job_cancel(
+                        job_id=job_id, reason=str(arguments.get("reason", "operator request"))
+                    )
+            except AppError as exc:
+                if (
+                    exc.code == ErrorCode.NOT_FOUND
+                    and name in {"remote_job_status", "remote_job_result"}
+                    and self.remote_jobs is not None
+                ):
+                    record = self.remote_jobs.get(job_id=job_id, principal=caller.principal)
+                    if record.terminal:
+                        return {**record.as_dict(), "remotePayloadRemoved": True}
+                raise
             state = remote.get("state")
             if state in {"running", "succeeded", "failed", "cancelled", "lost", "expired"}:
                 self.remote_jobs.reconcile_observed_state(

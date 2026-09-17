@@ -16,6 +16,11 @@ from mikrus_mcp.clients.common import _remote_atomic_write_command, _remote_read
 from mikrus_mcp.clients.mikrus import _parse_process_snapshot
 from mikrus_mcp.config import TargetConfig
 from mikrus_mcp.errors import AppError, ErrorCode
+from mikrus_mcp.remote_jobs import (
+    MAX_REMOTE_OUTPUT_BYTES,
+    REMOTE_JOB_GRACE_SECONDS,
+    REMOTE_JOB_RETENTION_SECONDS,
+)
 from mikrus_mcp.sanitizer import sanitize_text
 from mikrus_mcp.tools.constants import (
     EXEC_HTTP_TIMEOUT,
@@ -241,18 +246,47 @@ _PROGRAM_HELPER = textwrap.dedent(
 
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import fcntl, hashlib, json, os, re, signal, subprocess, sys, tempfile, time
+    import fcntl, hashlib, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
     JOB_ID = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
     payload = json.load(sys.stdin)
+    operation = payload.get("operation")
     job_id = payload.get("job_id", "")
-    if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
+    if operation != "gc" and (
+        not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id)
+    ):
         raise SystemExit("invalid job id")
     root = Path.home() / ".cache" / "mikrus-mcp" / "remote-jobs"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    job_dir = root / job_id
+    def shard_of(name, count=16):
+        return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % count
+    def bucket_of(name, count=65536):
+        seed = hashlib.sha256(name.encode() + b"/bucket").digest()
+        return int.from_bytes(seed[:8], "big") % count
+    def job_dir_for(name):
+        # Layout resolver with pre-2.2.0 compatibility: durable jobs created
+        # by the previous release live directly under the managed root and
+        # a detached worker may still hold those absolute paths, so an
+        # existing flat directory is served in place and never renamed.
+        # New jobs and already-migrated trie jobs use the sharded layout.
+        bucket = bucket_of(name)
+        trie = (
+            root
+            / ("s%x" % shard_of(name))
+            / ("b%x" % (bucket >> 8))
+            / ("c%x" % (bucket & 0xFF))
+            / name
+        )
+        try:
+            flat = root / name
+            if flat.exists() or flat.is_symlink():
+                return flat
+        except OSError:
+            pass
+        return trie
+    job_dir = job_dir_for(job_id) if isinstance(job_id, str) and job_id else root
     meta_path = job_dir / "record.json"
     stdout_path = job_dir / "stdout"
     stderr_path = job_dir / "stderr"
@@ -274,22 +308,562 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             if os.path.exists(name):
                 os.unlink(name)
     def output(path, offset, maximum):
-        data = path.read_bytes() if path.exists() else b""
-        chunk = data[offset:offset + maximum]
-        return {
-            "data": chunk.decode(errors="replace"),
-            "next_offset": offset + len(chunk),
-            "eof": offset + len(chunk) >= len(data),
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(path, os.O_RDONLY | nofollow)
+        except FileNotFoundError:
+            return {"data": "", "next_offset": int(offset), "eof": True}
+        except NotADirectoryError:
+            return {"data": "", "next_offset": int(offset), "eof": True}
+        try:
+            size = os.fstat(fd).st_size
+            start = max(0, int(offset))
+            if start >= size:
+                return {"data": "", "next_offset": start, "eof": True}
+            os.lseek(fd, start, os.SEEK_SET)
+            chunk = os.read(fd, max(1, int(maximum)))
+            return {
+                "data": chunk.decode(errors="replace"),
+                "next_offset": start + len(chunk),
+                "eof": start + len(chunk) >= size,
+            }
+        finally:
+            os.close(fd)
+    def gc_operation(payload):
+        now = time.time()
+        retention = float(payload.get("retention_seconds", 604800))
+        grace = float(payload.get("grace_seconds", 3600))
+        budget = int(payload.get("max_entries", 256))
+        shards = int(payload.get("shards", 16))
+        shard_param = payload.get("shard")
+        rotation_path = root / ".gc-rotation"
+        if shard_param is None:
+            # Durable invocation-progressive rotation: every defaulted GC
+            # invocation advances a persisted counter, so every shard
+            # becomes eligible regardless of wall-clock start cadence.
+            counter = 0
+            try:
+                rotation_fd = os.open(
+                    rotation_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+                try:
+                    raw = os.read(rotation_fd, 65)
+                finally:
+                    os.close(rotation_fd)
+                if len(raw) <= 64:
+                    counter = max(0, min(int(raw.decode() or "0"), 2_000_000_000))
+            except (OSError, ValueError):
+                counter = 0
+            shard = counter % shards
+            fd, temporary = tempfile.mkstemp(prefix=".gc-rotation.", dir=root)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(str(counter + 1))
+                os.replace(temporary, rotation_path)
+            except OSError:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        else:
+            shard = int(shard_param) % shards
+        summary = {
+            "visited": 0,
+            "iterated": 0,
+            "enumerated": 0,
+            "shard": shard,
+            "shards": shards,
+            "scanned": 0,
+            "removed": 0,
+            "keptActive": 0,
+            "keptRecent": 0,
+            "errors": 0,
         }
+
+        def pid_alive(identity):
+            if not isinstance(identity, dict):
+                return False
+            try:
+                pid = int(identity.get("pid"))
+            except (TypeError, ValueError):
+                return False
+            try:
+                fields = PathLib(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
+            except (OSError, ValueError, IndexError):
+                return False
+            if len(fields) <= 21:
+                return False
+            if fields[2] in {"Z", "z", "X", "x"}:
+                return False
+            return identity.get("startTicks") == fields[21]
+
+        def discard(path, is_link):
+            # The processing budget counts only entries this pass attempts
+            # to remove; fresh or live entries consume visit work but never
+            # the removal budget, so a stable front of survivors cannot
+            # starve removable entries inside the same sweep window.
+            if summary["scanned"] >= budget:
+                return
+            summary["scanned"] += 1
+            try:
+                if is_link:
+                    os.unlink(path)
+                else:
+                    shutil.rmtree(path)
+                summary["removed"] += 1
+            except OSError:
+                summary["errors"] += 1
+
+        # Resumable trie sweep: job directories live at
+        # <root>/s<shard>/b<b1>/c<b2>/<job_id>, so one pass walks
+        # shard-scoped leaves in lexicographic (b1, b2) order under a
+        # persisted (b1, b2, ordinal) cursor. Advancing never replays
+        # entries from earlier leaves, and within a leaf only the ordinal
+        # prefix is replayed; because the ordinal records every position
+        # already consumed (not merely skipped replays), a budget stop on a
+        # fresh prefix still advances the cursor past that prefix. With
+        # 65536 leaves per shard, the replayed prefix stays far below the
+        # yield cap for any realistic directory size, so per-invocation
+        # readdir yields, memory, record reads, and removals all remain
+        # bounded regardless of how many job directories exist. Removing
+        # stale entries shrinks leaves and the cursor advances to the next
+        # leaf, preserving eventual progress; after the last leaf the
+        # cursor is deleted so the next pass starts a fresh sweep and
+        # discovers newly created jobs. Dot entries and names failing the
+        # strict job-id grammar cost one readdir yield each and are
+        # otherwise ignored, never followed, and never leave the leaf.
+        visit_budget = max(64, 4 * budget)
+        iterated_budget = max(visit_budget, 4096)
+        shard_root = root / ("s%x" % shard)
+        cursor_path = root / (".gc-cursor-%x" % shard)
+        bucket_index = 0
+        sub_index = 0
+        ordinal = 0
+        leaf_consumed = 0
+        try:
+            cursor_fd = os.open(cursor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                raw_cursor = os.read(cursor_fd, 65537)
+            finally:
+                os.close(cursor_fd)
+            if len(raw_cursor) <= 65536:
+                parsed_cursor = json.loads(raw_cursor)
+                if (
+                    isinstance(parsed_cursor, dict)
+                    and isinstance(parsed_cursor.get("b"), int)
+                    and isinstance(parsed_cursor.get("c"), int)
+                    and isinstance(parsed_cursor.get("o"), int)
+                    and 0 <= parsed_cursor["b"] < 256
+                    and 0 <= parsed_cursor["c"] < 256
+                    and parsed_cursor["o"] >= 0
+                ):
+                    bucket_index = parsed_cursor["b"]
+                    sub_index = parsed_cursor["c"]
+                    ordinal = min(parsed_cursor["o"], iterated_budget)
+        except (OSError, ValueError):
+            bucket_index = 0
+            sub_index = 0
+            ordinal = 0
+        def process_managed_job(path):
+            if not os.path.exists(path):
+                return
+            try:
+                st_meta = os.lstat(path / "record.json")
+            except OSError:
+                st_meta = None
+            record_regular = st_meta is not None and stat.S_ISREG(
+                st_meta.st_mode
+            )
+            if record_regular and (now - st_meta.st_mtime) <= grace:
+                summary["keptRecent"] += 1
+                return
+            try:
+                dir_mtime = os.lstat(path).st_mtime
+            except OSError:
+                dir_mtime = None
+            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+            if os.path.islink(path) or not os.path.isdir(path):
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, True)
+                return
+            if not record_regular:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            try:
+                record_fd = os.open(
+                    path / "record.json",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    raw_record = os.read(record_fd, 65537)
+                finally:
+                    os.close(record_fd)
+            except OSError:
+                raw_record = b""
+            if len(raw_record) > 65536:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            try:
+                record = json.loads(raw_record)
+            except ValueError:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            state = record.get("state")
+            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                finished = record.get("finishedAt")
+                if not isinstance(finished, (int, float)):
+                    finished = st_meta.st_mtime
+                if (now - float(finished)) > retention:
+                    discard(path, False)
+                else:
+                    summary["keptRecent"] += 1
+                return
+            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                summary["keptActive"] += 1
+                return
+            if fresh:
+                summary["keptActive"] += 1
+            else:
+                discard(path, False)
+
+        existing_bs: list[int] = []
+        trie_available = True
+        try:
+            if shard_root.is_symlink() or not shard_root.is_dir():
+                trie_available = False
+            # Only existing leaves are visited: enumerating the shard's own
+            # subdirectories (at most 256 per level) keeps an empty or small
+            # shard at O(existing directories) instead of one stat per
+            # possible leaf, while the (b, c, ordinal) cursor semantics are
+            # unchanged.
+            valid_hex = set("0123456789abcdef")
+
+            evict_budget = max(1024, iterated_budget // 4)
+
+            def evict(level_dir, name):
+                # The shard and bucket levels belong exclusively to this
+                # layout: stray files and symlinks there are junk that would
+                # otherwise clog every future readdir yield. Evicting them
+                # (after the same grace period as job entries, within a
+                # dedicated budget) restores eventual progress. Malformed
+                # directories are left for operator attention.
+                target = level_dir / name
+                try:
+                    st = os.lstat(target)
+                except OSError:
+                    return
+                if (now - st.st_mtime) <= grace:
+                    return
+                if summary["scanned"] >= budget + evict_budget:
+                    return
+                summary["scanned"] += 1
+                try:
+                    if stat.S_ISDIR(st.st_mode):
+                        shutil.rmtree(target)
+                    else:
+                        os.unlink(target)
+                    summary["removed"] += 1
+                except OSError:
+                    summary["errors"] += 1
+
+            def _leaf_level_names(level_dir, min_value, cap):
+                # Level scans follow neither symlinks (a "b" or "c" symlink
+                # placed by another process on the shared account must never
+                # redirect the destructive sweep outside the managed root)
+                # nor exceed the readdir-yield cap, so hostile or junk
+                # entries cannot make cleanup unbounded. Stray files and
+                # symlinks are evicted so a junk prefix cannot starve later
+                # buckets permanently.
+                names = []
+                yields = 0
+                try:
+                    for entry in os.scandir(level_dir):
+                        if yields >= cap:
+                            break
+                        yields += 1
+                        summary["iterated"] += 1
+                        name = entry.name
+                        if name.startswith("."):
+                            continue
+                        if (
+                            entry.is_dir(follow_symlinks=False)
+                            and name[0] in ("b", "c")
+                            and len(name) <= 3
+                            and name[1:]
+                            and set(name[1:]) <= valid_hex
+                        ):
+                            value = int(name[1:], 16)
+                            if value >= min_value:
+                                names.append(value)
+                        elif not entry.is_dir(follow_symlinks=False):
+                            evict(level_dir, name)
+                except OSError:
+                    pass
+                return sorted(names)
+
+            existing_bs = _leaf_level_names(shard_root, bucket_index, iterated_budget)
+            first_b = bucket_index
+            while trie_available and existing_bs and summary["visited"] < visit_budget:
+                bucket_index = existing_bs[0]
+                existing_cs = _leaf_level_names(
+                    shard_root / ("b%x" % bucket_index),
+                    sub_index if bucket_index == first_b else 0,
+                    iterated_budget,
+                )
+                while existing_cs and summary["visited"] < visit_budget:
+                    sub_index = existing_cs[0]
+                    leaf = shard_root / ("b%x" % bucket_index) / ("c%x" % sub_index)
+                    try:
+                        if leaf.is_symlink() or not leaf.is_dir():
+                            existing_cs.pop(0)
+                            sub_index = existing_cs[0] if existing_cs else sub_index
+                            ordinal = 0
+                            continue
+                        stream = os.scandir(leaf)
+                    except OSError:
+                        existing_cs.pop(0)
+                        sub_index = existing_cs[0] if existing_cs else sub_index
+                        ordinal = 0
+                        continue
+                    with stream:
+                        exhausted_leaf = True
+                        for entry in stream:
+                            if iterated_budget <= 0:
+                                exhausted_leaf = False
+                                break
+                            iterated_budget -= 1
+                            summary["iterated"] += 1
+                            leaf_consumed += 1
+                            if ordinal:
+                                ordinal -= 1
+                                continue
+                            name = entry.name
+                            if name.startswith("."):
+                                continue
+                            if JOB_ID.fullmatch(name) is None:
+                                continue
+                            if shard_of(name) != shard:
+                                continue
+                            if summary["visited"] >= visit_budget:
+                                exhausted_leaf = False
+                                # The yield that trips the visit budget is
+                                # not consumed; the cursor must point at it
+                                # on the next pass.
+                                leaf_consumed -= 1
+                                break
+                            summary["visited"] += 1
+                            summary["enumerated"] += 1
+                            process_managed_job(leaf / name)
+                        if not exhausted_leaf:
+                            break
+                    if not exhausted_leaf:
+                        break
+                    existing_cs.pop(0)
+                    ordinal = 0
+                    leaf_consumed = 0
+                if summary["visited"] >= visit_budget:
+                    # The visit budget ran out inside this leaf; keep the
+                    # cursor on the same leaf so the next pass resumes at
+                    # the recorded ordinal instead of skipping the rest.
+                    break
+                existing_bs.pop(0)
+                sub_index = 0
+                ordinal = 0
+            # Legacy flat-layout compatibility: durable jobs created before
+            # the trie migration live directly under the managed root. The
+            # flat corpus is frozen (new jobs always use the trie), so the
+            # one-time index build below is bounded by the pre-upgrade
+            # population; afterwards every invocation reads and rewrites the
+            # index file (bounded bytes), consumes at most max_entries
+            # entries from its front — ordered by record finish time, so the
+            # most reclaimable legacy payloads are reached first — and
+            # appends survivors to the tail, giving every legacy job
+            # eventual, never-skipped attention without unbounded
+            # enumeration.
+            legacy_index_path = root / ".gc-legacy-index"
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            legacy_names = None
+            try:
+                legacy_fd = os.open(
+                    legacy_index_path, os.O_RDONLY | nofollow
+                )
+                try:
+                    legacy_raw = os.read(legacy_fd, 1_048_577)
+                finally:
+                    os.close(legacy_fd)
+                if len(legacy_raw) <= 1_048_576:
+                    legacy_parsed = json.loads(legacy_raw)
+                    legacy_list = (
+                        legacy_parsed.get("n") if isinstance(legacy_parsed, dict) else None
+                    )
+                    if (
+                        isinstance(legacy_list, list)
+                        and legacy_list
+                        and all(
+                            isinstance(n, str) and JOB_ID.fullmatch(n) is not None
+                            for n in legacy_list
+                        )
+                    ):
+                        legacy_names = legacy_list
+            except (OSError, ValueError):
+                legacy_names = None
+            if legacy_names is None:
+                # One-time bounded migration index over the frozen corpus,
+                # ordered by record finish time (missing/invalid records sort
+                # first). Stray files and symlinks are evicted; malformed
+                # directories are skipped for operator attention.
+                scored = []
+                try:
+                    for legacy_entry in os.scandir(root):
+                        legacy_name = legacy_entry.name
+                        if legacy_name.startswith("."):
+                            continue
+                        if JOB_ID.fullmatch(legacy_name) is None:
+                            if not legacy_entry.is_dir(follow_symlinks=False):
+                                evict(root, legacy_name)
+                            continue
+                        finished_key = 0.0
+                        try:
+                            record_fd = os.open(
+                                root / legacy_name / "record.json",
+                                os.O_RDONLY | nofollow,
+                            )
+                            try:
+                                legacy_record_raw = os.read(record_fd, 65537)
+                            finally:
+                                os.close(record_fd)
+                            if len(legacy_record_raw) <= 65536:
+                                legacy_record = json.loads(legacy_record_raw)
+                                candidate = legacy_record.get("finishedAt")
+                                if isinstance(candidate, (int, float)):
+                                    finished_key = float(candidate)
+                        except (OSError, ValueError):
+                            pass
+                        scored.append((finished_key, legacy_name))
+                except OSError:
+                    scored = []
+                scored.sort()
+                legacy_names = [name for _, name in scored]
+                fd, temporary = tempfile.mkstemp(
+                    prefix=".gc-legacy-index.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump({"n": legacy_names}, stream)
+                    os.replace(temporary, legacy_index_path)
+                except OSError:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            if legacy_names is not None:
+                # Post-migration discovery: a rolling-upgrade writer may
+                # still create flat-layout jobs after the index was built.
+                # One capped scan of the root per pass folds new
+                # grammar-valid directories into the index tail; junk
+                # entries meet the eviction budget as in the level scans,
+                # so hostile prefixes shrink instead of hiding discoveries.
+                try:
+                    legacy_scan = os.scandir(root)
+                except OSError:
+                    legacy_scan = None
+                if legacy_scan is not None:
+                    # Entries already present in the index, dot entries, and
+                    # the trie level directories are skipped without
+                    # consuming the budget, so an indexed prefix cannot
+                    # starve the discovery of newly appeared flat jobs; the
+                    # budget bounds only actual discovery/eviction work.
+                    known = set(legacy_names)
+                    discovered = []
+                    discovery_work = 0
+                    with legacy_scan:
+                        for discovery_entry in legacy_scan:
+                            discovery_name = discovery_entry.name
+                            if (
+                                discovery_name.startswith(".")
+                                or discovery_name in known
+                            ):
+                                continue
+                            if (
+                                JOB_ID.fullmatch(discovery_name) is None
+                                and discovery_entry.is_dir(follow_symlinks=False)
+                            ):
+                                continue
+                            if discovery_work >= iterated_budget:
+                                break
+                            discovery_work += 1
+                            summary["iterated"] += 1
+                            if JOB_ID.fullmatch(discovery_name) is None:
+                                evict(root, discovery_name)
+                                continue
+                            discovered.append(discovery_name)
+                    if discovered:
+                        # Unindexed entries have never been evaluated, so
+                        # they take priority over the rotating tail.
+                        legacy_names = discovered + legacy_names
+            if legacy_names:
+                take = legacy_names[:budget]
+                survivors = []
+                for legacy_name in take:
+                    legacy_path = root / legacy_name
+                    process_managed_job(legacy_path)
+                    if legacy_path.exists():
+                        survivors.append(legacy_name)
+                remaining = legacy_names[len(take):] + survivors
+                fd, temporary = tempfile.mkstemp(
+                    prefix=".gc-legacy-index.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump({"n": remaining}, stream)
+                    os.replace(temporary, legacy_index_path)
+                except OSError:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        finally:
+            if not existing_bs:
+                try:
+                    if cursor_path.is_symlink() or cursor_path.exists():
+                        cursor_path.unlink()
+                except OSError:
+                    summary["errors"] += 1
+            else:
+                fd, temporary = tempfile.mkstemp(
+                    prefix=f".gc-cursor-{shard:x}.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as cursor_stream:
+                        json.dump(
+                            {"b": bucket_index, "c": sub_index, "o": leaf_consumed},
+                            cursor_stream,
+                        )
+                    os.replace(temporary, cursor_path)
+                except OSError:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        return summary
+
     def start_ticks(pid):
         try:
             fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
             return fields[21]
         except (OSError, IndexError, ValueError):
             return None
-    operation = payload.get("operation")
-    if operation == "start":
-        job_dir.mkdir(mode=0o700, parents=False, exist_ok=False) if not job_dir.exists() else None
+    if operation == "gc":
+        print(json.dumps(gc_operation(payload)))
+    elif operation == "start":
+        job_dir.mkdir(mode=0o700, parents=True, exist_ok=False) if not job_dir.exists() else None
         if meta_path.exists():
             record = read_record()
             if record.get("requestDigest") != payload.get("request_digest"):
@@ -297,12 +871,24 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 raise SystemExit(0)
             print(json.dumps(record))
             raise SystemExit(0)
+        raw_limit = payload.get("output_limit_bytes")
+        try:
+            output_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            output_limit = 1024 * 1024
+        output_limit = min(max(output_limit, 4096), 16 * 1024 * 1024)
+        try:
+            drain_grace = float(payload.get("drain_grace_seconds", 30.0))
+        except (TypeError, ValueError):
+            drain_grace = 30.0
+        drain_grace = min(max(drain_grace, 1.0), 60.0)
         record = {
             "jobId": job_id,
             "state": "queued",
             "requestDigest": payload["request_digest"],
             "createdAt": time.time(),
             "safeToRetry": False,
+            "limits": {"outputBytes": output_limit, "drainGraceSeconds": drain_grace},
             "payload": {
                 "executable": payload["executable"],
                 "argv": payload["argv"],
@@ -370,6 +956,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 numeric_pgid = None
             if record.get("state") == "queued" and identity == {}:
                 record["state"] = "cancelled"
+                record["finishedAt"] = time.time()
                 write_record(record)
                 fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
                 os.close(cancel_lock_fd)
@@ -446,6 +1033,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             terminated = not group_has_live_process()
             record["state"] = "cancelled"
             record["terminated"] = terminated
+            record["finishedAt"] = time.time()
             write_record(record)
             fcntl.flock(cancel_lock_fd, fcntl.LOCK_UN)
             os.close(cancel_lock_fd)
@@ -467,13 +1055,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 ).strip()
 _REMOTE_JOB_WORKER = textwrap.dedent(
     """
-    import fcntl, json, os, signal, subprocess, tempfile
+    import fcntl, json, os, signal, subprocess, tempfile, threading, time
     from datetime import datetime, timezone
     from pathlib import Path
     meta_path = Path(os.environ["MIKRUS_REMOTE_JOB_META"])
     job_dir = meta_path.parent
     lock_path = meta_path.with_name(meta_path.name + ".lock")
-    payload = None
     def acquire_lock():
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
@@ -501,6 +1088,46 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
             return fields[21]
         except (OSError, IndexError, ValueError):
             return None
+    def drain_capped(pipe, fileobj, state, output_limit):
+        stored = 0
+        discarded = 0
+        truncated = False
+        while True:
+            chunk = pipe.read(65536)
+            if not chunk:
+                break
+            room = output_limit - stored
+            if room > 0:
+                keep = chunk[:room]
+                fileobj.write(keep)
+                fileobj.flush()
+                stored += len(keep)
+            if len(chunk) > room:
+                discarded += len(chunk) - room
+                truncated = True
+            # Publish counters incrementally: a descendant that keeps the pipe
+            # open past the drain grace must not erase truncation evidence.
+            state["stored"] = stored
+            state["truncated"] = truncated
+            state["discarded"] = discarded
+        state["stored"] = stored
+        state["truncated"] = truncated
+        state["discarded"] = discarded
+        try:
+            pipe.close()
+        except OSError:
+            pass
+    def fail_record(message):
+        lock_fd = acquire_lock()
+        try:
+            record = read_record()
+            record["state"] = "failed"
+            record["error"] = message
+            record["finishedAt"] = time.time()
+            record.pop("payload", None)
+            write_record(record)
+        finally:
+            release_lock(lock_fd)
     lock_fd = acquire_lock()
     try:
         record = read_record()
@@ -511,70 +1138,134 @@ _REMOTE_JOB_WORKER = textwrap.dedent(
         release_lock(lock_fd)
     record.pop("payload", None)
     record["state"] = "running"
-    with (job_dir / "stdout").open("wb") as stdout, (job_dir / "stderr").open("wb") as stderr:
+    limits = record.get("limits") or {}
+    output_limit = int(limits.get("outputBytes") or (1024 * 1024))
+    drain_grace = float(limits.get("drainGraceSeconds", 30.0))
+    try:
         child = subprocess.Popen(
             [payload["executable"], *payload["argv"]],
             cwd=payload.get("cwd"),
             stdin=subprocess.PIPE,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        lock_fd = acquire_lock()
+    except OSError as spawn_error:
+        fail_record("worker could not spawn the program: " + str(spawn_error)[:256])
+        raise SystemExit(0)
+    child_pgid = os.getpgid(child.pid)
+    lock_fd = acquire_lock()
+    try:
+        record = read_record()
+        if record.get("state") == "cancelled":
+            try:
+                os.killpg(child_pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            raise SystemExit(0)
+        record["state"] = "running"
+        record["startedAt"] = datetime.now(timezone.utc).isoformat()
+        record["runtimeIdentity"] = {
+            "pid": str(child.pid),
+            "pgid": str(child_pgid),
+            "startTicks": start_ticks(child.pid),
+        }
+        record.pop("payload", None)
+        write_record(record)
+    finally:
+        release_lock(lock_fd)
+    stdout_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stderr_state = {"stored": 0, "truncated": False, "discarded": 0}
+    stdout_file = (job_dir / "stdout").open("wb")
+    stderr_file = (job_dir / "stderr").open("wb")
+    threads = [
+        threading.Thread(
+            target=drain_capped, args=(child.stdout, stdout_file, stdout_state, output_limit)
+        ),
+        threading.Thread(
+            target=drain_capped, args=(child.stderr, stderr_file, stderr_state, output_limit)
+        ),
+    ]
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+    # Drainers must consume stdout/stderr while stdin is being delivered;
+    # a child that fills an output pipe before reading stdin would otherwise
+    # deadlock against the worker's stdin write.
+    stdin_bytes = payload["stdin"].encode() if payload.get("stdin") is not None else None
+    if child.stdin is not None:
         try:
-            record = read_record()
-            if record.get("state") == "cancelled":
-                try:
-                    os.killpg(os.getpgid(child.pid), signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    pass
-                raise SystemExit(0)
-            record["state"] = "running"
-            record["startedAt"] = datetime.now(timezone.utc).isoformat()
-            record["runtimeIdentity"] = {
-                "pid": str(child.pid),
-                "pgid": str(os.getpgid(child.pid)),
-                "startTicks": start_ticks(child.pid),
-            }
-            record.pop("payload", None)
-            write_record(record)
+            if stdin_bytes is not None:
+                child.stdin.write(stdin_bytes)
+        except (BrokenPipeError, OSError):
+            pass
         finally:
-            release_lock(lock_fd)
-        worker_failed = False
+            try:
+                child.stdin.close()
+            except OSError:
+                pass
+    worker_failed = False
+    try:
+        code = child.wait()
+    except Exception:
+        worker_failed = True
         try:
-            child.communicate(
-                input=payload["stdin"].encode()
-                if payload.get("stdin") is not None
-                else None
-            )
-        except Exception:
-            worker_failed = True
-            try:
-                os.killpg(os.getpgid(child.pid), signal.SIGKILL)
-            except OSError:
-                pass
-            try:
-                child.wait()
-            except OSError:
-                pass
+            os.killpg(child_pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            child.wait()
+        except OSError:
+            pass
         code = child.returncode
+    drain_deadline = time.monotonic() + drain_grace
+    for thread in threads:
+        thread.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+    incomplete_drain = any(thread.is_alive() for thread in threads)
+    if incomplete_drain:
+        # A descendant still holds the output pipes; the stored streams cannot
+        # become complete. Terminate the remaining same-group members via the
+        # PGID captured at spawn (still valid after the leader is reaped) and
+        # refuse success. Programs that escape via setsid are outside this
+        # guarantee; the typed-program admission policy admits none.
+        try:
+            os.killpg(child_pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        for thread in threads:
+            thread.join(timeout=5)
+    stdout_file.close()
+    stderr_file.close()
+    overflowed = stdout_state["truncated"] or stderr_state["truncated"]
     lock_fd = acquire_lock()
     try:
         record = read_record()
         if record.get("state") != "cancelled":
-            if worker_failed or code != 0:
+            if worker_failed or incomplete_drain:
                 record["state"] = "failed"
             else:
-                record["state"] = "succeeded"
+                record["state"] = "succeeded" if code == 0 else "failed"
+            if incomplete_drain:
+                record["error"] = (
+                    "output drain did not finish before the bounded grace period; "
+                    "remaining process-group members were terminated and the "
+                    "stored streams may be incomplete"
+                )
+            if overflowed:
+                record["stdoutTruncated"] = stdout_state["truncated"]
+                record["stderrTruncated"] = stderr_state["truncated"]
+                record["stdoutDiscardedBytes"] = stdout_state["discarded"]
+                record["stderrDiscardedBytes"] = stderr_state["discarded"]
+                record["outputCapped"] = True
             if code is not None:
                 record["exitCode"] = code
         record.pop("payload", None)
+        record["finishedAt"] = time.time()
         write_record(record)
     finally:
         release_lock(lock_fd)
     """
 ).strip()
-
 
 _FILE_PATCH_HELPER = textwrap.dedent(
     """
@@ -1378,7 +2069,25 @@ class SshClient:
                 "argv": argv,
                 "cwd": cwd,
                 "stdin": stdin,
+                "output_limit_bytes": MAX_REMOTE_OUTPUT_BYTES,
                 "worker": _REMOTE_JOB_WORKER,
+            },
+            mutation=True,
+        )
+
+    async def remote_job_gc(
+        self,
+        *,
+        retention_seconds: int = REMOTE_JOB_RETENTION_SECONDS,
+        grace_seconds: int = REMOTE_JOB_GRACE_SECONDS,
+        max_entries: int = 256,
+    ) -> dict[str, Any]:
+        return await self._remote_job_call(
+            {
+                "operation": "gc",
+                "retention_seconds": retention_seconds,
+                "grace_seconds": grace_seconds,
+                "max_entries": max_entries,
             },
             mutation=True,
         )

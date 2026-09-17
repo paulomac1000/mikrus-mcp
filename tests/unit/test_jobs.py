@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,12 @@ def test_remote_job_store_round_trips_and_reuses_idempotent_record(tmp_path: Pat
 
 
 def test_durable_registry_rejects_conflicting_retry_and_scopes_updates(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta
+
+    base = datetime.now(UTC)
+    t0 = base.isoformat()
+    t1 = (base + timedelta(seconds=1)).isoformat()
+    t2 = (base + timedelta(seconds=2)).isoformat()
     registry = DurableRemoteJobRegistry(RemoteJobStore(tmp_path / "jobs.json"))
     record, reused = registry.create_or_reuse(
         principal="principal",
@@ -80,7 +87,7 @@ def test_durable_registry_rejects_conflicting_retry_and_scopes_updates(tmp_path:
         target_identity="ssh:host:fingerprint",
         idempotency_key="key",
         request_digest_value="a" * 64,
-        now="2026-09-10T12:00:00Z",
+        now=t0,
     )
     assert reused is False
     same, reused = registry.create_or_reuse(
@@ -89,7 +96,7 @@ def test_durable_registry_rejects_conflicting_retry_and_scopes_updates(tmp_path:
         target_identity="ssh:host:fingerprint",
         idempotency_key="key",
         request_digest_value="a" * 64,
-        now="2026-09-10T12:00:01Z",
+        now=t1,
     )
     assert reused is True
     assert same.job_id == record.job_id
@@ -101,19 +108,14 @@ def test_durable_registry_rejects_conflicting_retry_and_scopes_updates(tmp_path:
             target_identity="ssh:host:fingerprint",
             idempotency_key="key",
             request_digest_value="b" * 64,
-            now="2026-09-10T12:00:01Z",
+            now=t1,
         )
     assert conflict.value.code == ErrorCode.CONFLICT
 
     with pytest.raises(AppError) as denied:
-        registry.mark_lost(job_id=record.job_id, principal="other", now="2026-09-10T12:00:02Z")
+        registry.mark_lost(job_id=record.job_id, principal="other", now=t2)
     assert denied.value.code == ErrorCode.NOT_FOUND
-    assert (
-        registry.mark_lost(
-            job_id=record.job_id, principal="principal", now="2026-09-10T12:00:02Z"
-        ).state
-        == "lost"
-    )
+    assert registry.mark_lost(job_id=record.job_id, principal="principal", now=t2).state == "lost"
 
 
 class FakeProgramClient:

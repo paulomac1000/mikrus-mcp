@@ -29,6 +29,7 @@ _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "lost", "expir
 MAX_REMOTE_OUTPUT_BYTES = 1_000_000
 MAX_REMOTE_ERROR_BYTES = 8_192
 REMOTE_JOB_RETENTION_SECONDS = 604_800
+REMOTE_JOB_GRACE_SECONDS = 3_600
 
 
 def request_digest(payload: object) -> str:

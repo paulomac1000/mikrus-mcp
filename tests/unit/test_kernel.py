@@ -1834,3 +1834,114 @@ async def test_execute_program_rejects_disallowed_subcommands_before_dispatch() 
         assert result["error"]["code"] == "VALIDATION_FAILED"
         assert expected_code in result["error"]["message"]
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_remote_job_start_survives_non_app_error_gc(tmp_path: Path) -> None:
+    class ExplodingGcClient(FakeDockerComposeClient):
+        async def remote_job_start(self, **kwargs: object) -> dict[str, object]:
+            del kwargs
+            return {"jobId": "g" * 32, "state": "succeeded", "exitCode": 0}
+
+        async def remote_job_gc(self) -> dict[str, object]:
+            raise RuntimeError("disk exploded during gc")
+
+    client = ExplodingGcClient(_ssh_target())
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        remote_job_store_file=tmp_path / "jobs.json",
+    )
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {
+        "idempotency_key": "gc-explodes",
+        "executable": "tail",
+        "argv": ["-f", "/tmp/x"],
+    }
+    approvals.issue_for_test(
+        "remote_job_start",
+        "principal",
+        client.stable_identity,
+        "gc-explodes",
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("remote_job_start", arguments, caller)
+    assert result["success"] is True
+    assert result["data"]["reused"] is False
+    assert result["data"]["gc"]["gcError"] == "INTERNAL_ERROR"
+    assert "disk exploded" in result["data"]["gc"]["gcMessage"]
+
+
+@pytest.mark.asyncio
+async def test_remote_job_status_serves_tombstone_after_remote_gc_of_completed_job(
+    tmp_path: Path,
+) -> None:
+    """Tombstone serving is storage-layout agnostic: the local registry is
+    the source of truth once the backend reports NOT_FOUND, so legacy
+    flat-layout payloads collected by the round-11 legacy GC sweep get the
+    same remotePayloadRemoved tombstone (see
+    test_expired_legacy_flat_terminal_is_gcd for the collection side)."""
+    from mikrus_mcp.remote_jobs import RemoteJobRecord, RemoteJobStore
+
+    class GcRemovedJobClient(FakeDockerComposeClient):
+        async def remote_job_status(self, *, job_id: str) -> dict[str, object]:
+            del job_id
+            raise AppError(ErrorCode.NOT_FOUND, "remote job directory was removed")
+
+    client = GcRemovedJobClient(_ssh_target())
+    settings = Settings(
+        targets={"host": _ssh_target()},
+        default_target="host",
+        allowed_scopes=frozenset(
+            {"tool:*", "target:*", "target-id:*", "resource:*", "data:*", "write:server"}
+        ),
+        write_enabled=True,
+        remote_job_store_file=tmp_path / "jobs.json",
+    )
+    store = RemoteJobStore(tmp_path / "jobs.json")
+    record = RemoteJobRecord.create(
+        principal="principal",
+        server_id="host",
+        target_identity=client.stable_identity,
+        idempotency_key="gc-tombstone",
+        request_digest_value="b" * 64,
+        now="2026-09-10T12:00:00Z",
+    )
+    record.transition("running", now="2026-09-10T12:00:01Z")
+    record.transition("succeeded", now="2026-09-10T12:00:02Z")
+    store.save(record)
+    approvals = ApprovalRegistry()
+    kernel = InvocationKernel(
+        settings,
+        registry=TargetRegistry(
+            dict(settings.targets),
+            factory=lambda _: client,  # type: ignore[arg-type]
+        ),
+        approvals=approvals,
+    )
+    caller = CallerContext("principal", settings.allowed_scopes)
+    arguments = {"job_id": record.job_id}
+    approvals.issue_for_test(
+        "remote_job_status",
+        "principal",
+        client.stable_identity,
+        record.job_id,
+        normalized_arguments_digest(arguments),
+    )
+    result = await kernel.invoke("remote_job_status", arguments, caller)
+    assert result["success"] is True
+    assert result["data"]["state"] == "succeeded"
+    assert result["data"]["remotePayloadRemoved"] is True

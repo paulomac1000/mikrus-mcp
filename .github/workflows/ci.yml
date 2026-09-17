@@ -102,6 +102,8 @@ jobs:
           python .trusted-ai-skills/skills/ci-cd-architect/tools/check_github_actions_policy.py .policy-input
       - name: Audit repository workflow privilege profiles
         run: python scripts/check_workflows.py
+      - name: Validate committed dependency-lock policy
+        run: python scripts/check_lock_policy.py
       - name: Upload quality diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -148,75 +150,6 @@ jobs:
           python -m pip install --no-deps dist/mikrus_mcp-*.whl
           python -m pip check
           python scripts/core_gate.py
-
-  lock-evidence:
-    name: Platform locks (linux-x64-py${{ matrix.python }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Compile, download, bind and install exact platform artifacts
-        shell: bash
-        env:
-          PYTHON_VERSION: ${{ matrix.python }}
-        run: |
-          set -euo pipefail
-          python -m pip install "pip==$PIP_VERSION" "pip-tools==7.6.1"
-          lock_id="linux-x64-py${PYTHON_VERSION//./}"
-          mkdir -p compiled lock-output runtime-wheelhouse dev-wheelhouse
-          python -m piptools compile \
-            --allow-unsafe \
-            --generate-hashes \
-            --strip-extras \
-            --output-file="compiled/runtime.lock" \
-            requirements-runtime.in
-          python -m piptools compile \
-            --allow-unsafe \
-            --generate-hashes \
-            --strip-extras \
-            --output-file="compiled/dev.lock" \
-            requirements-dev.in
-          python -m pip download --only-binary=:all: --require-hashes \
-            --dest runtime-wheelhouse -r compiled/runtime.lock
-          python -m pip download --only-binary=:all: --require-hashes \
-            --dest dev-wheelhouse -r compiled/dev.lock
-          python scripts/build_platform_lock.py \
-            --wheelhouse runtime-wheelhouse \
-            --python-version "$PYTHON_VERSION" \
-            --source requirements-runtime.in \
-            --output "lock-output/requirements-runtime-$lock_id.lock"
-          python scripts/build_platform_lock.py \
-            --wheelhouse dev-wheelhouse \
-            --python-version "$PYTHON_VERSION" \
-            --source requirements-dev.in \
-            --output "lock-output/requirements-dev-$lock_id.lock"
-          python -m venv .lock-runtime
-          python -m pip --python .lock-runtime/bin/python install \
-            --no-index --find-links=runtime-wheelhouse --only-binary=:all: --require-hashes \
-            -r "lock-output/requirements-runtime-$lock_id.lock"
-          .lock-runtime/bin/python -m pip check
-          python -m venv .lock-dev
-          python -m pip --python .lock-dev/bin/python install \
-            --no-index --find-links=dev-wheelhouse --only-binary=:all: --require-hashes \
-            -r "lock-output/requirements-dev-$lock_id.lock"
-          .lock-dev/bin/python -m pip check
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: platform-locks-python-${{ matrix.python }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: lock-output/
-          if-no-files-found: error
-          retention-days: 7
 
   exact-wheel:
     runs-on: ubuntu-24.04
@@ -347,10 +280,11 @@ jobs:
           .container-smoke/bin/python -m pip install --no-index --find-links=wheelhouse "$mcp_pin"
           .container-smoke/bin/python scripts/container_smoke.py --image "$image"
           mkdir -p release
+          cp scripts/promote_digest.py release/promote_digest.py
           docker image inspect --format='{{.Id}}' "$image" > release/image-id.txt
           docker save --output release/image.tar "$image"
           cp commit-sha.txt release/commit-sha.txt
-          sha256sum release/image.tar dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
+          sha256sum release/image.tar release/promote_digest.py dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
       - name: Upload immutable release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

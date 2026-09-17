@@ -17,30 +17,50 @@ expected to recur on future pushes. Each section states the symptom, the root
 cause, and the mitigation verified working during that delivery. Steward issue
 `MIKRUS-2D96A6-3` tracks this runbook.
 
-## 1. Platform-lock regeneration drift
+## 1. Dependency refresh versus candidate lock verification
 
-**Symptom.** The hosted CI "Platform locks" job fails, or a locally regenerated
-lock differs from what the CI runner resolves, even though
-`requirements-*.in` inputs did not change.
+**Symptom.** A candidate with unchanged dependency inputs fails because a newer
+matching package appeared on public PyPI after the candidate was created, or a
+locally regenerated lock differs from what the CI runner resolves.
 
-**Root cause.** Two independent drift sources:
+**Root cause.** Two different questions were historically mixed inside ordinary
+candidate CI:
 
-- upstream PyPI state moves between the time locks were generated and the time
-  the runner re-resolves them;
-- a stale local pip HTTP cache can serve outdated artifacts. During PR #25 a
-  local cache served `pyjwt 2.13.0` while the runners resolved `pyjwt 2.14.0`,
-  producing locks that CI could not reproduce.
+1. *Can this candidate be installed and validated from the committed
+   platform-exact hash locks?* — deterministic, offline, candidate-local.
+2. *Would a fresh re-resolution against mutable upstream package state produce
+   the same lock today?* — a dependency-refresh event whose result depends on
+   the current state of public PyPI, not on the candidate.
 
-**Verified mitigation.** Regenerate locks inside the same images the CI matrix
-uses — `python:3.12-slim`, `python:3.13-slim`, and `python:3.14-slim` — with
-pinned resolution tooling (`pip==26.2.1`, `pip-tools==7.6.1`) and a **fresh**
-`PIP_CACHE_DIR`; copy the rendered locks into the repository. The CI lane itself
-pins `pip==$PIP_VERSION pip-tools==7.6.1` (`.github/workflows/ci.yml`).
+A stale local pip HTTP cache can additionally serve outdated artifacts during
+any re-resolution (during PR #25 a local cache served `pyjwt 2.13.0` while the
+runners resolved `pyjwt 2.14.0`).
 
-**Durable options.** Pin resolution-time tooling in-repo, or vendor a
-lock-refresh CI lane so local regeneration is never needed.
+**Verified mitigation.** The two questions are now separate lanes:
 
-## 2. Evidence-freshness binding invalidated by every commit
+- Ordinary candidate CI (`ci.yml`) installs the committed lock for the exact
+  Python/platform tuple with `--require-hashes`, runs `pip check`, and never
+  re-resolves dependencies. `scripts/check_lock_policy.py` validates lock
+  presence, hash pinning, and pip toolchain consistency without network I/O,
+  and fails if any workflow other than the refresh lane re-resolves
+  dependencies. Committed locks are never rewritten by candidate CI.
+- Deliberate dependency refresh runs through
+  `.github/workflows/dependency-refresh.yml` (weekly schedule plus manual
+  dispatch) with pinned resolver tooling (`pip==26.2.1`,
+  `pip-tools==7.6.1`), a fresh isolated `PIP_CACHE_DIR` per run, all three
+  supported Python variants, and renders candidate locks via
+  `scripts/build_platform_lock.py --no-verify-committed`. The result is
+  uploaded as a reviewable diff plus recorded resolver/toolchain/runner
+  identity. Nothing is committed automatically: applying a refresh is an
+  explicit dependency-update event that changes the candidate identity and
+  therefore requires fresh exact-candidate evidence (see section 2).
+
+A refresh diff is the current dependency-update candidate, not proof that a
+previously committed lock was unreproducible. Public PyPI is mutable upstream
+state; declaring a bit-for-bit reproducible refresh would require an immutable
+snapshot/mirror/wheelhouse identity, which this lane does not claim.
+
+## 2. Evidence-freshness binding invalidated by candidate drift
 
 **Symptom.** `scripts/check_evidence_freshness.py` fails after an ordinary
 implementation commit with a message about the assessed revision no longer
@@ -49,18 +69,33 @@ being an ancestor of `HEAD`.
 **Root cause.** `docs/compliance-status.md` frontmatter binds
 `assessed_revision` (a full 40-character SHA) that must be an ancestor of
 `HEAD` with only evidence-path drift after it. Any implementation commit after
-the last evidence binding invalidates the gate until evidence is rebound.
+the last evidence binding invalidates the gate. This is intentional:
+evidence for candidate C1 must never silently approve candidate C2.
 
-**Verified mitigation.** Follow each implementation commit with an
-evidence-only rebind commit (see the two `docs: rebind ...` commits in the
-2.1.0 history) after re-running the provider evidence for the new revision.
-Squash merges require fresh provider evidence for the squash commit before
-freshness can be claimed.
+**Canonical mitigation.** Do not hand-edit evidence frontmatter after every
+transient commit, and do not relax the gate. The freshness gate stays
+fail-closed; the candidate-selection moment owns the rebind:
 
-**Durable options.** Automate the assessed-revision binding into release
-tooling, or relax the gate to accept implementation commits between bindings
-within one PR. Neither is implemented; the manual rebind is currently the
-supported workflow.
+1. iterate on the branch without touching evidence frontmatter;
+2. select the exact acceptance candidate and freeze it;
+3. run the required provider and structural evidence for that exact SHA
+   (a green hosted CI run for the candidate, plus local `core_gate.py` and
+   `ci.py`);
+4. run `python scripts/rebind_evidence.py --revision <candidate-SHA>
+   --require-provider-run` — it verifies a successful provider run exists for
+   the exact SHA and atomically rewrites only the `assessed_revision` line;
+5. commit the evidence-only rebind (the freshness gate allows evidence-path
+   drift after the assessed revision by policy);
+6. if the candidate changes, the old binding becomes stale: repeat steps 3-5
+   for the new candidate. The helper never relabels stale evidence.
+
+**Squash/integration transforms.** A squash merge creates a new revision
+identity; evidence bound to the reviewed branch candidate does not transfer.
+After the merge, run fresh provider evidence for the integrated SHA and rebind
+through the same helper. Release/publication tooling must call
+`python scripts/rebind_evidence.py --verify-only --revision <accepted-SHA>`
+before accepting a candidate so a stale or drifted binding fails closed.
+Weakening exact-candidate freshness is not a supported recovery path.
 
 ## 3. CodeRabbit free-tier review quota
 

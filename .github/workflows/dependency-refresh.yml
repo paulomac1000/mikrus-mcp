@@ -1,0 +1,120 @@
+name: Dependency refresh
+
+# Canonical dependency re-resolution lane. This workflow is the ONLY place
+# where requirement inputs are re-compiled against upstream package state.
+# Ordinary candidate CI (ci.yml) installs and validates the committed
+# platform-exact hash locks and never re-resolves dependencies.
+#
+# A refresh result is the current dependency-update candidate for review.
+# It is NOT proof that a previously committed lock was unreproducible:
+# public package indexes are mutable upstream state. Outputs are uploaded
+# as reviewable diffs; nothing is committed automatically.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-refresh
+  cancel-in-progress: false
+
+env:
+  PIP_VERSION: "26.2.1"
+  PIP_TOOLS_VERSION: "7.6.1"
+  DEPENDENCY_SOURCE: public-pypi-mutable
+  RESOLVER_TOOLING: pip==26.2.1 pip-tools==7.6.1
+
+jobs:
+  refresh:
+    name: Refresh locks (linux-x64-py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Re-resolve and render refresh candidate with pinned tooling and fresh cache
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          echo "dependency source: $DEPENDENCY_SOURCE (mutable upstream; see workflow header)"
+          echo "resolver tooling: $RESOLVER_TOOLING"
+          echo "runner: ${ImageOS:-unknown} ${ImageVersion:-unknown} (recorded for reproducibility)"
+          python -m pip install "pip==$PIP_VERSION" "pip-tools==$PIP_TOOLS_VERSION"
+          lock_id="linux-x64-py${PYTHON_VERSION//./}"
+          # Fresh isolated cache: stale local cache state cannot alter the result.
+          export PIP_CACHE_DIR="${RUNNER_TEMP}/pip-cache-fresh"
+          mkdir -p "$PIP_CACHE_DIR" lock-output runtime-wheelhouse dev-wheelhouse
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="compiled-runtime.lock" \
+            requirements-runtime.in
+          python -m piptools compile \
+            --allow-unsafe \
+            --generate-hashes \
+            --strip-extras \
+            --output-file="compiled-dev.lock" \
+            requirements-dev.in
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest runtime-wheelhouse -r compiled-runtime.lock
+          python -m pip download --only-binary=:all: --require-hashes \
+            --dest dev-wheelhouse -r compiled-dev.lock
+          python scripts/build_platform_lock.py \
+            --wheelhouse runtime-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-runtime.in \
+            --output "lock-output/requirements-runtime-$lock_id.lock" \
+            --no-verify-committed
+          python scripts/build_platform_lock.py \
+            --wheelhouse dev-wheelhouse \
+            --python-version "$PYTHON_VERSION" \
+            --source requirements-dev.in \
+            --output "lock-output/requirements-dev-$lock_id.lock" \
+            --no-verify-committed
+      - name: Produce reviewable diff against committed locks
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          lock_id="linux-x64-py${PYTHON_VERSION//./}"
+          {
+            echo "dependency source: $DEPENDENCY_SOURCE (mutable upstream)"
+            echo "resolver tooling: $RESOLVER_TOOLING"
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          } > refresh-metadata.txt
+          for kind in runtime dev; do
+            name="requirements-$kind-$lock_id.lock"
+            if diff -u "$name" "lock-output/$name" > "diff-$name.txt"; then
+              echo "$name: UNCHANGED" >> refresh-metadata.txt
+            else
+              echo "$name: CHANGED (reviewable dependency-update candidate)" >> refresh-metadata.txt
+            fi
+          done
+          cat refresh-metadata.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: dependency-refresh-${{ matrix.python }}-${{ github.run_id }}
+          path: |
+            lock-output/
+            diff-*.txt
+            refresh-metadata.txt
+          if-no-files-found: error
+          retention-days: 14

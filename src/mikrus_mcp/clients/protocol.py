@@ -70,6 +70,13 @@ class Client(Protocol):
         self, *, job_id: str, stream: str, offset: int, max_bytes: int
     ) -> Any: ...
     async def remote_job_cancel(self, *, job_id: str, reason: str) -> Any: ...
+    async def remote_job_gc(
+        self,
+        *,
+        retention_seconds: int = 604_800,
+        grace_seconds: int = 3_600,
+        max_entries: int = 256,
+    ) -> Any: ...
     async def file_patch_atomic(
         self, *, path: str, expected_digest: str, content_b64: str
     ) -> Any: ...

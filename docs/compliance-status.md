@@ -1,6 +1,6 @@
 ---
 afds_schema_version: 2
-assessed_revision: 72eba098fd9ebba65155bd48b1753a390a53fd2c
+assessed_revision: d02955da4e910381ffc26433c07754e34bdf5771
 description: Rule-level adoption status and residual evidence gaps for the pinned AI Skills authority
 doc_id: reference.compliance-status
 type: reference
@@ -184,6 +184,26 @@ The following cannot be established by repository mocks or self-review:
   and from the host against the exact wheel); registry publication and promotion of the
   immutable image remain provider steps for any real release;
 - published-image digest smoke for any release platform actually promoted;
+- Promoter trust transition (bootstrap): the protected publisher executes
+  `scripts/promote_digest.py` from the validated CI bundle only after its
+  SHA-256 matches `PROMOTER_CONTENT_SHA256` in `publish.yml`. That digest was
+  established by the reviewed integration of PR #34 — the squash-merged master
+  revision is the trust root for the first promotion; its promoter bytes hash
+  to the pinned value and the post-merge pin-affirmation re-verifies the
+  binding. Every later promoter or digest change is a promoter TRUST
+  TRANSITION and must land through an independently reviewed master commit,
+  never inside a candidate PR; a candidate that alters the promoter bytes
+  without such a reviewed transition fails closed before any registry
+  credential exists. The durable end-state (a pinned external reusable
+  promotion workflow as an independent authority) remains a TODO(provider)
+  evolution of this bootstrap.
+- TODO(provider): quarantine-registry publication path in `publish.yml` requires
+  `QUARANTINE_REGISTRY_USERNAME`/`QUARANTINE_REGISTRY_PASSWORD` secrets scoped to the
+  `<repository>-quarantine` package namespace; provisioning and a live GHCR quarantine
+  promotion are provider steps. Repository-side promotion identity (validated digest ==
+  promoted digest, no `docker load`/run/build or candidate checkout in the protected
+  publisher) is proven mechanically by the disposable-registry regression in
+  `tests/smoke/test_promotion_identity.py`;
 
 ## Real-system evidence recorded 2026-09-10
 

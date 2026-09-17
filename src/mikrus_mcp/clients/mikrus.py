@@ -521,6 +521,12 @@ class MikrusClient:
             "durable remote jobs are unavailable for the mikr.us API adapter",
         )
 
+    async def remote_job_gc(self, **_: object) -> Any:
+        raise AppError(
+            ErrorCode.UNAVAILABLE,
+            "durable remote jobs are unavailable for the mikr.us API adapter",
+        )
+
     async def file_patch_atomic(self, **_: object) -> Any:
         raise AppError(
             ErrorCode.UNAVAILABLE,

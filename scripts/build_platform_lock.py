@@ -51,13 +51,20 @@ def main() -> int:
     parser.add_argument("--python-version", required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--no-verify-committed",
+        action="store_true",
+        help="Render without comparing against a committed lock copy (refresh lane only; "
+        "candidate CI must always verify).",
+    )
     args = parser.parse_args()
     rendered = render_lock(
         args.wheelhouse,
         python_version=args.python_version,
         source=args.source,
     )
-    verify_committed_lock(args.output, rendered)
+    if not args.no_verify_committed:
+        verify_committed_lock(args.output, rendered)
     args.output.write_text(rendered, encoding="utf-8")
     return 0
 

@@ -272,6 +272,49 @@ record instead of surfacing the raw timeout (an unrecoverable lookup surfaces
 (`REMOTE_JOB_RETENTION_SECONDS = 604800`); expired records are cleaned on the next
 registry read.
 
+Remote durable-job storage is bounded throughout the job lifecycle:
+
+- **Live output bound.** Worker stdout and stderr are drained by the worker
+  through parent-owned pipes and stored only up to the per-stream bound
+  (`MAX_REMOTE_OUTPUT_BYTES = 1000000`, clamped 4 KiB–16 MiB); beyond the bound
+  bytes are drained and counted (`stdoutDiscardedBytes`/`stderrDiscardedBytes`),
+  `stdoutTruncated`/`stderrTruncated` and `outputCapped` mark the loss explicitly,
+  and stored bytes never exceed the documented limit. The process keeps running to
+  normal completion — output policy never terminates the job and never constrains
+  the child's own file writes.
+- **Bounded range reads.** `remote_job_output` performs a true bounded seek/read of
+  the requested byte range; a 64 KiB slice of a multi-megabyte stream reads only
+  that slice. Continuation metadata (`offset`/`nextOffset`/`eof`) is deterministic
+  across repeated reads.
+- **Retention GC.** After every successful `remote_job_start`, the server runs a
+  bounded, idempotent garbage-collection pass on the managed remote job root
+  (`~/.cache/mikrus-mcp/remote-jobs`). It removes terminal job directories whose
+  `finishedAt` is older than the retention horizon, collects orphaned or partial
+  directories and stale identities that can no longer represent a live job after a
+  grace period (`REMOTE_JOB_GRACE_SECONDS = 3600`), never removes a running job
+  whose recorded process identity is alive, never follows symlinks, never leaves
+  the managed root, and enforces hard per-invocation bounds: removal attempts at
+  most `max_entries` (default 256) entries, processing visits at most
+  `max(64, 4 x max_entries)` entries, and each level scan or leaf walk at
+  most `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
+  never follow symlinks, so planted links cannot redirect the sweep outside
+  the managed root.
+  Sweep position persists as a per-shard `(b1, b2, ordinal)` cursor over the
+  `s<shard>/b<b1>/c<b2>/<job_id>` layout, so advancing never replays earlier
+  leaves and progress is eventual regardless of how many entries precede or
+  follow any survivor; a budget stop on a fresh prefix still advances the
+  cursor past that prefix. A defaulted invocation additionally rotates the scanned
+  shard through a durable invocation counter, so every shard is served
+  regardless of start cadence. GC failures are reported as a typed `gc` error
+  in the start response and never fail the start. Durable jobs created by the
+  previous release under the flat `<root>/<job_id>` layout remain fully
+  discoverable by every remote-job operation and are collected by the same
+  bounded sweep; existing flat directories are served in place and never
+  renamed, so detached workers keep their absolute paths.
+- **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
+  `remote_job_result` for an expired job surface the owner-bound local record with
+  `remotePayloadRemoved: true` instead of a raw not-found error.
+
 ### Cron profiles
 
 Set an absolute owner-controlled store path to activate the `cron_list`, `cron_upsert`,
@@ -532,7 +575,7 @@ The repository maintains hashed Linux x64 development locks for every supported 
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install "pip==26.1.2"
+.venv/bin/python -m pip install "pip==26.2.1"
 .venv/bin/python -m pip install --require-hashes -r requirements-dev-linux-x64-py312.lock
 .venv/bin/python -m pip install --no-deps .
 ```
@@ -571,6 +614,21 @@ embedded build stamp; unstamped builds strip the stamp first):
 `requirements-runtime.in` and `requirements-dev.in` are human-edited inputs. `requirements-*-linux-x64-py3*.lock` files are generated exact hashed graphs and should not be hand-edited.
 
 Hosted CI additionally validates the supported Python matrix, manifests, documentation, static security policy, exact wheel behavior, official MCP transports, dependency locks, and Linux/amd64 container behavior.
+
+### Releases
+
+The repository has exactly one canonical release initiation path: an authorized
+operator creates or selects an exact `vX.Y.Z` git tag whose version matches
+`pyproject.toml` and whose commit is reachable from `master`; the generic
+`publish.yml` workflow validates the tag, version, and exact SHA, verifies a
+green CI release bundle for that SHA, builds and smokes the candidate image in
+the unprivileged validation stage, and promotes the tested immutable OCI digest
+through the protected publisher. There is no automatic release-tagging
+workflow. Re-invoking publication for an already-published correct tag is
+idempotent; a tag at the wrong commit or with a mismatched version fails
+closed before publication. Dependency lock files are refreshed only through
+the scheduled/manual `dependency-refresh.yml` lane; ordinary candidate CI
+installs the committed locks and never re-resolves dependencies.
 
 ## Architecture
 
