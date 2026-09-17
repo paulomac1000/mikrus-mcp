@@ -765,6 +765,37 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 except OSError:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
+            if legacy_names is not None:
+                # Post-migration discovery: a rolling-upgrade writer may
+                # still create flat-layout jobs after the index was built.
+                # One capped scan of the root per pass folds new
+                # grammar-valid directories into the index tail; junk
+                # entries meet the eviction budget as in the level scans,
+                # so hostile prefixes shrink instead of hiding discoveries.
+                try:
+                    legacy_scan = os.scandir(root)
+                except OSError:
+                    legacy_scan = None
+                if legacy_scan is not None:
+                    known = set(legacy_names)
+                    discovered = []
+                    scan_yields = 0
+                    with legacy_scan:
+                        for discovery_entry in legacy_scan:
+                            if scan_yields >= iterated_budget:
+                                break
+                            scan_yields += 1
+                            summary["iterated"] += 1
+                            discovery_name = discovery_entry.name
+                            if discovery_name.startswith(".") or discovery_name in known:
+                                continue
+                            if JOB_ID.fullmatch(discovery_name) is None:
+                                if not discovery_entry.is_dir(follow_symlinks=False):
+                                    evict(root, discovery_name)
+                                continue
+                            discovered.append(discovery_name)
+                    if discovered:
+                        legacy_names = legacy_names + discovered
             if legacy_names:
                 take = legacy_names[:budget]
                 survivors = []

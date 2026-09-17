@@ -1726,3 +1726,52 @@ def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
     assert collected, "expired legacy job starved behind retained prefix"
     for name in retained:
         assert (_job_root(home) / name).exists()
+
+
+def test_legacy_index_discovers_post_snapshot_flat_jobs(tmp_path: Path) -> None:
+    """Round-11 Greptile regression: a flat-layout job created after the
+    legacy index was built (rolling-upgrade writer) is folded into the
+    index by the capped discovery scan and collected — not left to persist
+    while retained indexed entries keep the index non-empty."""
+    home = _home(tmp_path)
+    retained = "5" * 32
+    job_dir = _job_root(home) / retained
+    job_dir.mkdir(parents=True)
+    now = time.time()
+    (job_dir / "record.json").write_text(
+        json.dumps({"jobId": retained, "state": "succeeded", "finishedAt": now})
+    )
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 0,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    first = _run_helper(payload, home)
+    del first
+    index_path = _job_root(home) / ".gc-legacy-index"
+    assert index_path.exists()
+
+    expired = "6" * 32
+    expired_dir = _job_root(home) / expired
+    expired_dir.mkdir(parents=True)
+    old = time.time() - 7200.0
+    record_path = expired_dir / "record.json"
+    record_path.write_text(
+        json.dumps({"jobId": expired, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(expired_dir, (old, old))
+
+    collected = False
+    for _ in range(6):
+        summary = _run_helper(payload, home)
+        assert summary["errors"] == 0
+        if expired_dir.exists() is False:
+            collected = True
+            break
+    assert collected, "post-snapshot expired legacy job never collected"
+    assert job_dir.exists()
