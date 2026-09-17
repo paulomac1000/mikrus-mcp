@@ -297,10 +297,11 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   most `max_entries` (default 256) entries, processing visits at most
   `max(64, 4 x max_entries)` entries, and raw readdir yields at most
   `max(4096, 4 x max_entries)` entries across the shard-scoped bucket leaves.
-  Sweep position persists as a per-shard `(bucket, ordinal)` cursor over the
-  `s<shard>/b<bucket>/<job_id>` layout, so advancing never replays earlier
-  buckets and progress is eventual regardless of how many entries precede or
-  follow any survivor. A defaulted invocation additionally rotates the scanned
+  Sweep position persists as a per-shard `(b1, b2, ordinal)` cursor over the
+  `s<shard>/b<b1>/c<b2>/<job_id>` layout, so advancing never replays earlier
+  leaves and progress is eventual regardless of how many entries precede or
+  follow any survivor; a budget stop on a fresh prefix still advances the
+  cursor past that prefix. A defaulted invocation additionally rotates the scanned
   shard through a durable invocation counter, so every shard is served
   regardless of start cadence. GC failures are reported as a typed `gc` error
   in the start response and never fail the start.

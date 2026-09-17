@@ -28,11 +28,18 @@ def _job_root(home: Path) -> Path:
 
 
 def _bucket_of(name: str) -> int:
-    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 256
+    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 65536
 
 
 def _job_dir(home: Path, name: str) -> Path:
-    return _job_root(home) / f"s{_shard_of(name):x}" / f"b{_bucket_of(name):x}" / name
+    bucket = _bucket_of(name)
+    return (
+        _job_root(home)
+        / f"s{_shard_of(name):x}"
+        / f"b{bucket >> 8:x}"
+        / f"c{bucket & 0xFF:x}"
+        / name
+    )
 
 
 def _run_helper(payload: dict[str, Any], home: Path, timeout: int = 60) -> dict[str, Any]:
@@ -816,7 +823,13 @@ def test_gc_sweep_skips_malformed_same_shard_entries(tmp_path: Path) -> None:
     ][:2]
     stale = time.time() - 3600.0
     shard_zero = _shard_of(anchor)
-    malformed_leaf = _job_root(home) / f"s{shard_zero:x}" / f"b{_bucket_of(malformed):x}"
+    malformed_bucket = _bucket_of(malformed)
+    malformed_leaf = (
+        _job_root(home)
+        / f"s{shard_zero:x}"
+        / f"b{malformed_bucket >> 8:x}"
+        / f"c{malformed_bucket & 0xFF:x}"
+    )
     (malformed_leaf / malformed).mkdir(parents=True)
     for job_id in job_ids:
         job_dir = _job_dir(home, job_id)

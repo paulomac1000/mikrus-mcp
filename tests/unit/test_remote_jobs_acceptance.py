@@ -36,7 +36,7 @@ def _job_root(home: Path) -> Path:
 
 
 def _bucket_of(name: str) -> int:
-    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 256
+    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 65536
 
 
 def _shard_of(name: str) -> int:
@@ -44,7 +44,14 @@ def _shard_of(name: str) -> int:
 
 
 def _job_dir(home: Path, name: str) -> Path:
-    return _job_root(home) / f"s{_shard_of(name):x}" / f"b{_bucket_of(name):x}" / name
+    bucket = _bucket_of(name)
+    return (
+        _job_root(home)
+        / f"s{_shard_of(name):x}"
+        / f"b{bucket >> 8:x}"
+        / f"c{bucket & 0xFF:x}"
+        / name
+    )
 
 
 def _run_helper(

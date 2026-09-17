@@ -951,7 +951,7 @@ async def test_docker_inspect_maps_not_found_and_compose_config_failure(tmp_path
 
 
 def _bucket_of(name: str) -> int:
-    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 256
+    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 65536
 
 
 def _shard_of(name: str) -> int:
@@ -959,7 +959,9 @@ def _shard_of(name: str) -> int:
 
 
 def _job_dir_under(jobs_root: Path, name: str) -> Path:
-    return jobs_root / f"s{_shard_of(name):x}" / f"b{_bucket_of(name):x}" / name
+    shard_dir = f"s{_shard_of(name):x}"
+    leaf = f"b{_bucket_of(name) >> 8:x}/c{_bucket_of(name) & 0xFF:x}"
+    return jobs_root / shard_dir / leaf / name
 
 
 def test_remote_job_helper_cancel_reports_terminated(tmp_path: Path) -> None:

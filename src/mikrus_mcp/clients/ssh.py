@@ -262,11 +262,18 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     def shard_of(name, count=16):
         return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % count
-    def bucket_of(name, count=256):
+    def bucket_of(name, count=65536):
         seed = hashlib.sha256(name.encode() + b"/bucket").digest()
         return int.from_bytes(seed[:8], "big") % count
     def job_dir_for(name):
-        return root / ("s%x" % shard_of(name)) / ("b%x" % bucket_of(name)) / name
+        bucket = bucket_of(name)
+        return (
+            root
+            / ("s%x" % shard_of(name))
+            / ("b%x" % (bucket >> 8))
+            / ("c%x" % (bucket & 0xFF))
+            / name
+        )
     job_dir = job_dir_for(job_id) if isinstance(job_id, str) and job_id else root
     meta_path = job_dir / "record.json"
     stdout_path = job_dir / "stdout"
@@ -395,24 +402,31 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 summary["errors"] += 1
 
         # Resumable trie sweep: job directories live at
-        # <root>/s<shard>/b<bucket>/<job_id>, so one pass walks shard-scoped
-        # bucket leaves in index order under a persisted (bucket, ordinal)
-        # cursor. Advancing never replays entries from earlier buckets, and
-        # within a leaf only the unprocessed ordinal prefix is replayed, so
-        # per-invocation readdir yields, memory, record reads, and removals
-        # all stay bounded regardless of how many job directories exist.
-        # Removing stale entries shrinks leaves and the cursor advances to
-        # the next bucket, preserving eventual progress; after the last
-        # bucket the cursor is deleted so the next pass starts a fresh
-        # sweep and discovers newly created jobs. Dot entries and names
-        # failing the strict job-id grammar are skipped, never followed,
-        # and never leave the managed leaf.
+        # <root>/s<shard>/b<b1>/c<b2>/<job_id>, so one pass walks
+        # shard-scoped leaves in lexicographic (b1, b2) order under a
+        # persisted (b1, b2, ordinal) cursor. Advancing never replays
+        # entries from earlier leaves, and within a leaf only the ordinal
+        # prefix is replayed; because the ordinal records every position
+        # already consumed (not merely skipped replays), a budget stop on a
+        # fresh prefix still advances the cursor past that prefix. With
+        # 65536 leaves per shard, the replayed prefix stays far below the
+        # yield cap for any realistic directory size, so per-invocation
+        # readdir yields, memory, record reads, and removals all remain
+        # bounded regardless of how many job directories exist. Removing
+        # stale entries shrinks leaves and the cursor advances to the next
+        # leaf, preserving eventual progress; after the last leaf the
+        # cursor is deleted so the next pass starts a fresh sweep and
+        # discovers newly created jobs. Dot entries and names failing the
+        # strict job-id grammar cost one readdir yield each and are
+        # otherwise ignored, never followed, and never leave the leaf.
         visit_budget = max(64, 4 * budget)
         iterated_budget = max(visit_budget, 4096)
         shard_root = root / ("s%x" % shard)
         cursor_path = root / (".gc-cursor-%x" % shard)
         bucket_index = 0
+        sub_index = 0
         ordinal = 0
+        leaf_consumed = 0
         try:
             cursor_fd = os.open(cursor_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
@@ -424,128 +438,142 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 if (
                     isinstance(parsed_cursor, dict)
                     and isinstance(parsed_cursor.get("b"), int)
+                    and isinstance(parsed_cursor.get("c"), int)
                     and isinstance(parsed_cursor.get("o"), int)
                     and 0 <= parsed_cursor["b"] < 256
+                    and 0 <= parsed_cursor["c"] < 256
                     and parsed_cursor["o"] >= 0
                 ):
                     bucket_index = parsed_cursor["b"]
+                    sub_index = parsed_cursor["c"]
                     ordinal = min(parsed_cursor["o"], iterated_budget)
         except (OSError, ValueError):
             bucket_index = 0
+            sub_index = 0
             ordinal = 0
         try:
             if shard_root.is_symlink() or not shard_root.is_dir():
                 return summary
             while bucket_index < 256 and summary["visited"] < visit_budget:
-                leaf = shard_root / ("b%x" % bucket_index)
-                try:
-                    if leaf.is_symlink() or not leaf.is_dir():
-                        bucket_index += 1
+                while sub_index < 256 and summary["visited"] < visit_budget:
+                    leaf = shard_root / ("b%x" % bucket_index) / ("c%x" % sub_index)
+                    try:
+                        if leaf.is_symlink() or not leaf.is_dir():
+                            sub_index += 1
+                            ordinal = 0
+                            continue
+                        stream = os.scandir(leaf)
+                    except OSError:
+                        sub_index += 1
                         ordinal = 0
                         continue
-                    stream = os.scandir(leaf)
-                except OSError:
-                    bucket_index += 1
-                    ordinal = 0
-                    continue
-                with stream:
-                    exhausted_leaf = True
-                    for entry in stream:
-                        if iterated_budget <= 0:
-                            exhausted_leaf = False
-                            break
-                        iterated_budget -= 1
-                        summary["iterated"] += 1
-                        if ordinal:
-                            ordinal -= 1
-                            continue
-                        name = entry.name
-                        if name.startswith("."):
-                            continue
-                        if JOB_ID.fullmatch(name) is None:
-                            continue
-                        if shard_of(name) != shard:
-                            continue
-                        if summary["visited"] >= visit_budget:
-                            exhausted_leaf = False
-                            break
-                        summary["visited"] += 1
-                        summary["enumerated"] += 1
-                        path = leaf / name
-                        if not os.path.exists(path):
-                            continue
-                        try:
-                            st_meta = os.lstat(path / "record.json")
-                        except OSError:
-                            st_meta = None
-                        record_regular = st_meta is not None and stat.S_ISREG(
-                            st_meta.st_mode
-                        )
-                        if record_regular and (now - st_meta.st_mtime) <= grace:
-                            summary["keptRecent"] += 1
-                            continue
-                        try:
-                            dir_mtime = os.lstat(path).st_mtime
-                        except OSError:
-                            dir_mtime = None
-                        fresh = dir_mtime is not None and (now - dir_mtime) <= grace
-                        if os.path.islink(path) or not os.path.isdir(path):
-                            if fresh:
-                                summary["keptRecent"] += 1
-                            else:
-                                discard(path, True)
-                            continue
-                        if not record_regular:
-                            if fresh:
-                                summary["keptRecent"] += 1
-                            else:
-                                discard(path, False)
-                            continue
-                        try:
-                            record_fd = os.open(
-                                path / "record.json",
-                                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                            )
+                    with stream:
+                        exhausted_leaf = True
+                        for entry in stream:
+                            if iterated_budget <= 0:
+                                exhausted_leaf = False
+                                break
+                            iterated_budget -= 1
+                            summary["iterated"] += 1
+                            leaf_consumed += 1
+                            if ordinal:
+                                ordinal -= 1
+                                continue
+                            name = entry.name
+                            if name.startswith("."):
+                                continue
+                            if JOB_ID.fullmatch(name) is None:
+                                continue
+                            if shard_of(name) != shard:
+                                continue
+                            if summary["visited"] >= visit_budget:
+                                exhausted_leaf = False
+                                break
+                            summary["visited"] += 1
+                            summary["enumerated"] += 1
+                            path = leaf / name
+                            if not os.path.exists(path):
+                                continue
                             try:
-                                raw_record = os.read(record_fd, 65537)
-                            finally:
-                                os.close(record_fd)
-                        except OSError:
-                            raw_record = b""
-                        if len(raw_record) > 65536:
+                                st_meta = os.lstat(path / "record.json")
+                            except OSError:
+                                st_meta = None
+                            record_regular = st_meta is not None and stat.S_ISREG(
+                                st_meta.st_mode
+                            )
+                            if record_regular and (now - st_meta.st_mtime) <= grace:
+                                summary["keptRecent"] += 1
+                                continue
+                            try:
+                                dir_mtime = os.lstat(path).st_mtime
+                            except OSError:
+                                dir_mtime = None
+                            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+                            if os.path.islink(path) or not os.path.isdir(path):
+                                if fresh:
+                                    summary["keptRecent"] += 1
+                                else:
+                                    discard(path, True)
+                                continue
+                            if not record_regular:
+                                if fresh:
+                                    summary["keptRecent"] += 1
+                                else:
+                                    discard(path, False)
+                                continue
+                            try:
+                                record_fd = os.open(
+                                    path / "record.json",
+                                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                                )
+                                try:
+                                    raw_record = os.read(record_fd, 65537)
+                                finally:
+                                    os.close(record_fd)
+                            except OSError:
+                                raw_record = b""
+                            if len(raw_record) > 65536:
+                                if fresh:
+                                    summary["keptRecent"] += 1
+                                else:
+                                    discard(path, False)
+                                continue
+                            try:
+                                record = json.loads(raw_record)
+                            except ValueError:
+                                if fresh:
+                                    summary["keptRecent"] += 1
+                                else:
+                                    discard(path, False)
+                                continue
+                            state = record.get("state")
+                            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                                finished = record.get("finishedAt")
+                                if not isinstance(finished, (int, float)):
+                                    finished = st_meta.st_mtime
+                                if (now - float(finished)) > retention:
+                                    discard(path, False)
+                                else:
+                                    summary["keptRecent"] += 1
+                                continue
+                            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                                summary["keptActive"] += 1
+                                continue
                             if fresh:
-                                summary["keptRecent"] += 1
+                                summary["keptActive"] += 1
                             else:
                                 discard(path, False)
-                            continue
-                        try:
-                            record = json.loads(raw_record)
-                        except ValueError:
-                            if fresh:
-                                summary["keptRecent"] += 1
-                            else:
-                                discard(path, False)
-                            continue
-                        state = record.get("state")
-                        if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                            finished = record.get("finishedAt")
-                            if not isinstance(finished, (int, float)):
-                                finished = st_meta.st_mtime
-                            if (now - float(finished)) > retention:
-                                discard(path, False)
-                            else:
-                                summary["keptRecent"] += 1
-                            continue
-                        if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                            summary["keptActive"] += 1
-                            continue
-                        if fresh:
-                            summary["keptActive"] += 1
-                        else:
-                            discard(path, False)
+                        if not exhausted_leaf:
+                            break
                     if not exhausted_leaf:
                         break
+                    sub_index += 1
+                    ordinal = 0
+                    leaf_consumed = 0
+                if bucket_index >= 256:
+                    break
                 bucket_index += 1
+                sub_index = 0
                 ordinal = 0
         finally:
             if bucket_index >= 256:
@@ -561,7 +589,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 try:
                     os.fchmod(fd, 0o600)
                     with os.fdopen(fd, "w", encoding="utf-8") as cursor_stream:
-                        json.dump({"b": bucket_index, "o": ordinal}, cursor_stream)
+                        json.dump(
+                            {"b": bucket_index, "c": sub_index, "o": leaf_consumed},
+                            cursor_stream,
+                        )
                     os.replace(temporary, cursor_path)
                 except OSError:
                     if os.path.exists(temporary):
