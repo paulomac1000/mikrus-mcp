@@ -266,14 +266,26 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         seed = hashlib.sha256(name.encode() + b"/bucket").digest()
         return int.from_bytes(seed[:8], "big") % count
     def job_dir_for(name):
+        # Layout resolver with pre-2.2.0 compatibility: durable jobs created
+        # by the previous release live directly under the managed root and
+        # a detached worker may still hold those absolute paths, so an
+        # existing flat directory is served in place and never renamed.
+        # New jobs and already-migrated trie jobs use the sharded layout.
         bucket = bucket_of(name)
-        return (
+        trie = (
             root
             / ("s%x" % shard_of(name))
             / ("b%x" % (bucket >> 8))
             / ("c%x" % (bucket & 0xFF))
             / name
         )
+        try:
+            flat = root / name
+            if flat.exists() or flat.is_symlink():
+                return flat
+        except OSError:
+            pass
+        return trie
     job_dir = job_dir_for(job_id) if isinstance(job_id, str) and job_id else root
     meta_path = job_dir / "record.json"
     stdout_path = job_dir / "stdout"
@@ -451,10 +463,84 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             bucket_index = 0
             sub_index = 0
             ordinal = 0
+        def process_managed_job(path):
+            if not os.path.exists(path):
+                return
+            try:
+                st_meta = os.lstat(path / "record.json")
+            except OSError:
+                st_meta = None
+            record_regular = st_meta is not None and stat.S_ISREG(
+                st_meta.st_mode
+            )
+            if record_regular and (now - st_meta.st_mtime) <= grace:
+                summary["keptRecent"] += 1
+                return
+            try:
+                dir_mtime = os.lstat(path).st_mtime
+            except OSError:
+                dir_mtime = None
+            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
+            if os.path.islink(path) or not os.path.isdir(path):
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, True)
+                return
+            if not record_regular:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            try:
+                record_fd = os.open(
+                    path / "record.json",
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    raw_record = os.read(record_fd, 65537)
+                finally:
+                    os.close(record_fd)
+            except OSError:
+                raw_record = b""
+            if len(raw_record) > 65536:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            try:
+                record = json.loads(raw_record)
+            except ValueError:
+                if fresh:
+                    summary["keptRecent"] += 1
+                else:
+                    discard(path, False)
+                return
+            state = record.get("state")
+            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
+                finished = record.get("finishedAt")
+                if not isinstance(finished, (int, float)):
+                    finished = st_meta.st_mtime
+                if (now - float(finished)) > retention:
+                    discard(path, False)
+                else:
+                    summary["keptRecent"] += 1
+                return
+            if state == "running" and pid_alive(record.get("runtimeIdentity")):
+                summary["keptActive"] += 1
+                return
+            if fresh:
+                summary["keptActive"] += 1
+            else:
+                discard(path, False)
+
         existing_bs: list[int] = []
+        trie_available = True
         try:
             if shard_root.is_symlink() or not shard_root.is_dir():
-                return summary
+                trie_available = False
             # Only existing leaves are visited: enumerating the shard's own
             # subdirectories (at most 256 per level) keeps an empty or small
             # shard at O(existing directories) instead of one stat per
@@ -527,7 +613,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
             existing_bs = _leaf_level_names(shard_root, bucket_index, iterated_budget)
             first_b = bucket_index
-            while existing_bs and summary["visited"] < visit_budget:
+            while trie_available and existing_bs and summary["visited"] < visit_budget:
                 bucket_index = existing_bs[0]
                 existing_cs = _leaf_level_names(
                     shard_root / ("b%x" % bucket_index),
@@ -577,78 +663,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                                 break
                             summary["visited"] += 1
                             summary["enumerated"] += 1
-                            path = leaf / name
-                            if not os.path.exists(path):
-                                continue
-                            try:
-                                st_meta = os.lstat(path / "record.json")
-                            except OSError:
-                                st_meta = None
-                            record_regular = st_meta is not None and stat.S_ISREG(
-                                st_meta.st_mode
-                            )
-                            if record_regular and (now - st_meta.st_mtime) <= grace:
-                                summary["keptRecent"] += 1
-                                continue
-                            try:
-                                dir_mtime = os.lstat(path).st_mtime
-                            except OSError:
-                                dir_mtime = None
-                            fresh = dir_mtime is not None and (now - dir_mtime) <= grace
-                            if os.path.islink(path) or not os.path.isdir(path):
-                                if fresh:
-                                    summary["keptRecent"] += 1
-                                else:
-                                    discard(path, True)
-                                continue
-                            if not record_regular:
-                                if fresh:
-                                    summary["keptRecent"] += 1
-                                else:
-                                    discard(path, False)
-                                continue
-                            try:
-                                record_fd = os.open(
-                                    path / "record.json",
-                                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                                )
-                                try:
-                                    raw_record = os.read(record_fd, 65537)
-                                finally:
-                                    os.close(record_fd)
-                            except OSError:
-                                raw_record = b""
-                            if len(raw_record) > 65536:
-                                if fresh:
-                                    summary["keptRecent"] += 1
-                                else:
-                                    discard(path, False)
-                                continue
-                            try:
-                                record = json.loads(raw_record)
-                            except ValueError:
-                                if fresh:
-                                    summary["keptRecent"] += 1
-                                else:
-                                    discard(path, False)
-                                continue
-                            state = record.get("state")
-                            if state in ("succeeded", "failed", "cancelled", "lost", "expired"):
-                                finished = record.get("finishedAt")
-                                if not isinstance(finished, (int, float)):
-                                    finished = st_meta.st_mtime
-                                if (now - float(finished)) > retention:
-                                    discard(path, False)
-                                else:
-                                    summary["keptRecent"] += 1
-                                continue
-                            if state == "running" and pid_alive(record.get("runtimeIdentity")):
-                                summary["keptActive"] += 1
-                                continue
-                            if fresh:
-                                summary["keptActive"] += 1
-                            else:
-                                discard(path, False)
+                            process_managed_job(leaf / name)
                         if not exhausted_leaf:
                             break
                     if not exhausted_leaf:
@@ -664,6 +679,36 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 existing_bs.pop(0)
                 sub_index = 0
                 ordinal = 0
+            # Legacy flat-layout compatibility sweep: durable jobs created
+            # before the trie migration live directly under the managed
+            # root. The corpus is frozen (new jobs always use the trie) and
+            # shrinks as stale entries are collected, so a bounded scan of
+            # the root is sufficient for eventual progress. Grammar-valid
+            # entries are processed with the same rules as trie leaves
+            # (fresh/running entries are never removed); stray files and
+            # symlinks are evicted within the level budgets; malformed
+            # directories are skipped for operator attention.
+            legacy_cap = max(1024, iterated_budget // 4)
+            try:
+                legacy_stream = os.scandir(root)
+            except OSError:
+                legacy_stream = None
+            if legacy_stream is not None:
+                with legacy_stream:
+                    legacy_yields = 0
+                    for legacy_entry in legacy_stream:
+                        if legacy_yields >= legacy_cap:
+                            break
+                        legacy_yields += 1
+                        summary["iterated"] += 1
+                        legacy_name = legacy_entry.name
+                        if legacy_name.startswith("."):
+                            continue
+                        if JOB_ID.fullmatch(legacy_name) is None:
+                            if not legacy_entry.is_dir(follow_symlinks=False):
+                                evict(root, legacy_name)
+                            continue
+                        process_managed_job(PathLib(legacy_entry.path))
         finally:
             if not existing_bs:
                 try:

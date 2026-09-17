@@ -1889,6 +1889,11 @@ async def test_remote_job_start_survives_non_app_error_gc(tmp_path: Path) -> Non
 async def test_remote_job_status_serves_tombstone_after_remote_gc_of_completed_job(
     tmp_path: Path,
 ) -> None:
+    """Tombstone serving is storage-layout agnostic: the local registry is
+    the source of truth once the backend reports NOT_FOUND, so legacy
+    flat-layout payloads collected by the round-11 legacy GC sweep get the
+    same remotePayloadRemoved tombstone (see
+    test_expired_legacy_flat_terminal_is_gcd for the collection side)."""
     from mikrus_mcp.remote_jobs import RemoteJobRecord, RemoteJobStore
 
     class GcRemovedJobClient(FakeDockerComposeClient):

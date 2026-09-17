@@ -1432,3 +1432,243 @@ def test_gc_eviction_clears_junk_prefix_blocking_bucket_discovery(
             collected = True
             break
     assert collected, f"valid bucket never reached: removed={removed_total}"
+
+
+def _make_flat_job(home: Path, name: str, record: dict) -> Path:
+    job_dir = _job_root(home) / name
+    job_dir.mkdir(parents=True)
+    (job_dir / "record.json").write_text(json.dumps(record))
+    return job_dir
+
+
+def _run_op(operation: str, home: Path, extra: dict) -> dict:
+    return _run_helper({"operation": operation, **extra}, home)
+
+
+def test_legacy_flat_terminal_job_survives_upgrade(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "b" * 32
+    _make_flat_job(
+        home,
+        job_id,
+        {"jobId": job_id, "state": "succeeded", "finishedAt": time.time(), "exitCode": 0},
+    )
+    (_job_root(home) / job_id / "stdout").write_text("legacy output")
+    status = _run_op("status", home, {"job_id": job_id})
+    assert status["state"] == "succeeded"
+    result = _run_op("result", home, {"job_id": job_id})
+    assert result["exitCode"] == 0
+    output = _run_op(
+        "output", home, {"job_id": job_id, "stream": "stdout", "offset": 0, "max_bytes": 1024}
+    )
+    assert "legacy output" in output["data"]
+    assert (_job_root(home) / job_id).exists()
+
+
+def test_legacy_flat_running_job_remains_discoverable(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "c" * 32
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.2)
+        stat_fields = Path(f"/proc/{child.pid}/stat").read_text("ascii").split()
+        _make_flat_job(
+            home,
+            job_id,
+            {
+                "jobId": job_id,
+                "state": "running",
+                "runtimeIdentity": {
+                    "pid": str(child.pid),
+                    "pgid": str(child.pid),
+                    "startTicks": stat_fields[21],
+                },
+            },
+        )
+        status = _run_op("status", home, {"job_id": job_id})
+        assert status["state"] == "running"
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_legacy_flat_cancel_targets_existing_job(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "d" * 32
+    _make_flat_job(home, job_id, {"jobId": job_id, "state": "queued"})
+    result = _run_op("cancel", home, {"job_id": job_id, "reason": "upgrade compat"})
+    assert result["state"] == "cancelled"
+    record = json.loads((_job_root(home) / job_id / "record.json").read_text())
+    assert record["state"] == "cancelled"
+
+
+def test_legacy_start_idempotency_creates_no_trie_duplicate(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "e" * 32
+    digest = "a" * 64
+    _make_flat_job(
+        home,
+        job_id,
+        {"jobId": job_id, "state": "running", "requestDigest": digest},
+    )
+    result = _run_op(
+        "start",
+        home,
+        {
+            "job_id": job_id,
+            "request_digest": digest,
+            "executable": "tail",
+            "argv": ["-f", "/tmp/x"],
+        },
+    )
+    assert result["jobId"] == job_id
+    assert result["state"] == "running"
+    bucket = _bucket_of(job_id)
+    trie_dir = (
+        _job_root(home) / f"s{_shard_of(job_id):x}" / f"b{bucket >> 8:x}" / f"c{bucket & 0xFF:x}"
+    )
+    assert not trie_dir.exists()
+
+
+def test_expired_legacy_flat_terminal_is_gcd(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "f" * 32
+    job_dir = _make_flat_job(
+        home,
+        job_id,
+        {"jobId": job_id, "state": "succeeded", "finishedAt": time.time() - 7200.0},
+    )
+    old = time.time() - 7200.0
+    os.utime(job_dir, (old, old))
+    summary = _run_op(
+        "gc",
+        home,
+        {
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 64,
+            "shards": 16,
+            "shard": _shard_of(job_id),
+        },
+    )
+    assert summary["removed"] == 1
+    assert job_dir.exists() is False
+    status = _run_op("status", home, {"job_id": job_id})
+    assert status == {"error": "NOT_FOUND"}
+
+
+def test_legacy_gc_bounded_with_many_flat_dirs(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    old = time.time() - 7200.0
+    names: list[str] = []
+    index = 0
+    while len(names) < 2000:
+        candidate = f"{index:032d}"
+        index += 1
+        names.append(candidate)
+    for name in names:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 3600,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    first = _run_helper(payload, home)
+    assert first["iterated"] <= 4096 + 1024 + 64
+    assert first["removed"] <= 3
+    assert first["errors"] == 0
+    second = _run_helper(payload, home)
+    assert second["iterated"] <= 4096 + 1024 + 64
+    assert first["removed"] + second["removed"] >= 2
+
+
+def test_live_legacy_running_job_is_not_gcd(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "g" * 32
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.2)
+        stat_fields = Path(f"/proc/{child.pid}/stat").read_text("ascii").split()
+        job_dir = _make_flat_job(
+            home,
+            job_id,
+            {
+                "jobId": job_id,
+                "state": "running",
+                "runtimeIdentity": {
+                    "pid": str(child.pid),
+                    "pgid": str(child.pid),
+                    "startTicks": stat_fields[21],
+                },
+            },
+        )
+        os.utime(job_dir, (time.time() - 7200,) * 2)
+        summary = _run_op(
+            "gc",
+            home,
+            {
+                "retention_seconds": 5,
+                "grace_seconds": 0,
+                "max_entries": 64,
+                "shards": 16,
+                "shard": _shard_of(job_id),
+            },
+        )
+        assert job_dir.exists()
+        assert summary["keptActive"] >= 1
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_legacy_symlink_cannot_escape_root(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    job_id = "h" * 32
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("keep")
+    link = _job_root(home) / job_id
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    status = _run_op("status", home, {"job_id": job_id})
+    assert status == {"error": "VALIDATION_FAILED"}
+    assert (outside / "precious.txt").read_text() == "keep"
+
+    old = time.time() - 7200.0
+    os.utime(link, (old, old), follow_symlinks=False)
+    summary = _run_op(
+        "gc",
+        home,
+        {
+            "retention_seconds": 5,
+            "grace_seconds": 0,
+            "max_entries": 64,
+            "shards": 16,
+            "shard": _shard_of(job_id),
+        },
+    )
+    assert summary["removed"] >= 1
+    assert link.exists() is False and not link.is_symlink()
+    assert (outside / "precious.txt").read_text() == "keep"

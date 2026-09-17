@@ -306,7 +306,11 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   cursor past that prefix. A defaulted invocation additionally rotates the scanned
   shard through a durable invocation counter, so every shard is served
   regardless of start cadence. GC failures are reported as a typed `gc` error
-  in the start response and never fail the start.
+  in the start response and never fail the start. Durable jobs created by the
+  previous release under the flat `<root>/<job_id>` layout remain fully
+  discoverable by every remote-job operation and are collected by the same
+  bounded sweep; existing flat directories are served in place and never
+  renamed, so detached workers keep their absolute paths.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
   `remotePayloadRemoved: true` instead of a raw not-found error.

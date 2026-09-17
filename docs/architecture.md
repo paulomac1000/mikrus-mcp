@@ -161,7 +161,10 @@ deployment-profile responsibilities recorded in the compliance status.
 ## Durable remote-job storage
 
 Durable remote jobs keep their working state under one managed remote root
-(`~/.cache/mikrus-mcp/remote-jobs/<job-id>`) with the following bounded
+(`~/.cache/mikrus-mcp/remote-jobs/s<shard>/b<b1>/c<b2>/<job-id>`; jobs created
+by earlier releases remain in the legacy flat `<root>/<job-id>` location and
+are still discoverable by every remote-job operation, never renamed, and
+collected by the same bounded retention pass) with the following bounded
 lifecycle: worker stdout/stderr are drained through parent-owned pipes and
 capped per stream, with overflow recorded through explicit truncation markers
 and discarded-byte counters while the process runs to normal completion;
