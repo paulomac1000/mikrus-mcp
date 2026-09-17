@@ -777,25 +777,39 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 except OSError:
                     legacy_scan = None
                 if legacy_scan is not None:
+                    # Entries already present in the index, dot entries, and
+                    # the trie level directories are skipped without
+                    # consuming the budget, so an indexed prefix cannot
+                    # starve the discovery of newly appeared flat jobs; the
+                    # budget bounds only actual discovery/eviction work.
                     known = set(legacy_names)
                     discovered = []
-                    scan_yields = 0
+                    discovery_work = 0
                     with legacy_scan:
                         for discovery_entry in legacy_scan:
-                            if scan_yields >= iterated_budget:
-                                break
-                            scan_yields += 1
-                            summary["iterated"] += 1
                             discovery_name = discovery_entry.name
-                            if discovery_name.startswith(".") or discovery_name in known:
+                            if (
+                                discovery_name.startswith(".")
+                                or discovery_name in known
+                            ):
                                 continue
+                            if (
+                                JOB_ID.fullmatch(discovery_name) is None
+                                and discovery_entry.is_dir(follow_symlinks=False)
+                            ):
+                                continue
+                            if discovery_work >= iterated_budget:
+                                break
+                            discovery_work += 1
+                            summary["iterated"] += 1
                             if JOB_ID.fullmatch(discovery_name) is None:
-                                if not discovery_entry.is_dir(follow_symlinks=False):
-                                    evict(root, discovery_name)
+                                evict(root, discovery_name)
                                 continue
                             discovered.append(discovery_name)
                     if discovered:
-                        legacy_names = legacy_names + discovered
+                        # Unindexed entries have never been evaluated, so
+                        # they take priority over the rotating tail.
+                        legacy_names = discovered + legacy_names
             if legacy_names:
                 take = legacy_names[:budget]
                 survivors = []

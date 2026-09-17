@@ -1775,3 +1775,54 @@ def test_legacy_index_discovers_post_snapshot_flat_jobs(tmp_path: Path) -> None:
             break
     assert collected, "post-snapshot expired legacy job never collected"
     assert job_dir.exists()
+
+
+def test_legacy_discovery_not_starved_by_indexed_prefix(tmp_path: Path) -> None:
+    """Round-11 Greptile regression: an indexed prefix larger than the
+    discovery budget cannot hide a newly created flat job — indexed, dot,
+    and trie-level entries are skipped without consuming the discovery
+    budget, so the new job is discovered, indexed, and collected."""
+    home = _home(tmp_path)
+    retained_prefix: list[str] = []
+    index2 = 0
+    while len(retained_prefix) < 4400:
+        candidate = f"{index2:032d}"
+        index2 += 1
+        retained_prefix.append(candidate)
+    now = time.time()
+    for name in retained_prefix:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        (job_dir / "record.json").write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": now})
+        )
+    # Build the index containing all of the prefix entries.
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 0,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    _run_helper(payload, home)
+
+    expired = "7" * 32
+    expired_dir = _job_root(home) / expired
+    expired_dir.mkdir(parents=True)
+    old = time.time() - 7200.0
+    record_path = expired_dir / "record.json"
+    record_path.write_text(
+        json.dumps({"jobId": expired, "state": "succeeded", "finishedAt": old - 5.0})
+    )
+    os.utime(record_path, (old, old))
+    os.utime(expired_dir, (old, old))
+
+    collected = False
+    for _ in range(6):
+        summary = _run_helper(payload, home)
+        assert summary["errors"] == 0
+        if expired_dir.exists() is False:
+            collected = True
+            break
+    assert collected, "new flat job starved behind indexed prefix"
