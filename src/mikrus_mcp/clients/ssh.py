@@ -688,19 +688,17 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             # (fresh/running entries are never removed); stray files and
             # symlinks are evicted within the level budgets; malformed
             # directories are skipped for operator attention.
-            legacy_cap = max(1024, iterated_budget // 4)
+            # The flat corpus is frozen (new jobs always use the trie) and
+            # shrinks as stale entries are collected, so reading it once per
+            # invocation is bounded by the pre-upgrade population and cannot
+            # grow; the trie yields above remain subject to their own caps.
             try:
                 legacy_stream = os.scandir(root)
             except OSError:
                 legacy_stream = None
             if legacy_stream is not None:
                 with legacy_stream:
-                    legacy_yields = 0
                     for legacy_entry in legacy_stream:
-                        if legacy_yields >= legacy_cap:
-                            break
-                        legacy_yields += 1
-                        summary["iterated"] += 1
                         legacy_name = legacy_entry.name
                         if legacy_name.startswith("."):
                             continue

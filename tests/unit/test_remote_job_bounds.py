@@ -1672,3 +1672,57 @@ def test_legacy_symlink_cannot_escape_root(tmp_path: Path) -> None:
     assert summary["removed"] >= 1
     assert link.exists() is False and not link.is_symlink()
     assert (outside / "precious.txt").read_text() == "keep"
+
+
+def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
+    tmp_path: Path,
+) -> None:
+    """Round-11 Greptile regression: expired legacy jobs stored behind more
+    retained legacy entries than any per-pass cap are still collected,
+    because the frozen flat corpus is read in full each invocation."""
+    home = _home(tmp_path)
+    retained: list[str] = []
+    expired: list[str] = []
+    index = 0
+    while len(retained) < 1024 or len(expired) < 1:
+        candidate = f"{index:032d}"
+        index += 1
+        if len(retained) < 1024:
+            retained.append(candidate)
+        elif len(expired) < 1:
+            expired.append(candidate)
+    old = time.time() - 7200.0
+    now = time.time()
+    for name in retained:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(json.dumps({"jobId": name, "state": "succeeded", "finishedAt": now}))
+    for name in expired:
+        job_dir = _job_root(home) / name
+        job_dir.mkdir(parents=True)
+        record_path = job_dir / "record.json"
+        record_path.write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": old - 5.0})
+        )
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+
+    payload = {
+        "operation": "gc",
+        "retention_seconds": 5,
+        "grace_seconds": 0,
+        "max_entries": 3,
+        "shards": 16,
+        "shard": 0,
+    }
+    collected = False
+    for _ in range(6):
+        summary = _run_helper(payload, home)
+        assert summary["errors"] == 0
+        if all((_job_root(home) / n).exists() is False for n in expired):
+            collected = True
+            break
+    assert collected, "expired legacy job starved behind retained prefix"
+    for name in retained:
+        assert (_job_root(home) / name).exists()
