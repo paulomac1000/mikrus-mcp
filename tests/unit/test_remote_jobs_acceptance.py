@@ -9,6 +9,7 @@ machine. No network and no real SSH.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -32,6 +33,18 @@ from mikrus_mcp.remote_jobs import (
 
 def _job_root(home: Path) -> Path:
     return home / ".cache" / "mikrus-mcp" / "remote-jobs"
+
+
+def _bucket_of(name: str) -> int:
+    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 256
+
+
+def _shard_of(name: str) -> int:
+    return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 16
+
+
+def _job_dir(home: Path, name: str) -> Path:
+    return _job_root(home) / f"s{_shard_of(name):x}" / f"b{_bucket_of(name):x}" / name
 
 
 def _run_helper(
@@ -77,7 +90,7 @@ def test_remote_job_helper_issues_durable_id_and_retry_has_no_duplicate(
         "worker": ssh_module._REMOTE_JOB_WORKER,
     }
     record = _run_helper(home, start_payload)
-    job_dir = _job_root(home) / job_id
+    job_dir = _job_dir(home, job_id)
     try:
         assert record["state"] in {"queued", "running"}
         assert (job_dir / "record.json").is_file()
@@ -97,7 +110,7 @@ def test_remote_job_helper_issues_durable_id_and_retry_has_no_duplicate(
         assert again["jobId"] == job_id
         assert again["state"] in {"queued", "running"}
         assert again.get("runtimeIdentity") == identity
-        assert [entry.name for entry in _job_root(home).iterdir()] == [job_id]
+        assert [entry.name for entry in _job_root(home).iterdir()] == [f"s{_shard_of(job_id):x}"]
 
         cancelled = _run_helper(home, {"operation": "cancel", "job_id": job_id, "reason": "test"})
         assert cancelled["state"] == "cancelled"
@@ -116,7 +129,7 @@ def test_remote_job_helper_cancel_rejects_reused_pid_identity(tmp_path: Path) ->
     )
     home = tmp_path / "home"
     job_id = "r" * 32
-    job_dir = _job_root(home) / job_id
+    job_dir = _job_dir(home, job_id)
     job_dir.mkdir(parents=True)
     try:
         stat_fields = Path(f"/proc/{child.pid}/stat").read_text("ascii").split()
@@ -146,7 +159,7 @@ def test_remote_job_helper_cancel_rejects_reused_pid_identity(tmp_path: Path) ->
 def test_remote_job_helper_start_idempotency_conflict(tmp_path: Path) -> None:
     home = tmp_path / "home"
     job_id = "c" * 32
-    job_dir = _job_root(home) / job_id
+    job_dir = _job_dir(home, job_id)
     job_dir.mkdir(parents=True)
     seeded = {"jobId": job_id, "state": "queued", "requestDigest": "a" * 64}
     (job_dir / "record.json").write_text(json.dumps(seeded))
@@ -173,7 +186,7 @@ def test_remote_job_helper_start_idempotency_conflict(tmp_path: Path) -> None:
 def test_remote_job_helper_output_cursor_paging(tmp_path: Path) -> None:
     home = tmp_path / "home"
     job_id = "o" * 32
-    job_dir = _job_root(home) / job_id
+    job_dir = _job_dir(home, job_id)
     job_dir.mkdir(parents=True)
     body = "a" * 700 + "b" * 700 + "END"
     (job_dir / "stdout").write_text(body)
@@ -223,7 +236,7 @@ def test_remote_job_helper_wait_is_bounded_and_terminal_returns_fast(
 ) -> None:
     home = tmp_path / "home"
     running_id = "u" * 32
-    running_dir = _job_root(home) / running_id
+    running_dir = _job_dir(home, running_id)
     running_dir.mkdir(parents=True)
     (running_dir / "record.json").write_text(json.dumps({"jobId": running_id, "state": "running"}))
     began = time.monotonic()
@@ -235,7 +248,7 @@ def test_remote_job_helper_wait_is_bounded_and_terminal_returns_fast(
     assert 0.8 <= elapsed < 4.0
 
     done_id = "v" * 32
-    done_dir = _job_root(home) / done_id
+    done_dir = _job_dir(home, done_id)
     done_dir.mkdir(parents=True)
     (done_dir / "record.json").write_text(json.dumps({"jobId": done_id, "state": "succeeded"}))
     began = time.monotonic()

@@ -293,8 +293,17 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   directories and stale identities that can no longer represent a live job after a
   grace period (`REMOTE_JOB_GRACE_SECONDS = 3600`), never removes a running job
   whose recorded process identity is alive, never follows symlinks, never leaves
-  the managed root, and scans at most 256 entries per pass. GC failures are
-  reported as a typed `gc` error in the start response and never fail the start.
+  the managed root, and enforces hard per-invocation bounds: removal attempts at
+  most `max_entries` (default 256) entries, processing visits at most
+  `max(64, 4 x max_entries)` entries, and raw readdir yields at most
+  `max(4096, 4 x max_entries)` entries across the shard-scoped bucket leaves.
+  Sweep position persists as a per-shard `(bucket, ordinal)` cursor over the
+  `s<shard>/b<bucket>/<job_id>` layout, so advancing never replays earlier
+  buckets and progress is eventual regardless of how many entries precede or
+  follow any survivor. A defaulted invocation additionally rotates the scanned
+  shard through a durable invocation counter, so every shard is served
+  regardless of start cadence. GC failures are reported as a typed `gc` error
+  in the start response and never fail the start.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
   `remotePayloadRemoved: true` instead of a raw not-found error.

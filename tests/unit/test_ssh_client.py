@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shlex
@@ -949,6 +950,18 @@ async def test_docker_inspect_maps_not_found_and_compose_config_failure(tmp_path
     assert environment_path  # helper fixture path prepared for local runs only
 
 
+def _bucket_of(name: str) -> int:
+    return int.from_bytes(hashlib.sha256(name.encode() + b"/bucket").digest()[:8], "big") % 256
+
+
+def _shard_of(name: str) -> int:
+    return int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 16
+
+
+def _job_dir_under(jobs_root: Path, name: str) -> Path:
+    return jobs_root / f"s{_shard_of(name):x}" / f"b{_bucket_of(name):x}" / name
+
+
 def test_remote_job_helper_cancel_reports_terminated(tmp_path: Path) -> None:
     import os
     import subprocess
@@ -958,7 +971,7 @@ def test_remote_job_helper_cancel_reports_terminated(tmp_path: Path) -> None:
     from mikrus_mcp.clients import ssh as ssh_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("j" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "j" * 32)
     job_dir.mkdir(parents=True)
     child = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -1004,7 +1017,7 @@ def test_remote_job_helper_wait_accepts_zero_timeout(tmp_path: Path) -> None:
     from mikrus_mcp.clients import ssh as ssh_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("w" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "w" * 32)
     job_dir.mkdir(parents=True)
     (job_dir / "record.json").write_text(json.dumps({"jobId": "w" * 32, "state": "running"}))
     environment = dict(os.environ)
@@ -1030,7 +1043,7 @@ def test_remote_job_helper_cancel_queued_without_identity_skips_signal(
     from mikrus_mcp.clients import ssh as ssh_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("q" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "q" * 32)
     job_dir.mkdir(parents=True)
     (job_dir / "record.json").write_text(json.dumps({"jobId": "q" * 32, "state": "queued"}))
     environment = dict(os.environ)
@@ -1058,7 +1071,7 @@ def test_remote_job_helper_cancel_with_malformed_identity_fails_without_cancel(
     from mikrus_mcp.clients import ssh as ssh_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("m" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "m" * 32)
     job_dir.mkdir(parents=True)
     (job_dir / "record.json").write_text(
         json.dumps(
@@ -1217,7 +1230,7 @@ def test_remote_job_helper_cancel_survives_killpg_permission_error(
     os = os_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("p" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "p" * 32)
     job_dir.mkdir(parents=True)
     child = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -1282,7 +1295,7 @@ def test_remote_job_worker_survives_child_that_never_reads_stdin(
     from mikrus_mcp.clients import ssh as ssh_module
 
     home = tmp_path / "home"
-    job_dir = home / ".cache" / "mikrus-mcp" / "remote-jobs" / ("w" * 32)
+    job_dir = _job_dir_under(home / ".cache" / "mikrus-mcp" / "remote-jobs", "w" * 32)
     job_dir.mkdir(parents=True)
     record = {
         "jobId": "w" * 32,
