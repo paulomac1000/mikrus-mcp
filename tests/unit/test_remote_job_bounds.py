@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -2084,6 +2085,27 @@ def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:
     assert stat.S_IMODE(outside.stat().st_mode) == before_mode
     assert outside.read_text(encoding="utf-8") == "operator-data"
     assert outside.stat().st_nlink == 2
+
+
+def test_legacy_lock_contention_never_blocks_gc(tmp_path: Path) -> None:
+    """A concurrent GC owner cannot make another invocation wait unboundedly."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    lock_path = root / ".gc-legacy-cursor.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        started = time.monotonic()
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+        elapsed = time.monotonic() - started
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert summary["legacyIterated"] == 0
 
 
 def test_legacy_lock_fifo_never_blocks_gc(tmp_path: Path) -> None:

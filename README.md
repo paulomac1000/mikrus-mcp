@@ -344,7 +344,9 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   performs bounded-but-repeated prefix scans without durable progress. Cursor reads use
   `O_NONBLOCK` and verify the opened inode is a regular file, closing the
   lstat/open race against FIFOs and devices. The cursor lock is accepted only as a
-  regular single-link owner-only inode and is never chmod'd after open.
+  regular single-link owner-only inode, is never chmod'd after open, and is acquired
+  nonblocking: contention skips the legacy segment with an observable GC error instead
+  of turning bounded cleanup into an unbounded wait.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
   `remotePayloadRemoved: true` instead of a raw not-found error.

@@ -857,7 +857,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 # The lock file is created owner-only and is never chmod'd
                 # after opening, so a same-account hard link cannot turn GC
                 # into a metadata mutation of an external inode.
-                fcntl.flock(legacy_lock_fd, fcntl.LOCK_EX)
+                # Contention must not turn bounded GC into an unbounded wait.
+                # Another helper already owns progress, so fail this legacy
+                # segment closed and let a later invocation resume it.
+                fcntl.flock(legacy_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 # Choose the state slot only after serializing concurrent GC
                 # helpers; otherwise one helper could clear or switch the
                 # recovery slot after another helper selected it.

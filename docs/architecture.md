@@ -217,4 +217,6 @@ for that invocation with an observable GC error instead of replaying a prefix
 that cannot be checkpointed. Cursor opens are nonblocking and the opened inode must be regular before any read, so a FIFO or
 device cannot stall the exclusive GC section. The legacy sweep lock must be a regular,
 single-link, owner-only inode; the helper does not chmod an already opened
-lock path, preventing hard-link metadata mutation outside the managed root.
+lock path, preventing hard-link metadata mutation outside the managed root. Lock
+acquisition is nonblocking: a concurrent owner makes that invocation report a GC
+error and skip the legacy segment instead of waiting without a hard bound.
