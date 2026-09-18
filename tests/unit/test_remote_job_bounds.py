@@ -1677,9 +1677,9 @@ def test_legacy_symlink_cannot_escape_root(tmp_path: Path) -> None:
 def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
     tmp_path: Path,
 ) -> None:
-    """Round-11 Greptile regression: expired legacy jobs stored behind more
-    retained legacy entries than any per-pass cap are still collected,
-    because the frozen flat corpus is read in full each invocation."""
+    """A stable legacy corpus wider than any per-pass cap is eventually
+    traversed and expired jobs are collected without weakening the raw
+    per-invocation entry bound."""
     home = _home(tmp_path)
     retained: list[str] = []
     expired: list[str] = []

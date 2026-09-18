@@ -877,11 +877,19 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             name_max = int(os.fpathconf(directory_fd, "PC_NAME_MAX"))
                         except (OSError, ValueError):
                             name_max = 255
-                        max_dirent_size = ((19 + max(1, name_max) + 1 + 7) // 8) * 8
+                        if name_max <= 0:
+                            name_max = 255
+                        max_dirent_size = ((19 + name_max + 1 + 7) // 8) * 8
+                        if max_dirent_size > len(buffer):
+                            summary["errors"] += 1
+                            exhausted = True
                         min_slots_for_one = max(
                             1, (max_dirent_size + min_dirent_size - 1) // min_dirent_size
                         )
-                        while summary["legacyIterated"] < legacy_raw_budget:
+                        while (
+                            not exhausted
+                            and summary["legacyIterated"] < legacy_raw_budget
+                        ):
                             remaining = legacy_raw_budget - summary["legacyIterated"]
                             # Do not issue a read which could return more
                             # complete dirents than the remaining hard budget.
@@ -893,9 +901,9 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             read_size = min(4096, remaining * min_dirent_size)
                             ctypes.set_errno(0)
                             got = getdents64(
-                                ctypes.c_int(directory_fd),
+                                directory_fd,
                                 ctypes.byref(buffer),
-                                ctypes.c_size_t(read_size),
+                                read_size,
                             )
                             if got == 0:
                                 eof = True
