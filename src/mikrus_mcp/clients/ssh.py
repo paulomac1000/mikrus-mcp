@@ -744,7 +744,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     return legacy_recovery_cursor_path
                 return legacy_cursor_path
 
-            active_legacy_cursor_path = _select_legacy_cursor_path()
+            active_legacy_cursor_path = None
 
             def _read_legacy_cookie(cursor_path):
                 if cursor_path is None:
@@ -836,6 +836,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 # after opening, so a same-account hard link cannot turn GC
                 # into a metadata mutation of an external inode.
                 fcntl.flock(legacy_lock_fd, fcntl.LOCK_EX)
+                # Choose the state slot only after serializing concurrent GC
+                # helpers; otherwise one helper could clear or switch the
+                # recovery slot after another helper selected it.
+                active_legacy_cursor_path = _select_legacy_cursor_path()
 
                 # The PR #34 migration index is superseded by the cursor
                 # sweep. Remove only the internal regular file or symlink
