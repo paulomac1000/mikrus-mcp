@@ -904,6 +904,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "amd64": 217,
                             "aarch64": 61,
                             "arm64": 61,
+                            "riscv32": 61,
                             "riscv64": 61,
                             "loongarch64": 61,
                             "i386": 220,
@@ -943,6 +944,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "or1k": 61,
                             "ia64": 1214,
                         }.get(machine)
+                        if machine in {"x86_64", "amd64"} and ctypes.sizeof(
+                            ctypes.c_void_p
+                        ) == 4:
+                            # x32 userspace shares uname with x86_64 but adds
+                            # __X32_SYSCALL_BIT to the common syscall number.
+                            syscall_number = 0x40000000 | 217
                         if machine.startswith("mips"):
                             # uname describes the kernel and cannot distinguish
                             # o32 from n32 userspace on a 64-bit MIPS kernel:

@@ -1772,6 +1772,8 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     assert 'getattr(libc, "getdents64", None)' in helper
     assert "ctypes.c_long(217)" not in helper
     assert '"aarch64": 61' in helper
+    assert '"riscv32": 61' in helper
+    assert "syscall_number = 0x40000000 | 217" in helper
     assert '"ppc64le": 202' in helper
     assert '"s390x": 220' in helper
     assert '"sparc64": 154' in helper
