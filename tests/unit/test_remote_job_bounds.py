@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess  # noqa: S404
 import sys
 import time
@@ -1677,9 +1679,9 @@ def test_legacy_symlink_cannot_escape_root(tmp_path: Path) -> None:
 def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
     tmp_path: Path,
 ) -> None:
-    """Round-11 Greptile regression: expired legacy jobs stored behind more
-    retained legacy entries than any per-pass cap are still collected,
-    because the frozen flat corpus is read in full each invocation."""
+    """A stable legacy corpus wider than any per-pass cap is eventually
+    traversed and expired jobs are collected without weakening the raw
+    per-invocation entry bound."""
     home = _home(tmp_path)
     retained: list[str] = []
     expired: list[str] = []
@@ -1717,112 +1719,433 @@ def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
         "shard": 0,
     }
     collected = False
-    for _ in range(6):
+    # Directory iteration order is filesystem-defined rather than creation
+    # order. Give the bounded cursor enough passes to cover the whole stable
+    # corpus while asserting the hard per-pass raw-entry cap on every pass.
+    for _ in range(32):
         summary = _run_helper(payload, home)
         assert summary["errors"] == 0
+        assert summary["legacyIterated"] <= 64
         if all((_job_root(home) / n).exists() is False for n in expired):
             collected = True
             break
-    assert collected, "expired legacy job starved behind retained prefix"
+    assert collected, "expired legacy job starved across a complete bounded sweep"
     for name in retained:
         assert (_job_root(home) / name).exists()
 
 
-def test_legacy_index_discovers_post_snapshot_flat_jobs(tmp_path: Path) -> None:
-    """Round-11 Greptile regression: a flat-layout job created after the
-    legacy index was built (rolling-upgrade writer) is folded into the
-    index by the capped discovery scan and collected — not left to persist
-    while retained indexed entries keep the index non-empty."""
-    home = _home(tmp_path)
-    retained = "5" * 32
-    job_dir = _job_root(home) / retained
+def _flat_job(home: Path, name: str, *, stale: bool = True) -> Path:
+    job_dir = _job_root(home) / name
     job_dir.mkdir(parents=True)
-    now = time.time()
-    (job_dir / "record.json").write_text(
-        json.dumps({"jobId": retained, "state": "succeeded", "finishedAt": now})
-    )
-
-    payload = {
-        "operation": "gc",
-        "retention_seconds": 5,
-        "grace_seconds": 0,
-        "max_entries": 3,
-        "shards": 16,
-        "shard": 0,
-    }
-    first = _run_helper(payload, home)
-    del first
-    index_path = _job_root(home) / ".gc-legacy-index"
-    assert index_path.exists()
-
-    expired = "6" * 32
-    expired_dir = _job_root(home) / expired
-    expired_dir.mkdir(parents=True)
+    record_path = job_dir / "record.json"
     old = time.time() - 7200.0
-    record_path = expired_dir / "record.json"
+    finished = old - 5.0 if stale else time.time()
     record_path.write_text(
-        json.dumps({"jobId": expired, "state": "succeeded", "finishedAt": old - 5.0})
+        json.dumps({"jobId": name, "state": "succeeded", "finishedAt": finished})
     )
-    os.utime(record_path, (old, old))
-    os.utime(expired_dir, (old, old))
+    if stale:
+        os.utime(record_path, (old, old))
+        os.utime(job_dir, (old, old))
+    return job_dir
 
+
+def _read_legacy_cursor(home: Path) -> dict | None:
+    cursor_path = _job_root(home) / ".gc-legacy-cursor"
+    try:
+        raw = cursor_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return json.loads(raw)
+
+
+LEGACY_GC_PAYLOAD = {
+    "operation": "gc",
+    "retention_seconds": 5,
+    "grace_seconds": 0,
+    "max_entries": 3,
+    "shards": 16,
+    "shard": 0,
+}
+
+
+def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
+    helper = ssh_module._REMOTE_JOB_HELPER
+    assert 'getattr(libc, "getdents64", None)' in helper
+    assert "ctypes.c_long(217)" not in helper
+    assert "errno.ENOSYS" in helper
+    assert 'summary["legacyGetdentsUnsupported"] = True' in helper
+    assert 'summary["legacyResumeUnsupported"] = True' in helper
+    assert '"aarch64": 61' in helper
+    assert '"armv8l": 217' in helper
+    assert '"riscv32": 61' in helper
+    assert "syscall_number = 0x40000000 | 217" in helper
+    assert '"ppc64le": 202' in helper
+    assert '"s390x": 220' in helper
+    assert '"sparc64": 154' in helper
+    assert '"hppa": 201' in helper
+    assert '"xtensa": 60' in helper
+    assert '"or1k": 61' in helper
+    assert '"ia64": 1214' in helper
+    assert 'getattr(sys.implementation, "_multiarch", "")' in helper
+    assert '"gnuabin32"' in helper
+    assert '"gnuabi64"' in helper
+    assert '"linux-gnu"' in helper
+    assert 'os.open("/proc/self/exe", os.O_RDONLY)' in helper
+    assert "elf_flags & 0x20" in helper
+    assert "abi_bits == 0x00001000" in helper
+    assert "5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299" not in helper
+
+
+def test_legacy_bootstrap_raw_entries_hard_capped(tmp_path: Path) -> None:
+    """A: first pass over a 20k legacy corpus consumes a hard, documented
+    raw readdir bound (max(64, 4 * max_entries)); no full list, sort, or
+    index materialization happens."""
+    home = _home(tmp_path)
+    for index in range(20000):
+        _flat_job(home, f"{index:032d}", stale=False)
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+    assert summary["legacyIterated"] <= 64
+    assert summary["visited"] <= 64
+    assert not (_job_root(home) / ".gc-legacy-index").exists()
+    assert (
+        not (_job_root(home) / ".gc-legacy-cursor").exists()
+        or _read_legacy_cursor(home) is not None
+    )
+
+
+def test_legacy_deep_tail_eventually_reached_fresh_process_per_pass(tmp_path: Path) -> None:
+    """B: a stale job behind a retained prefix wider than multiple budgets
+    is eventually removed; every pass stays within the raw bound and runs
+    in a fresh helper process."""
+    home = _home(tmp_path)
+    for index in range(1200):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "f" * 32)
     collected = False
-    for _ in range(6):
-        summary = _run_helper(payload, home)
+    for _ in range(30):
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+        assert summary["legacyIterated"] <= 64
         assert summary["errors"] == 0
-        if expired_dir.exists() is False:
+        if stale_dir.exists() is False:
             collected = True
             break
-    assert collected, "post-snapshot expired legacy job never collected"
-    assert job_dir.exists()
+    assert collected, "deep stale tail starved"
+    remaining = [
+        p for p in _job_root(home).iterdir() if p.is_dir() and not p.name.startswith(("s", "."))
+    ]
+    assert len(remaining) == 1200
 
 
-def test_legacy_discovery_not_starved_by_indexed_prefix(tmp_path: Path) -> None:
-    """Round-11 Greptile regression: an indexed prefix larger than the
-    discovery budget cannot hide a newly created flat job — indexed, dot,
-    and trie-level entries are skipped without consuming the discovery
-    budget, so the new job is discovered, indexed, and collected."""
+def test_legacy_ignored_prefix_bounded_before_stale_tail(tmp_path: Path) -> None:
+    """C: 10k+ ignored (dot/trie-level/malformed) entries ahead of a stale
+    legacy tail stay bounded per pass and the tail is still reached."""
     home = _home(tmp_path)
-    retained_prefix: list[str] = []
-    index2 = 0
-    while len(retained_prefix) < 4400:
-        candidate = f"{index2:032d}"
-        index2 += 1
-        retained_prefix.append(candidate)
-    now = time.time()
-    for name in retained_prefix:
-        job_dir = _job_root(home) / name
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    for index in range(10240):
+        (root / f".fill{index:05d}").write_text("x")
+    for shard in range(16):
+        (root / f"s{shard:x}").mkdir()
+    for index in range(8):
+        (root / f"malformed-{index}").write_text("junk")
+    stale_dir = _flat_job(home, "e" * 32)
+    payload = dict(LEGACY_GC_PAYLOAD, max_entries=256)
+    collected = False
+    for _ in range(15):
+        summary = _run_helper(payload, home)
+        assert summary["legacyIterated"] <= 1024
+        assert summary["errors"] == 0
+        if stale_dir.exists() is False:
+            collected = True
+            break
+    assert collected, "stale tail starved behind ignored prefix"
+
+
+def test_legacy_cursor_progress_survives_fresh_helper_processes(tmp_path: Path) -> None:
+    """D: progress persists across helper processes — consecutive passes
+    record different positions, and reaching EOF clears the cursor so the
+    next cycle starts over."""
+    home = _home(tmp_path)
+    for index in range(600):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_first = _flat_job(home, "a" * 32)
+    stale_mid = _flat_job(home, "c" * 32)
+    stale_last = _flat_job(home, "d" * 32)
+    payload = dict(LEGACY_GC_PAYLOAD, max_entries=64)
+    seen_positions: list[int] = []
+    pending = {stale_first, stale_mid, stale_last}
+    for _ in range(8):
+        summary = _run_helper(payload, home)
+        assert summary["legacyIterated"] <= 256
+        cursor = _read_legacy_cursor(home)
+        # Refresh liveness evidence before handling EOF: the pass which
+        # clears the cursor may also be the pass which removes the final
+        # stale job.
+        pending = {d for d in pending if d.exists()}
+        if cursor is None:
+            break
+        seen_positions.append(cursor["o"])
+    assert not pending, "scattered stale jobs starved"
+    assert len(set(seen_positions)) == len(seen_positions), "cursor did not advance"
+    assert _read_legacy_cursor(home) is None, "cursor not cleared at EOF"
+
+
+def test_legacy_cursor_survives_churn_without_crash_or_starvation(tmp_path: Path) -> None:
+    """E: concurrent-looking churn (adds/removes around the cursor) never
+    crashes, never escapes, and does not permanently starve the stale job."""
+    home = _home(tmp_path)
+    for index in range(300):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "b" * 32)
+    churn_added = []
+    for round_index in range(3):
+        _run_helper(LEGACY_GC_PAYLOAD, home)
+        for add_index in range(5):
+            fresh = _flat_job(home, f"9{round_index}{add_index}" + "0" * 29, stale=False)
+            churn_added.append(fresh)
+        if churn_added:
+            victim = churn_added.pop()
+            shutil.rmtree(victim)
+    for _ in range(30):
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+        assert summary["errors"] == 0
+        if stale_dir.exists() is False:
+            break
+    assert stale_dir.exists() is False, "stale job starved by churn"
+
+
+def test_legacy_new_flat_after_eof_is_discovered(tmp_path: Path) -> None:
+    """Rolling-upgrade equivalent: a flat job created after the sweep
+    reached EOF is discovered on a later bounded pass."""
+    home = _home(tmp_path)
+    for index in range(5):
+        _flat_job(home, f"{index:032d}", stale=False)
+    summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+    assert _read_legacy_cursor(home) is None
+    assert summary["legacyIterated"] <= 1024
+    late_dir = _flat_job(home, "f" * 32)
+    collected = False
+    for _ in range(3):
+        summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+        assert summary["legacyIterated"] <= 1024
+        if late_dir.exists() is False:
+            collected = True
+            break
+    assert collected, "post-EOF flat job never discovered"
+
+
+def test_legacy_cursor_corruption_modes_are_safe(tmp_path: Path) -> None:
+    """F: malformed JSON, oversized, symlinked, and wrong-type cursors are
+    handled without crash, without escape, and with bounded recovery."""
+    # malformed JSON: silent reset, scan still bounded and working.
+    (tmp_path / "h-malformed").mkdir()
+    home = _home(tmp_path / "h-malformed")
+    for index in range(5):
+        _flat_job(home, f"{index:032d}", stale=False)
+    cursor_path = _job_root(home) / ".gc-legacy-cursor"
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    cursor_path.write_text("{not json", encoding="utf-8")
+    summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+    assert summary["legacyIterated"] <= 1024
+    assert summary["errors"] == 0
+
+    # oversized cursor: bounded read rejects it, scan continues.
+    (tmp_path / "h-oversized").mkdir()
+    home = _home(tmp_path / "h-oversized")
+    for index in range(5):
+        _flat_job(home, f"{index:032d}", stale=False)
+    (_job_root(home) / ".gc-legacy-cursor").write_text("x" * 300, encoding="utf-8")
+    summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+    assert summary["legacyIterated"] <= 1024
+    assert summary["errors"] == 0
+
+    # symlinked cursor: never followed; the target file is untouched and
+    # the cursor is atomically replaced with a regular file.
+    (tmp_path / "h-symlink").mkdir()
+    home = _home(tmp_path / "h-symlink")
+    for index in range(5):
+        _flat_job(home, f"{index:032d}", stale=False)
+    target = tmp_path / "cursor-outside" / "real-cursor"
+    target.parent.mkdir()
+    target.write_text("keep", encoding="utf-8")
+    (_job_root(home) / ".gc-legacy-cursor").symlink_to(target)
+    _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+    assert target.read_text(encoding="utf-8") == "keep"
+    final_cursor = _job_root(home) / ".gc-legacy-cursor"
+    if final_cursor.exists():
+        assert not final_cursor.is_symlink()
+        assert final_cursor.stat().st_mode & 0o077 == 0
+
+    # wrong type: a directory in the cursor slot must not be recursed into
+    # or removed; the pass reports the error and stays bounded.
+    (tmp_path / "h-wrongtype").mkdir()
+    home = _home(tmp_path / "h-wrongtype")
+    for index in range(5):
+        _flat_job(home, f"{index:032d}", stale=False)
+    (_job_root(home) / ".gc-legacy-cursor").mkdir()
+    summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
+    assert summary["legacyIterated"] <= 1024
+    assert (_job_root(home) / ".gc-legacy-cursor").is_dir()
+
+
+def test_legacy_cursor_directory_uses_recovery_slot_and_keeps_progress(
+    tmp_path: Path,
+) -> None:
+    """A wrong-type canonical cursor cannot force repeated prefix scans."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    for index in range(600):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "f" * 32)
+    (root / ".gc-legacy-cursor").mkdir()
+
+    collected = False
+    for _ in range(20):
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+        assert summary["legacyIterated"] <= 64
+        assert (root / ".gc-legacy-cursor").is_dir()
+        if not stale_dir.exists():
+            collected = True
+            break
+        recovery = root / ".gc-legacy-cursor.recovery"
+        assert recovery.is_file()
+        assert recovery.stat().st_mode & 0o077 == 0
+    assert collected, "wrong-type canonical cursor starved a deep stale job"
+
+
+def test_mixed_trie_and_legacy_visits_have_separate_hard_budgets(tmp_path: Path) -> None:
+    """Trie and legacy compatibility work are separately bounded and exposed.
+
+    Keeping the legacy budget independent prevents a busy trie from starving
+    rolling-upgrade flat jobs while the aggregate visit count remains bounded.
+    """
+    home = _home(tmp_path)
+    names: list[str] = []
+    index = 0
+    while len(names) < 80:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        job_dir = _job_dir(home, name)
         job_dir.mkdir(parents=True)
         (job_dir / "record.json").write_text(
-            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": now})
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": time.time()})
         )
-    # Build the index containing all of the prefix entries.
-    payload = {
-        "operation": "gc",
-        "retention_seconds": 5,
-        "grace_seconds": 0,
-        "max_entries": 3,
-        "shards": 16,
-        "shard": 0,
-    }
-    _run_helper(payload, home)
+    for index in range(80):
+        _flat_job(home, f"f{index:031d}", stale=False)
 
-    expired = "7" * 32
-    expired_dir = _job_root(home) / expired
-    expired_dir.mkdir(parents=True)
-    old = time.time() - 7200.0
-    record_path = expired_dir / "record.json"
-    record_path.write_text(
-        json.dumps({"jobId": expired, "state": "succeeded", "finishedAt": old - 5.0})
-    )
-    os.utime(record_path, (old, old))
-    os.utime(expired_dir, (old, old))
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home)
 
-    collected = False
-    for _ in range(6):
-        summary = _run_helper(payload, home)
-        assert summary["errors"] == 0
-        if expired_dir.exists() is False:
-            collected = True
-            break
-    assert collected, "new flat job starved behind indexed prefix"
+    assert summary["trieVisitBudget"] == 64
+    assert summary["legacyVisitBudget"] == 64
+    assert summary["trieVisited"] <= summary["trieVisitBudget"]
+    assert summary["legacyVisited"] <= summary["legacyVisitBudget"]
+    assert summary["visited"] == summary["trieVisited"] + summary["legacyVisited"]
+    assert summary["visited"] <= 128
+    assert summary["legacyIterated"] <= 64
+
+
+def test_unsafe_recovery_cursor_fails_closed_before_legacy_enumeration(
+    tmp_path: Path,
+) -> None:
+    """An unusable recovery slot must not replay the same bounded prefix forever."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    for index in range(600):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "f" * 32)
+    (root / ".gc-legacy-cursor").mkdir()
+    os.mkfifo(root / ".gc-legacy-cursor.recovery")
+
+    first = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    second = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+
+    for summary in (first, second):
+        assert summary["errors"] >= 1
+        assert summary["legacyIterated"] == 0
+        assert summary["legacyVisited"] == 0
+    assert stale_dir.exists()
+    assert (root / ".gc-legacy-cursor").is_dir()
+    assert (root / ".gc-legacy-cursor.recovery").is_fifo()
+
+
+def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:
+    """A hard-linked lock path must not mutate an external inode."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside-lock"
+    outside.write_text("operator-data", encoding="utf-8")
+    outside.chmod(0o750)
+    os.link(outside, root / ".gc-legacy-cursor.lock")
+
+    before_mode = stat.S_IMODE(outside.stat().st_mode)
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+
+    assert summary["errors"] >= 1
+    assert stat.S_IMODE(outside.stat().st_mode) == before_mode
+    assert outside.read_text(encoding="utf-8") == "operator-data"
+    assert outside.stat().st_nlink == 2
+
+
+def test_legacy_lock_contention_never_blocks_gc(tmp_path: Path) -> None:
+    """A concurrent GC owner cannot make another invocation wait unboundedly."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    lock_path = root / ".gc-legacy-cursor.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        started = time.monotonic()
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+        elapsed = time.monotonic() - started
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert summary["legacyIterated"] == 0
+
+
+def test_legacy_lock_fifo_never_blocks_gc(tmp_path: Path) -> None:
+    """The lock slot is opened nonblocking and special files fail closed."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    os.mkfifo(root / ".gc-legacy-cursor.lock")
+
+    started = time.monotonic()
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert (root / ".gc-legacy-cursor.lock").is_fifo()
+
+
+@pytest.mark.parametrize(
+    "slot_name",
+    [".gc-legacy-cursor", ".gc-legacy-cursor.recovery"],
+)
+def test_legacy_cursor_fifo_never_blocks_gc(tmp_path: Path, slot_name: str) -> None:
+    """Special cursor files are rejected without a blocking open/read."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    if slot_name == ".gc-legacy-cursor.recovery":
+        # Force recovery-slot selection to inspect the attacker-controlled
+        # special file rather than using the canonical slot.
+        (root / ".gc-legacy-cursor").mkdir()
+    os.mkfifo(root / slot_name)
+
+    started = time.monotonic()
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert (root / slot_name).exists()

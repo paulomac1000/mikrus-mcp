@@ -3,7 +3,7 @@
 [![CI](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ci.yml)
 [![AI Skills](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml/badge.svg)](https://github.com/paulomac1000/mikrus-mcp/actions/workflows/ai-skills-adoption.yml)
 [![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue)](https://www.python.org/)
-[![Version 2.2.0](https://img.shields.io/badge/version-2.2.0-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
+[![Version 2.2.1](https://img.shields.io/badge/version-2.2.1-blueviolet)](https://github.com/paulomac1000/mikrus-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A hardened [Model Context Protocol](https://modelcontextprotocol.io/) server for managing [mikr.us](https://mikr.us/) VPS instances and remote Linux hosts over SSH.
@@ -89,12 +89,12 @@ The single-server form is the smallest configuration. For SSH or multiple target
 ### 4. Build and run with Docker
 
 ```bash
-docker build -t mikrus-mcp:2.2.0 .
+docker build -t mikrus-mcp:2.2.1 .
 
 docker run --rm \
   -e MIKRUS_API_KEY='replace-me' \
   -e MIKRUS_SERVER_NAME='srv123' \
-  mikrus-mcp:2.2.0
+  mikrus-mcp:2.2.1
 ```
 
 Published release images are promoted by immutable digest. Prefer a release tag or digest over an unpinned moving tag in production.
@@ -293,10 +293,15 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   directories and stale identities that can no longer represent a live job after a
   grace period (`REMOTE_JOB_GRACE_SECONDS = 3600`), never removes a running job
   whose recorded process identity is alive, never follows symlinks, never leaves
-  the managed root, and enforces hard per-invocation bounds: removal attempts at
-  most `max_entries` (default 256) entries, processing visits at most
-  `max(64, 4 x max_entries)` entries, and each level scan or leaf walk at
-  most `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
+  the managed root, and enforces hard per-invocation bounds. Managed-job
+  removal attempts are at most `max_entries` (default 256); trie processing
+  visits are at most `max(64, 4 x max_entries)`, while the compatibility
+  legacy sweep has an independent visit/raw-entry budget of the same size so
+  a busy trie cannot starve rolling-upgrade jobs. The aggregate processing
+  visit count is therefore at most twice that visit budget. Internal
+  shard/bucket junk eviction has its own bounded maintenance budget, and each
+  trie level scan or leaf walk is capped at
+  `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
   never follow symlinks, so planted links cannot redirect the sweep outside
   the managed root.
   Sweep position persists as a per-shard `(b1, b2, ordinal)` cursor over the
@@ -310,7 +315,46 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   previous release under the flat `<root>/<job_id>` layout remain fully
   discoverable by every remote-job operation and are collected by the same
   bounded sweep; existing flat directories are served in place and never
-  renamed, so detached workers keep their absolute paths.
+  renamed, so detached workers keep their absolute paths. The legacy
+  flat-layout segment carries its own hard raw bound — at most
+  `max(64, 4 x max_entries)` root `getdents64` entries per invocation with
+  O(1) memory (one 4 KiB buffer, no full-corpus list, sort, or on-disk
+  index) — and resumes across helper restarts through a 0600,
+  `O_NOFOLLOW`, atomically replaced `.gc-legacy-cursor` file holding the
+  last consumed kernel `d_off`. The helper prefers libc's architecture-
+  neutral `getdents64` wrapper and uses only an explicit known-ABI syscall
+  fallback covering the Linux ABIs supported by the helper (including x86,
+  ARM, PowerPC, s390, SPARC, Alpha, m68k, SH, PA-RISC, Xtensa, asm-generic
+  families, MIPS ABI variants and legacy IA-64) when that wrapper is
+  unavailable. MIPS fallback selection is bound to the running userspace ABI
+  (CPython multiarch metadata, with executable ELF ABI flags as a fallback)
+  rather than kernel `uname` or pointer width; ambiguous old-libc ABIs fail
+  closed rather than invoking an unrelated syscall. The syscall fallback
+  requires a kernel that implements `getdents64`; notably, MIPS n64 kernels
+  before Linux 3.10 return `ENOSYS`. That unsupported old-kernel case is
+  reported and skipped rather than emulated with a second legacy-`getdents`
+  ABI parser. Reads are sized from the
+  remaining entry budget and every returned dirent is counted, so kernel
+  read-ahead cannot exceed the documented raw-entry cap; a pass may leave a
+  small remainder unused rather than weaken that bound. Persisted `d_off`
+  cookies are a Linux-filesystem compatibility mechanism, not a portable
+  POSIX guarantee: if the target filesystem rejects a saved cookie seek, the
+  legacy segment fails closed for that invocation instead of restarting at
+  offset zero and replaying the same prefix. Reaching EOF clears the cursor so
+  later rolling-upgrade writes stay visible, and the obsolete
+  `.gc-legacy-index` internal file is removed on first touch without
+  following symlinks. If the canonical cursor path is unexpectedly a
+  directory or other special file, it is left untouched and progress
+  continues through an owner-only `.gc-legacy-cursor.recovery` slot instead
+  of replaying the same retained prefix forever. If that recovery slot is
+  itself unsafe, the legacy segment fails closed before root enumeration and
+  reports a GC error until the operator repairs the state slot; it never
+  performs bounded-but-repeated prefix scans without durable progress. Cursor reads use
+  `O_NONBLOCK` and verify the opened inode is a regular file, closing the
+  lstat/open race against FIFOs and devices. The cursor lock is accepted only as a
+  regular single-link owner-only inode, is never chmod'd after open, and is acquired
+  nonblocking: contention skips the legacy segment with an observable GC error instead
+  of turning bounded cleanup into an unbounded wait.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
   `remotePayloadRemoved: true` instead of a raw not-found error.
@@ -496,9 +540,9 @@ Representative success:
   "_meta": {
     "request_id": "6a5c...",
     "capability": "get_server_info",
-    "capability_version": "2.2.0",
+    "capability_version": "2.2.1",
     "source": "mikrus-mcp",
-    "artifact": "mikrus-mcp==2.2.0",
+    "artifact": "mikrus-mcp==2.2.1",
     "target": "srv123",
     "target_identity": "mikrus:srv123",
     "backend": "mikrus",

@@ -4,6 +4,42 @@ All notable changes to mikrus-mcp are recorded here.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-18
+
+### Fixed
+
+- Legacy flat-layout durable jobs (pre-trie `<root>/<job-id>` directories)
+  are now reclaimed by a hard-bounded sweep: each GC invocation consumes at
+  most `max(64, 4 × max_entries)` raw root `getdents64` entries with O(1)
+  memory — no full-corpus list, sort, or on-disk migration index — and
+  resumes across helper restarts through a 0600, `O_NOFOLLOW`,
+  atomically-replaced `.gc-legacy-cursor` file holding the last consumed
+  kernel `d_off`. The helper prefers libc's architecture-neutral wrapper,
+  uses an explicit Linux ABI syscall fallback (including x86, ARM, PowerPC,
+  s390, SPARC, Alpha, m68k, SH, PA-RISC, Xtensa, asm-generic families, MIPS
+  ABI variants and legacy IA-64) only when necessary; MIPS o32/n32/n64 is
+  selected from userspace multiarch/ELF ABI metadata rather than kernel
+  `uname` plus pointer width, and the helper sizes
+  each raw read from the remaining entry budget so every returned dirent is
+  counted inside the hard cap. Stable corpora are eventually traversed over
+  successive bounded passes; EOF clears the cursor so rolling-upgrade writes
+  stay visible; the obsolete
+  `.gc-legacy-index` internal file is removed on first touch without
+  following symlinks. Wrong-type canonical cursor directories are left
+  untouched while an owner-only recovery cursor preserves progress; cursor
+  reads are nonblocking and require a regular opened inode so FIFOs/devices
+  cannot stall GC; if neither canonical nor recovery cursor slot is safe the
+  legacy sweep fails closed before enumeration rather than replaying an
+  uncheckpointable prefix. Trie and legacy processing visits are exposed with
+  independent hard budgets so rolling-upgrade cleanup cannot be starved while
+  the aggregate visit bound remains explicit. Hard-linked lock files are
+  rejected without chmod/mutation, and lock contention now fails closed without
+  blocking the GC invocation. The old-libc ARM fallback also recognizes the AArch32
+  `armv8l` compat-machine alias. Unsupported persisted-directory-cookie resume and
+  old-kernel `getdents64=ENOSYS` cases now fail closed instead of replaying a
+  prefix or implying portable support; MIPS n64 kernels older than Linux 3.10 are
+  explicitly outside the legacy-sweep fallback contract. #29
+
 ### Changed
 
 - Dependency-lock policy split into two lanes: ordinary candidate CI installs

@@ -175,3 +175,52 @@ and dead-identity running records, while never following symlinks, never
 leaving the managed root, and never removing a job whose recorded process
 identity is alive. Expired jobs retain machine-readable tombstones in the
 owner-bound store after remote payload bytes are removed.
+
+The legacy flat-layout segment of the retention pass has a hard raw
+enumeration and processing-visit bound independent of the trie sweep: each GC
+invocation consumes at most `max(64, 4 × max_entries)` root `getdents64`
+entries and at most that many legacy processing visits. The trie has its own
+visit budget of the same size, so the aggregate processing-visit count is at
+most twice that value; this separation prevents a busy trie from starving
+rolling-upgrade legacy jobs. A single invocation therefore never reads more
+than the bounded trie sweep plus the legacy raw-entry bound, while legacy
+enumeration keeps one 4 KiB buffer of kernel state —
+no full-corpus list, sort, or on-disk index exists at any point. The helper
+prefers libc's architecture-neutral `getdents64` wrapper and uses only an
+explicit known-ABI syscall fallback when the wrapper is unavailable
+covering the helper's Linux ABI set (x86, ARM, PowerPC, s390, SPARC, Alpha,
+m68k, SH, PA-RISC, Xtensa, asm-generic families, MIPS ABI variants and legacy
+IA-64). MIPS o32/n32/n64 selection comes from userspace multiarch metadata,
+with the running executable's ELF class/MIPS ABI flags as a fallback; kernel
+`uname` and pointer width are not used to guess between the two ILP32 ABIs.
+An ambiguous old-libc ABI fails closed rather than guessing a syscall number.
+The fallback also requires a kernel that implements `getdents64`: `ENOSYS`
+is exposed as an unsupported legacy-sweep condition rather than emulated with
+a second `getdents` ABI parser. This explicitly excludes MIPS n64 kernels
+older than Linux 3.10 from the legacy-sweep fallback contract.
+Syscall reads are sized from the remaining entry budget and every returned
+dirent is counted; a pass may intentionally leave a small unused remainder
+instead of allowing kernel read-ahead to exceed the hard entry cap.
+Progress is kept in a 0600, `O_NOFOLLOW`, atomically replaced
+`.gc-legacy-cursor` file recording the last consumed entry's opaque Linux
+kernel `d_off`. This is a filesystem compatibility mechanism, not a portable
+POSIX guarantee. A fresh helper process attempts to `lseek()` to that cookie;
+if the filesystem rejects the resume, the legacy segment fails closed for that
+invocation instead of restarting at zero and replaying an uncheckpointable
+prefix. On supported filesystems, boundary entries may be re-observed after
+directory churn; processing is idempotent, and EOF resets the cursor so later
+cycles can revisit entries deferred by churn. Reaching EOF is also how a flat job
+created after the sweep finished (rolling upgrade) becomes visible on a
+later pass. The obsolete bounded migration index from earlier 2.2.x
+candidates is removed on first touch (regular file or symlink only,
+never a directory, never followed). If the canonical cursor slot itself is
+a directory or other special file, it is left untouched and a bounded
+owner-only recovery cursor carries progress for that sweep. If no safe
+canonical or recovery cursor slot is available, legacy enumeration is skipped
+for that invocation with an observable GC error instead of replaying a prefix
+that cannot be checkpointed. Cursor opens are nonblocking and the opened inode must be regular before any read, so a FIFO or
+device cannot stall the exclusive GC section. The legacy sweep lock must be a regular,
+single-link, owner-only inode; the helper does not chmod an already opened
+lock path, preventing hard-link metadata mutation outside the managed root. Lock
+acquisition is nonblocking: a concurrent owner makes that invocation report a GC
+error and skip the legacy segment instead of waiting without a hard bound.

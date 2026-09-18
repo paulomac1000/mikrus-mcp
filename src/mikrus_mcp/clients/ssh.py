@@ -246,7 +246,8 @@ _PROGRAM_HELPER = textwrap.dedent(
 
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import fcntl, hashlib, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+    import ctypes, errno, fcntl, hashlib, json, os, re, shutil, signal, stat, struct
+    import subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
     LIMIT = 1024 * 1024
@@ -432,6 +433,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         # strict job-id grammar cost one readdir yield each and are
         # otherwise ignored, never followed, and never leave the leaf.
         visit_budget = max(64, 4 * budget)
+        summary["trieVisitBudget"] = visit_budget
         iterated_budget = max(visit_budget, 4096)
         shard_root = root / ("s%x" % shard)
         cursor_path = root / (".gc-cursor-%x" % shard)
@@ -679,157 +681,507 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 existing_bs.pop(0)
                 sub_index = 0
                 ordinal = 0
-            # Legacy flat-layout compatibility: durable jobs created before
-            # the trie migration live directly under the managed root. The
-            # flat corpus is frozen (new jobs always use the trie), so the
-            # one-time index build below is bounded by the pre-upgrade
-            # population; afterwards every invocation reads and rewrites the
-            # index file (bounded bytes), consumes at most max_entries
-            # entries from its front — ordered by record finish time, so the
-            # most reclaimable legacy payloads are reached first — and
-            # appends survivors to the tail, giving every legacy job
-            # eventual, never-skipped attention without unbounded
-            # enumeration.
+            # Legacy flat-layout compatibility: jobs created before the
+            # trie migration remain directly under <root>/<job_id>. They are
+            # never renamed because detached workers may still hold those
+            # absolute paths. The root is swept with the raw getdents64
+            # syscall and an lseek()-persisted kernel directory cursor: each
+            # invocation consumes at most max(64, 4 * budget) raw directory
+            # entries in O(1) memory (a single 4 KiB buffer) and records the
+            # last consumed entry's d_off in .gc-legacy-cursor so a fresh
+            # helper process resumes without replaying the consumed prefix.
+            # Kernel d_off cursors differ in edge semantics across
+            # filesystems (hash-based on ext4, ordinal on tmpfs), so the
+            # entry at the resume boundary may repeat or advance by one
+            # after a restart; processing is idempotent (remove stale, keep
+            # live, no rename), which makes that bounded difference
+            # harmless. Reaching EOF clears the cursor so later
+            # rolling-upgrade writes and churn-created entries are
+            # discovered on a following pass. Prefer libc's getdents64
+            # wrapper (architecture-neutral on glibc >= 2.30); when an older
+            # libc lacks that symbol, use only a small allowlist of known Linux
+            # syscall ABIs and otherwise fail closed without an unbounded
+            # scandir fallback.
+            legacy_cursor_path = root / ".gc-legacy-cursor"
+            legacy_recovery_cursor_path = root / ".gc-legacy-cursor.recovery"
+            legacy_lock_path = root / ".gc-legacy-cursor.lock"
             legacy_index_path = root / ".gc-legacy-index"
+            summary["trieVisited"] = summary["visited"]
+            legacy_raw_budget = max(64, 4 * budget)
+            summary["legacyVisitBudget"] = legacy_raw_budget
+            summary["legacyIterated"] = 0
+            summary["legacyVisited"] = 0
+            summary["legacyCookieResets"] = 0
+            summary["legacyResumeUnsupported"] = False
+            summary["legacyGetdentsUnsupported"] = False
             nofollow = getattr(os, "O_NOFOLLOW", 0)
-            legacy_names = None
-            try:
-                legacy_fd = os.open(
-                    legacy_index_path, os.O_RDONLY | nofollow
-                )
+            directory_flag = getattr(os, "O_DIRECTORY", 0)
+
+            def _select_legacy_cursor_path():
+                # If a recovery cursor already exists, finish that bounded
+                # sweep before returning to the canonical slot. This keeps
+                # progress monotonic even if an operator later repairs a
+                # wrong-type canonical path mid-cycle.
                 try:
-                    legacy_raw = os.read(legacy_fd, 1_048_577)
-                finally:
-                    os.close(legacy_fd)
-                if len(legacy_raw) <= 1_048_576:
-                    legacy_parsed = json.loads(legacy_raw)
-                    legacy_list = (
-                        legacy_parsed.get("n") if isinstance(legacy_parsed, dict) else None
-                    )
-                    if (
-                        isinstance(legacy_list, list)
-                        and legacy_list
-                        and all(
-                            isinstance(n, str) and JOB_ID.fullmatch(n) is not None
-                            for n in legacy_list
-                        )
+                    recovery_stat = os.lstat(legacy_recovery_cursor_path)
+                except FileNotFoundError:
+                    recovery_stat = None
+                except OSError:
+                    recovery_stat = None
+                    summary["errors"] += 1
+                if recovery_stat is not None:
+                    if not (
+                        stat.S_ISREG(recovery_stat.st_mode)
+                        or stat.S_ISLNK(recovery_stat.st_mode)
                     ):
-                        legacy_names = legacy_list
-            except (OSError, ValueError):
-                legacy_names = None
-            if legacy_names is None:
-                # One-time bounded migration index over the frozen corpus,
-                # ordered by record finish time (missing/invalid records sort
-                # first). Stray files and symlinks are evicted; malformed
-                # directories are skipped for operator attention.
-                scored = []
+                        summary["errors"] += 1
+                        return None
+                    return legacy_recovery_cursor_path
+
                 try:
-                    for legacy_entry in os.scandir(root):
-                        legacy_name = legacy_entry.name
-                        if legacy_name.startswith("."):
-                            continue
-                        if JOB_ID.fullmatch(legacy_name) is None:
-                            if not legacy_entry.is_dir(follow_symlinks=False):
-                                evict(root, legacy_name)
-                            continue
-                        finished_key = 0.0
-                        try:
-                            record_fd = os.open(
-                                root / legacy_name / "record.json",
-                                os.O_RDONLY | nofollow,
-                            )
+                    cursor_stat = os.lstat(legacy_cursor_path)
+                except FileNotFoundError:
+                    return legacy_cursor_path
+                except OSError:
+                    summary["errors"] += 1
+                    return None
+                if not (
+                    stat.S_ISREG(cursor_stat.st_mode)
+                    or stat.S_ISLNK(cursor_stat.st_mode)
+                ):
+                    # Never read, recurse into, or remove an unexpected
+                    # special file/directory. Use a separate internal
+                    # recovery slot so a retained prefix cannot force every
+                    # pass to restart at offset 0.
+                    summary["errors"] += 1
+                    return legacy_recovery_cursor_path
+                return legacy_cursor_path
+
+            active_legacy_cursor_path = None
+
+            def _read_legacy_cookie(cursor_path):
+                if cursor_path is None:
+                    return None
+                try:
+                    cursor_fd = os.open(
+                        cursor_path,
+                        os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+                    )
+                    try:
+                        cursor_stat = os.fstat(cursor_fd)
+                        if not stat.S_ISREG(cursor_stat.st_mode):
+                            summary["errors"] += 1
+                            return None
+                        raw = os.read(cursor_fd, 257)
+                    finally:
+                        os.close(cursor_fd)
+                    if len(raw) > 256:
+                        return None
+                    parsed = json.loads(raw)
+                    if not isinstance(parsed, dict):
+                        return None
+                    offset = parsed.get("o")
+                    name = parsed.get("n")
+                    if (
+                        isinstance(offset, int)
+                        and 0 < offset <= 0x7FFFFFFFFFFFFFFF
+                        and isinstance(name, str)
+                        and len(name) <= 255
+                    ):
+                        return {"o": offset, "n": name}
+                except (OSError, ValueError):
+                    pass
+                return None
+
+            def _write_legacy_cookie(cursor_path, value):
+                if cursor_path is None:
+                    raise OSError("no safe legacy cursor slot")
+                fd, temporary = tempfile.mkstemp(
+                    prefix=".gc-legacy-cursor.", dir=root
+                )
+                try:
+                    os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump(value, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, cursor_path)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+
+            def _clear_legacy_cookie(cursor_path):
+                if cursor_path is None:
+                    return
+                try:
+                    cursor_stat = os.lstat(cursor_path)
+                except FileNotFoundError:
+                    return
+                except OSError:
+                    summary["errors"] += 1
+                    return
+                try:
+                    if stat.S_ISREG(cursor_stat.st_mode) or stat.S_ISLNK(
+                        cursor_stat.st_mode
+                    ):
+                        os.unlink(cursor_path)
+                    else:
+                        summary["errors"] += 1
+                except OSError:
+                    summary["errors"] += 1
+
+            legacy_lock_fd = None
+            try:
+                try:
+                    legacy_lock_fd = os.open(
+                        legacy_lock_path,
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | nofollow
+                        | getattr(os, "O_NONBLOCK", 0),
+                        0o600,
+                    )
+                except FileExistsError:
+                    legacy_lock_fd = os.open(
+                        legacy_lock_path,
+                        os.O_RDWR | nofollow | getattr(os, "O_NONBLOCK", 0),
+                    )
+                lock_stat = os.fstat(legacy_lock_fd)
+                if (
+                    not stat.S_ISREG(lock_stat.st_mode)
+                    or lock_stat.st_nlink != 1
+                    or stat.S_IMODE(lock_stat.st_mode) & 0o077
+                ):
+                    os.close(legacy_lock_fd)
+                    legacy_lock_fd = None
+                    raise OSError("unsafe legacy GC lock inode")
+                # The lock file is created owner-only and is never chmod'd
+                # after opening, so a same-account hard link cannot turn GC
+                # into a metadata mutation of an external inode.
+                # Contention must not turn bounded GC into an unbounded wait.
+                # Another helper already owns progress, so fail this legacy
+                # segment closed and let a later invocation resume it.
+                fcntl.flock(legacy_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Choose the state slot only after serializing concurrent GC
+                # helpers; otherwise one helper could clear or switch the
+                # recovery slot after another helper selected it.
+                active_legacy_cursor_path = _select_legacy_cursor_path()
+
+                # The PR #34 migration index is superseded by the cursor
+                # sweep. Remove only the internal regular file or symlink
+                # itself; directories are never followed or removed.
+                try:
+                    old_index = os.lstat(legacy_index_path)
+                except FileNotFoundError:
+                    old_index = None
+                except OSError:
+                    old_index = None
+                    summary["errors"] += 1
+                if old_index is not None and (
+                    stat.S_ISREG(old_index.st_mode) or stat.S_ISLNK(old_index.st_mode)
+                ):
+                    try:
+                        os.unlink(legacy_index_path)
+                    except OSError:
+                        summary["errors"] += 1
+
+                cookie = _read_legacy_cookie(active_legacy_cursor_path)
+                libc = None
+                getdents64 = None
+                try:
+                    libc = ctypes.CDLL(None, use_errno=True)
+                except (AttributeError, OSError):
+                    libc = None
+                    summary["errors"] += 1
+                if libc is not None:
+                    getdents64 = getattr(libc, "getdents64", None)
+                    if getdents64 is not None:
+                        getdents64.argtypes = (
+                            ctypes.c_int,
+                            ctypes.c_void_p,
+                            ctypes.c_size_t,
+                        )
+                        getdents64.restype = ctypes.c_ssize_t
+                    else:
+                        # Old libc fallback. Keep the mapping deliberately
+                        # narrow and explicit; unknown ABIs fail closed instead
+                        # of accidentally invoking an unrelated syscall.
+                        machine = os.uname().machine.lower()
+                        syscall_number = {
+                            "x86_64": 217,
+                            "amd64": 217,
+                            "aarch64": 61,
+                            "arm64": 61,
+                            "riscv32": 61,
+                            "riscv64": 61,
+                            "loongarch64": 61,
+                            "i386": 220,
+                            "i486": 220,
+                            "i586": 220,
+                            "i686": 220,
+                            "arm": 217,
+                            "armv6l": 217,
+                            "armv7l": 217,
+                            "armv8l": 217,
+                            "ppc": 202,
+                            "ppcle": 202,
+                            "ppc64": 202,
+                            "ppc64le": 202,
+                            "powerpc": 202,
+                            "powerpcle": 202,
+                            "powerpc64": 202,
+                            "powerpc64le": 202,
+                            "s390": 220,
+                            "s390x": 220,
+                            "sparc": 154,
+                            "sparc64": 154,
+                            "alpha": 377,
+                            "m68k": 220,
+                            "sh": 220,
+                            "sh4": 220,
+                            "parisc": 201,
+                            "parisc64": 201,
+                            "hppa": 201,
+                            "hppa64": 201,
+                            "xtensa": 60,
+                            "arc": 61,
+                            "csky": 61,
+                            "hexagon": 61,
+                            "microblaze": 61,
+                            "nios2": 61,
+                            "openrisc": 61,
+                            "or1k": 61,
+                            "ia64": 1214,
+                        }.get(machine)
+                        if machine in {"x86_64", "amd64"} and ctypes.sizeof(
+                            ctypes.c_void_p
+                        ) == 4:
+                            # x32 userspace shares uname with x86_64 but adds
+                            # __X32_SYSCALL_BIT to the common syscall number.
+                            syscall_number = 0x40000000 | 217
+                        if machine.startswith("mips"):
+                            # uname describes the kernel and cannot distinguish
+                            # o32 from n32 userspace on a 64-bit MIPS kernel:
+                            # both are ILP32 but use different syscall tables.
+                            # Prefer CPython's build multiarch triplet, which
+                            # describes the running userspace ABI. If it is not
+                            # available, inspect the executable ELF class and
+                            # MIPS ABI flags. Ambiguous layouts fail closed.
+                            multiarch = str(
+                                getattr(sys.implementation, "_multiarch", "")
+                            ).lower()
+                            if "mips" in multiarch and multiarch.endswith(
+                                "gnuabin32"
+                            ):
+                                syscall_number = 6299
+                            elif "mips" in multiarch and multiarch.endswith(
+                                "gnuabi64"
+                            ):
+                                syscall_number = 5308
+                            elif "mips" in multiarch and multiarch.endswith(
+                                "linux-gnu"
+                            ):
+                                syscall_number = 4219
+                            else:
+                                try:
+                                    exe_fd = os.open("/proc/self/exe", os.O_RDONLY)
+                                    try:
+                                        elf_header = os.read(exe_fd, 64)
+                                    finally:
+                                        os.close(exe_fd)
+                                    if (
+                                        len(elf_header) >= 52
+                                        and elf_header[:4] == b"\\x7fELF"
+                                        and elf_header[5] in (1, 2)
+                                    ):
+                                        elf_class = elf_header[4]
+                                        byteorder = (
+                                            "little" if elf_header[5] == 1 else "big"
+                                        )
+                                        flags_offset = 36 if elf_class == 1 else 48
+                                        elf_flags = int.from_bytes(
+                                            elf_header[
+                                                flags_offset : flags_offset + 4
+                                            ],
+                                            byteorder,
+                                        )
+                                        abi_bits = elf_flags & 0x0000F000
+                                        if (
+                                            elf_class == 1
+                                            and elf_flags & 0x20
+                                        ):
+                                            # EF_MIPS_ABI2: n32
+                                            syscall_number = 6299
+                                        elif (
+                                            elf_class == 1
+                                            and abi_bits == 0x00001000
+                                        ):
+                                            # EF_MIPS_ABI_O32
+                                            syscall_number = 4219
+                                        elif (
+                                            elf_class == 2
+                                            and not (elf_flags & 0x20)
+                                            and abi_bits == 0
+                                        ):
+                                            # Standard n64 has no EF_MIPS_ABI
+                                            # selector bits.
+                                            syscall_number = 5308
+                                        else:
+                                            syscall_number = None
+                                    else:
+                                        syscall_number = None
+                                except OSError:
+                                    syscall_number = None
+                        if syscall_number is not None:
+                            libc.syscall.restype = ctypes.c_long
+
+                            def getdents64(fd, buf, count):
+                                return libc.syscall(
+                                    ctypes.c_long(syscall_number),
+                                    ctypes.c_int(fd),
+                                    buf,
+                                    ctypes.c_size_t(count),
+                                )
+                        else:
+                            summary["errors"] += 1
+                directory_fd = None
+                if active_legacy_cursor_path is not None:
+                    try:
+                        directory_fd = os.open(
+                            root,
+                            os.O_RDONLY | directory_flag | nofollow,
+                        )
+                    except OSError:
+                        directory_fd = None
+                        summary["errors"] += 1
+                if directory_fd is not None and getdents64 is not None:
+                    try:
+                        if cookie:
                             try:
-                                legacy_record_raw = os.read(record_fd, 65537)
-                            finally:
-                                os.close(record_fd)
-                            if len(legacy_record_raw) <= 65536:
-                                legacy_record = json.loads(legacy_record_raw)
-                                candidate = legacy_record.get("finishedAt")
-                                if isinstance(candidate, (int, float)):
-                                    finished_key = float(candidate)
+                                os.lseek(directory_fd, cookie["o"], os.SEEK_SET)
+                            except OSError:
+                                # A filesystem that cannot resume this opaque
+                                # directory cookie cannot provide bounded
+                                # replay-free progress. Fail closed instead of
+                                # restarting from offset zero on every pass.
+                                summary["legacyResumeUnsupported"] = True
+                                raise
+                        buffer = ctypes.create_string_buffer(4096)
+                        eof = False
+                        exhausted = False
+                        last_position = 0
+                        last_name = ""
+                        # linux_dirent64 is at least 24 bytes after kernel
+                        # alignment. Bound the syscall byte count by the
+                        # remaining entry budget and consume every dirent the
+                        # kernel returned; this keeps legacyIterated equal to
+                        # actual raw entries rather than silently discarding a
+                        # read-ahead suffix after the fd offset advanced.
+                        min_dirent_size = 24
+                        try:
+                            name_max = int(os.fpathconf(directory_fd, "PC_NAME_MAX"))
                         except (OSError, ValueError):
-                            pass
-                        scored.append((finished_key, legacy_name))
-                except OSError:
-                    scored = []
-                scored.sort()
-                legacy_names = [name for _, name in scored]
-                fd, temporary = tempfile.mkstemp(
-                    prefix=".gc-legacy-index.", dir=root
-                )
-                try:
-                    os.fchmod(fd, 0o600)
-                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                        json.dump({"n": legacy_names}, stream)
-                    os.replace(temporary, legacy_index_path)
-                except OSError:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
-            if legacy_names is not None:
-                # Post-migration discovery: a rolling-upgrade writer may
-                # still create flat-layout jobs after the index was built.
-                # One capped scan of the root per pass folds new
-                # grammar-valid directories into the index tail; junk
-                # entries meet the eviction budget as in the level scans,
-                # so hostile prefixes shrink instead of hiding discoveries.
-                try:
-                    legacy_scan = os.scandir(root)
-                except OSError:
-                    legacy_scan = None
-                if legacy_scan is not None:
-                    # Entries already present in the index, dot entries, and
-                    # the trie level directories are skipped without
-                    # consuming the budget, so an indexed prefix cannot
-                    # starve the discovery of newly appeared flat jobs; the
-                    # budget bounds only actual discovery/eviction work.
-                    known = set(legacy_names)
-                    discovered = []
-                    discovery_work = 0
-                    with legacy_scan:
-                        for discovery_entry in legacy_scan:
-                            discovery_name = discovery_entry.name
-                            if (
-                                discovery_name.startswith(".")
-                                or discovery_name in known
-                            ):
-                                continue
-                            if (
-                                JOB_ID.fullmatch(discovery_name) is None
-                                and discovery_entry.is_dir(follow_symlinks=False)
-                            ):
-                                continue
-                            if discovery_work >= iterated_budget:
+                            name_max = 255
+                        if name_max <= 0:
+                            name_max = 255
+                        max_dirent_size = ((19 + name_max + 1 + 7) // 8) * 8
+                        if max_dirent_size > len(buffer):
+                            summary["errors"] += 1
+                            exhausted = True
+                        min_slots_for_one = max(
+                            1, (max_dirent_size + min_dirent_size - 1) // min_dirent_size
+                        )
+                        while (
+                            not exhausted
+                            and summary["legacyIterated"] < legacy_raw_budget
+                        ):
+                            remaining = legacy_raw_budget - summary["legacyIterated"]
+                            # Do not issue a read which could return more
+                            # complete dirents than the remaining hard budget.
+                            # Leaving a small tail of unused budget is cheaper
+                            # than weakening the raw-entry bound.
+                            if remaining < min_slots_for_one:
+                                exhausted = True
                                 break
-                            discovery_work += 1
-                            summary["iterated"] += 1
-                            if JOB_ID.fullmatch(discovery_name) is None:
-                                evict(root, discovery_name)
-                                continue
-                            discovered.append(discovery_name)
-                    if discovered:
-                        # Unindexed entries have never been evaluated, so
-                        # they take priority over the rotating tail.
-                        legacy_names = discovered + legacy_names
-            if legacy_names:
-                take = legacy_names[:budget]
-                survivors = []
-                for legacy_name in take:
-                    legacy_path = root / legacy_name
-                    process_managed_job(legacy_path)
-                    if legacy_path.exists():
-                        survivors.append(legacy_name)
-                remaining = legacy_names[len(take):] + survivors
-                fd, temporary = tempfile.mkstemp(
-                    prefix=".gc-legacy-index.", dir=root
-                )
-                try:
-                    os.fchmod(fd, 0o600)
-                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                        json.dump({"n": remaining}, stream)
-                    os.replace(temporary, legacy_index_path)
-                except OSError:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
+                            read_size = min(4096, remaining * min_dirent_size)
+                            ctypes.set_errno(0)
+                            got = getdents64(
+                                directory_fd,
+                                ctypes.byref(buffer),
+                                read_size,
+                            )
+                            if got == 0:
+                                eof = True
+                                break
+                            if got < 0:
+                                if ctypes.get_errno() == errno.ENOSYS:
+                                    # MIPS n64 kernels before Linux 3.10 are
+                                    # the notable case. Do not emulate getdents
+                                    # here: that would add a second ABI parser
+                                    # to this bounded compatibility path.
+                                    summary["legacyGetdentsUnsupported"] = True
+                                summary["errors"] += 1
+                                break
+                            record_bytes = buffer.raw[:got]
+                            cursor_bytes = 0
+                            while cursor_bytes < got:
+                                if cursor_bytes + 19 > got:
+                                    summary["errors"] += 1
+                                    exhausted = True
+                                    break
+                                inode, entry_off, record_len = struct.unpack_from(
+                                    "=QqH", record_bytes, cursor_bytes
+                                )
+                                if (
+                                    record_len < min_dirent_size
+                                    or cursor_bytes + record_len > got
+                                ):
+                                    summary["errors"] += 1
+                                    exhausted = True
+                                    break
+                                entry_name = record_bytes[
+                                    cursor_bytes + 19 : cursor_bytes + record_len
+                                ].split(b"\\x00", 1)[0]
+                                cursor_bytes += record_len
+                                summary["legacyIterated"] += 1
+                                summary["iterated"] += 1
+                                last_position = max(1, entry_off)
+                                last_name = os.fsdecode(entry_name)
+                                if last_name in {".", ".."} or last_name.startswith(
+                                    "."
+                                ):
+                                    continue
+                                target = root / last_name
+                                if JOB_ID.fullmatch(last_name) is None:
+                                    try:
+                                        target_stat = os.lstat(target)
+                                    except OSError:
+                                        continue
+                                    if not stat.S_ISDIR(target_stat.st_mode):
+                                        evict(root, last_name)
+                                    continue
+                                summary["legacyVisited"] += 1
+                                summary["visited"] += 1
+                                summary["enumerated"] += 1
+                                process_managed_job(target)
+                        if eof:
+                            _clear_legacy_cookie(active_legacy_cursor_path)
+                        elif last_position:
+                            _write_legacy_cookie(
+                                active_legacy_cursor_path,
+                                {"o": last_position, "n": last_name},
+                            )
+                    finally:
+                        os.close(directory_fd)
+            except OSError:
+                summary["errors"] += 1
+            finally:
+                if legacy_lock_fd is not None:
+                    try:
+                        fcntl.flock(legacy_lock_fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(legacy_lock_fd)
         finally:
             if not existing_bs:
                 try:
