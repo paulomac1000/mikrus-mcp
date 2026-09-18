@@ -724,7 +724,10 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     recovery_stat = None
                     summary["errors"] += 1
                 if recovery_stat is not None:
-                    if stat.S_ISDIR(recovery_stat.st_mode):
+                    if not (
+                        stat.S_ISREG(recovery_stat.st_mode)
+                        or stat.S_ISLNK(recovery_stat.st_mode)
+                    ):
                         summary["errors"] += 1
                         return None
                     return legacy_recovery_cursor_path
@@ -736,10 +739,14 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 except OSError:
                     summary["errors"] += 1
                     return None
-                if stat.S_ISDIR(cursor_stat.st_mode):
-                    # Never recurse into or remove an unexpected directory.
-                    # Use a separate internal recovery slot so a retained
-                    # prefix cannot force every pass to restart at offset 0.
+                if not (
+                    stat.S_ISREG(cursor_stat.st_mode)
+                    or stat.S_ISLNK(cursor_stat.st_mode)
+                ):
+                    # Never read, recurse into, or remove an unexpected
+                    # special file/directory. Use a separate internal
+                    # recovery slot so a retained prefix cannot force every
+                    # pass to restart at offset 0.
                     summary["errors"] += 1
                     return legacy_recovery_cursor_path
                 return legacy_cursor_path
@@ -750,8 +757,15 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 if cursor_path is None:
                     return None
                 try:
-                    cursor_fd = os.open(cursor_path, os.O_RDONLY | nofollow)
+                    cursor_fd = os.open(
+                        cursor_path,
+                        os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+                    )
                     try:
+                        cursor_stat = os.fstat(cursor_fd)
+                        if not stat.S_ISREG(cursor_stat.st_mode):
+                            summary["errors"] += 1
+                            return None
                         raw = os.read(cursor_fd, 257)
                     finally:
                         os.close(cursor_fd)
@@ -911,7 +925,26 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "m68k": 220,
                             "sh": 220,
                             "sh4": 220,
+                            "parisc": 201,
+                            "parisc64": 201,
+                            "hppa": 201,
+                            "hppa64": 201,
+                            "xtensa": 60,
+                            "arc": 61,
+                            "csky": 61,
+                            "hexagon": 61,
+                            "microblaze": 61,
+                            "nios2": 61,
+                            "openrisc": 61,
+                            "or1k": 61,
+                            "ia64": 1214,
                         }.get(machine)
+                        if machine in {"mips", "mipsel"}:
+                            syscall_number = 4219
+                        elif machine in {"mips64", "mips64el"}:
+                            syscall_number = (
+                                5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299
+                            )
                         if syscall_number is not None:
                             libc.syscall.restype = ctypes.c_long
 

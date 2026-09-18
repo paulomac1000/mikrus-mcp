@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess  # noqa: S404
 import sys
 import time
@@ -1774,6 +1775,12 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     assert '"ppc64le": 202' in helper
     assert '"s390x": 220' in helper
     assert '"sparc64": 154' in helper
+    assert '"hppa": 201' in helper
+    assert '"xtensa": 60' in helper
+    assert '"or1k": 61' in helper
+    assert '"ia64": 1214' in helper
+    assert "syscall_number = 4219" in helper
+    assert "5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299" in helper
 
 
 def test_legacy_bootstrap_raw_entries_hard_capped(tmp_path: Path) -> None:
@@ -2010,3 +2017,27 @@ def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:
     assert stat.S_IMODE(outside.stat().st_mode) == before_mode
     assert outside.read_text(encoding="utf-8") == "operator-data"
     assert outside.stat().st_nlink == 2
+
+
+@pytest.mark.parametrize(
+    "slot_name",
+    [".gc-legacy-cursor", ".gc-legacy-cursor.recovery"],
+)
+def test_legacy_cursor_fifo_never_blocks_gc(tmp_path: Path, slot_name: str) -> None:
+    """Special cursor files are rejected without a blocking open/read."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    if slot_name == ".gc-legacy-cursor.recovery":
+        # Force recovery-slot selection to inspect the attacker-controlled
+        # special file rather than using the canonical slot.
+        (root / ".gc-legacy-cursor").mkdir()
+    os.mkfifo(root / slot_name)
+
+    started = time.monotonic()
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert (root / slot_name).exists()

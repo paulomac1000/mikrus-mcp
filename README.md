@@ -318,18 +318,22 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   `O_NOFOLLOW`, atomically replaced `.gc-legacy-cursor` file holding the
   last consumed kernel `d_off`. The helper prefers libc's architecture-
   neutral `getdents64` wrapper and uses only an explicit known-ABI syscall
-  fallback (including x86, ARM, PowerPC, s390, SPARC, Alpha, m68k and SH)
-  when that wrapper is unavailable; unknown old-libc ABIs fail closed rather
-  than invoking an unrelated syscall. Reads are sized from the
+  fallback covering the Linux ABIs supported by the helper (including x86,
+  ARM, PowerPC, s390, SPARC, Alpha, m68k, SH, PA-RISC, Xtensa, asm-generic
+  families, MIPS ABI variants and legacy IA-64) when that wrapper is
+  unavailable; unknown old-libc ABIs fail closed rather than invoking an
+  unrelated syscall. Reads are sized from the
   remaining entry budget and every returned dirent is counted, so kernel
   read-ahead cannot exceed the documented raw-entry cap; a pass may leave a
   small remainder unused rather than weaken that bound. Reaching EOF clears
   the cursor so later rolling-upgrade writes stay visible, and the obsolete
   `.gc-legacy-index` internal file is removed on first touch without
   following symlinks. If the canonical cursor path is unexpectedly a
-  directory, it is left untouched and progress continues through an
-  owner-only `.gc-legacy-cursor.recovery` slot instead of replaying the
-  same retained prefix forever. The cursor lock is accepted only as a
+  directory or other special file, it is left untouched and progress
+  continues through an owner-only `.gc-legacy-cursor.recovery` slot instead
+  of replaying the same retained prefix forever. Cursor reads use
+  `O_NONBLOCK` and verify the opened inode is a regular file, closing the
+  lstat/open race against FIFOs and devices. The cursor lock is accepted only as a
   regular single-link owner-only inode and is never chmod'd after open.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and
   `remote_job_result` for an expired job surface the owner-bound local record with
