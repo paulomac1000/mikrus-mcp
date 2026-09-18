@@ -829,13 +829,17 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 try:
                     legacy_lock_fd = os.open(
                         legacy_lock_path,
-                        os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | nofollow
+                        | getattr(os, "O_NONBLOCK", 0),
                         0o600,
                     )
                 except FileExistsError:
                     legacy_lock_fd = os.open(
                         legacy_lock_path,
-                        os.O_RDWR | nofollow,
+                        os.O_RDWR | nofollow | getattr(os, "O_NONBLOCK", 0),
                     )
                 lock_stat = os.fstat(legacy_lock_fd)
                 if (

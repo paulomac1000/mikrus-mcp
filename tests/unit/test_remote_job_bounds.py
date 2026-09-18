@@ -2019,6 +2019,22 @@ def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:
     assert outside.stat().st_nlink == 2
 
 
+def test_legacy_lock_fifo_never_blocks_gc(tmp_path: Path) -> None:
+    """The lock slot is opened nonblocking and special files fail closed."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    os.mkfifo(root / ".gc-legacy-cursor.lock")
+
+    started = time.monotonic()
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    assert summary["errors"] >= 1
+    assert (root / ".gc-legacy-cursor.lock").is_fifo()
+
+
 @pytest.mark.parametrize(
     "slot_name",
     [".gc-legacy-cursor", ".gc-legacy-cursor.recovery"],
