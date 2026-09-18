@@ -186,8 +186,10 @@ prefers libc's architecture-neutral `getdents64` wrapper and uses only an
 explicit known-ABI syscall fallback when the wrapper is unavailable
 covering the helper's Linux ABI set (x86, ARM, PowerPC, s390, SPARC, Alpha,
 m68k, SH, PA-RISC, Xtensa, asm-generic families, MIPS ABI variants and legacy
-IA-64); an unknown old-libc ABI fails closed rather than guessing a syscall
-number.
+IA-64). MIPS o32/n32/n64 selection comes from userspace multiarch metadata,
+with the running executable's ELF class/MIPS ABI flags as a fallback; kernel
+`uname` and pointer width are not used to guess between the two ILP32 ABIs.
+An ambiguous old-libc ABI fails closed rather than guessing a syscall number.
 Syscall reads are sized from the remaining entry budget and every returned
 dirent is counted; a pass may intentionally leave a small unused remainder
 instead of allowing kernel read-ahead to exceed the hard entry cap.

@@ -15,7 +15,9 @@ All notable changes to mikrus-mcp are recorded here.
   kernel `d_off`. The helper prefers libc's architecture-neutral wrapper,
   uses an explicit Linux ABI syscall fallback (including x86, ARM, PowerPC,
   s390, SPARC, Alpha, m68k, SH, PA-RISC, Xtensa, asm-generic families, MIPS
-  ABI variants and legacy IA-64) only when necessary, and sizes
+  ABI variants and legacy IA-64) only when necessary; MIPS o32/n32/n64 is
+  selected from userspace multiarch/ELF ABI metadata rather than kernel
+  `uname` plus pointer width, and the helper sizes
   each raw read from the remaining entry budget so every returned dirent is
   counted inside the hard cap. Stable corpora are eventually traversed over
   successive bounded passes; EOF clears the cursor so rolling-upgrade writes

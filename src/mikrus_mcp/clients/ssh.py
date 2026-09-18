@@ -943,12 +943,79 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "or1k": 61,
                             "ia64": 1214,
                         }.get(machine)
-                        if machine in {"mips", "mipsel"}:
-                            syscall_number = 4219
-                        elif machine in {"mips64", "mips64el"}:
-                            syscall_number = (
-                                5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299
-                            )
+                        if machine.startswith("mips"):
+                            # uname describes the kernel and cannot distinguish
+                            # o32 from n32 userspace on a 64-bit MIPS kernel:
+                            # both are ILP32 but use different syscall tables.
+                            # Prefer CPython's build multiarch triplet, which
+                            # describes the running userspace ABI. If it is not
+                            # available, inspect the executable ELF class and
+                            # MIPS ABI flags. Ambiguous layouts fail closed.
+                            multiarch = str(
+                                getattr(sys.implementation, "_multiarch", "")
+                            ).lower()
+                            if "mips" in multiarch and multiarch.endswith(
+                                "gnuabin32"
+                            ):
+                                syscall_number = 6299
+                            elif "mips" in multiarch and multiarch.endswith(
+                                "gnuabi64"
+                            ):
+                                syscall_number = 5308
+                            elif "mips" in multiarch and multiarch.endswith(
+                                "linux-gnu"
+                            ):
+                                syscall_number = 4219
+                            else:
+                                try:
+                                    exe_fd = os.open("/proc/self/exe", os.O_RDONLY)
+                                    try:
+                                        elf_header = os.read(exe_fd, 64)
+                                    finally:
+                                        os.close(exe_fd)
+                                    if (
+                                        len(elf_header) >= 52
+                                        and elf_header[:4] == b"\\x7fELF"
+                                        and elf_header[5] in (1, 2)
+                                    ):
+                                        elf_class = elf_header[4]
+                                        byteorder = (
+                                            "little" if elf_header[5] == 1 else "big"
+                                        )
+                                        flags_offset = 36 if elf_class == 1 else 48
+                                        elf_flags = int.from_bytes(
+                                            elf_header[
+                                                flags_offset : flags_offset + 4
+                                            ],
+                                            byteorder,
+                                        )
+                                        abi_bits = elf_flags & 0x0000F000
+                                        if (
+                                            elf_class == 1
+                                            and elf_flags & 0x20
+                                        ):
+                                            # EF_MIPS_ABI2: n32
+                                            syscall_number = 6299
+                                        elif (
+                                            elf_class == 1
+                                            and abi_bits == 0x00001000
+                                        ):
+                                            # EF_MIPS_ABI_O32
+                                            syscall_number = 4219
+                                        elif (
+                                            elf_class == 2
+                                            and not (elf_flags & 0x20)
+                                            and abi_bits == 0
+                                        ):
+                                            # Standard n64 has no EF_MIPS_ABI
+                                            # selector bits.
+                                            syscall_number = 5308
+                                        else:
+                                            syscall_number = None
+                                    else:
+                                        syscall_number = None
+                                except OSError:
+                                    syscall_number = None
                         if syscall_number is not None:
                             libc.syscall.restype = ctypes.c_long
 

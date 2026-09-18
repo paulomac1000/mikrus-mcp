@@ -321,8 +321,10 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   fallback covering the Linux ABIs supported by the helper (including x86,
   ARM, PowerPC, s390, SPARC, Alpha, m68k, SH, PA-RISC, Xtensa, asm-generic
   families, MIPS ABI variants and legacy IA-64) when that wrapper is
-  unavailable; unknown old-libc ABIs fail closed rather than invoking an
-  unrelated syscall. Reads are sized from the
+  unavailable. MIPS fallback selection is bound to the running userspace ABI
+  (CPython multiarch metadata, with executable ELF ABI flags as a fallback)
+  rather than kernel `uname` or pointer width; ambiguous old-libc ABIs fail
+  closed rather than invoking an unrelated syscall. Reads are sized from the
   remaining entry budget and every returned dirent is counted, so kernel
   read-ahead cannot exceed the documented raw-entry cap; a pass may leave a
   small remainder unused rather than weaken that bound. Reaching EOF clears

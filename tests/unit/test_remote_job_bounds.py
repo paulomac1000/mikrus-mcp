@@ -1779,8 +1779,14 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     assert '"xtensa": 60' in helper
     assert '"or1k": 61' in helper
     assert '"ia64": 1214' in helper
-    assert "syscall_number = 4219" in helper
-    assert "5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299" in helper
+    assert 'getattr(sys.implementation, "_multiarch", "")' in helper
+    assert '"gnuabin32"' in helper
+    assert '"gnuabi64"' in helper
+    assert '"linux-gnu"' in helper
+    assert 'os.open("/proc/self/exe", os.O_RDONLY)' in helper
+    assert "elf_flags & 0x20" in helper
+    assert "abi_bits == 0x00001000" in helper
+    assert "5308 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6299" not in helper
 
 
 def test_legacy_bootstrap_raw_entries_hard_capped(tmp_path: Path) -> None:
