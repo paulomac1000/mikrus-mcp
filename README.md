@@ -329,11 +329,19 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   unavailable. MIPS fallback selection is bound to the running userspace ABI
   (CPython multiarch metadata, with executable ELF ABI flags as a fallback)
   rather than kernel `uname` or pointer width; ambiguous old-libc ABIs fail
-  closed rather than invoking an unrelated syscall. Reads are sized from the
+  closed rather than invoking an unrelated syscall. The syscall fallback
+  requires a kernel that implements `getdents64`; notably, MIPS n64 kernels
+  before Linux 3.10 return `ENOSYS`. That unsupported old-kernel case is
+  reported and skipped rather than emulated with a second legacy-`getdents`
+  ABI parser. Reads are sized from the
   remaining entry budget and every returned dirent is counted, so kernel
   read-ahead cannot exceed the documented raw-entry cap; a pass may leave a
-  small remainder unused rather than weaken that bound. Reaching EOF clears
-  the cursor so later rolling-upgrade writes stay visible, and the obsolete
+  small remainder unused rather than weaken that bound. Persisted `d_off`
+  cookies are a Linux-filesystem compatibility mechanism, not a portable
+  POSIX guarantee: if the target filesystem rejects a saved cookie seek, the
+  legacy segment fails closed for that invocation instead of restarting at
+  offset zero and replaying the same prefix. Reaching EOF clears the cursor so
+  later rolling-upgrade writes stay visible, and the obsolete
   `.gc-legacy-index` internal file is removed on first touch without
   following symlinks. If the canonical cursor path is unexpectedly a
   directory or other special file, it is left untouched and progress

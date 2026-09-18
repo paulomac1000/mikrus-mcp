@@ -33,7 +33,10 @@ All notable changes to mikrus-mcp are recorded here.
   the aggregate visit bound remains explicit. Hard-linked lock files are
   rejected without chmod/mutation, and lock contention now fails closed without
   blocking the GC invocation. The old-libc ARM fallback also recognizes the AArch32
-  `armv8l` compat-machine alias. #29
+  `armv8l` compat-machine alias. Unsupported persisted-directory-cookie resume and
+  old-kernel `getdents64=ENOSYS` cases now fail closed instead of replaying a
+  prefix or implying portable support; MIPS n64 kernels older than Linux 3.10 are
+  explicitly outside the legacy-sweep fallback contract. #29
 
 ### Changed
 

@@ -1772,6 +1772,9 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     helper = ssh_module._REMOTE_JOB_HELPER
     assert 'getattr(libc, "getdents64", None)' in helper
     assert "ctypes.c_long(217)" not in helper
+    assert "errno.ENOSYS" in helper
+    assert 'summary["legacyGetdentsUnsupported"] = True' in helper
+    assert 'summary["legacyResumeUnsupported"] = True' in helper
     assert '"aarch64": 61' in helper
     assert '"armv8l": 217' in helper
     assert '"riscv32": 61' in helper

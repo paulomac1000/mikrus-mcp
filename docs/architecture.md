@@ -194,18 +194,22 @@ IA-64). MIPS o32/n32/n64 selection comes from userspace multiarch metadata,
 with the running executable's ELF class/MIPS ABI flags as a fallback; kernel
 `uname` and pointer width are not used to guess between the two ILP32 ABIs.
 An ambiguous old-libc ABI fails closed rather than guessing a syscall number.
+The fallback also requires a kernel that implements `getdents64`: `ENOSYS`
+is exposed as an unsupported legacy-sweep condition rather than emulated with
+a second `getdents` ABI parser. This explicitly excludes MIPS n64 kernels
+older than Linux 3.10 from the legacy-sweep fallback contract.
 Syscall reads are sized from the remaining entry budget and every returned
 dirent is counted; a pass may intentionally leave a small unused remainder
 instead of allowing kernel read-ahead to exceed the hard entry cap.
 Progress is kept in a 0600, `O_NOFOLLOW`, atomically replaced
-`.gc-legacy-cursor` file recording the last consumed entry's kernel
-`d_off`; a fresh helper process `lseek()`s to that cursor and resumes
-without replaying the consumed prefix, so a stable legacy corpus is
-eventually traversed across successive bounded passes. Because
-kernel `d_off` resume semantics differ between filesystems (hash-based on
-ext4, ordinal on tmpfs), the first entry after a restart may repeat or
-advance by one; processing is idempotent, so that bounded difference is
-harmless. Reaching EOF clears the cursor, which is also how a flat job
+`.gc-legacy-cursor` file recording the last consumed entry's opaque Linux
+kernel `d_off`. This is a filesystem compatibility mechanism, not a portable
+POSIX guarantee. A fresh helper process attempts to `lseek()` to that cookie;
+if the filesystem rejects the resume, the legacy segment fails closed for that
+invocation instead of restarting at zero and replaying an uncheckpointable
+prefix. On supported filesystems, boundary entries may be re-observed after
+directory churn; processing is idempotent, and EOF resets the cursor so later
+cycles can revisit entries deferred by churn. Reaching EOF is also how a flat job
 created after the sweep finished (rolling upgrade) becomes visible on a
 later pass. The obsolete bounded migration index from earlier 2.2.x
 candidates is removed on first touch (regular file or symlink only,

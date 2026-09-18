@@ -246,7 +246,7 @@ _PROGRAM_HELPER = textwrap.dedent(
 
 _REMOTE_JOB_HELPER = textwrap.dedent(
     """
-    import ctypes, fcntl, hashlib, json, os, re, shutil, signal, stat, struct
+    import ctypes, errno, fcntl, hashlib, json, os, re, shutil, signal, stat, struct
     import subprocess, sys, tempfile, time
     from pathlib import Path
     from pathlib import Path as PathLib
@@ -712,6 +712,8 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             summary["legacyIterated"] = 0
             summary["legacyVisited"] = 0
             summary["legacyCookieResets"] = 0
+            summary["legacyResumeUnsupported"] = False
+            summary["legacyGetdentsUnsupported"] = False
             nofollow = getattr(os, "O_NOFOLLOW", 0)
             directory_flag = getattr(os, "O_DIRECTORY", 0)
 
@@ -1059,7 +1061,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             try:
                                 os.lseek(directory_fd, cookie["o"], os.SEEK_SET)
                             except OSError:
-                                summary["errors"] += 1
+                                # A filesystem that cannot resume this opaque
+                                # directory cookie cannot provide bounded
+                                # replay-free progress. Fail closed instead of
+                                # restarting from offset zero on every pass.
+                                summary["legacyResumeUnsupported"] = True
+                                raise
                         buffer = ctypes.create_string_buffer(4096)
                         eof = False
                         exhausted = False
@@ -1108,6 +1115,12 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                                 eof = True
                                 break
                             if got < 0:
+                                if ctypes.get_errno() == errno.ENOSYS:
+                                    # MIPS n64 kernels before Linux 3.10 are
+                                    # the notable case. Do not emulate getdents
+                                    # here: that would add a second ABI parser
+                                    # to this bounded compatibility path.
+                                    summary["legacyGetdentsUnsupported"] = True
                                 summary["errors"] += 1
                                 break
                             record_bytes = buffer.raw[:got]
