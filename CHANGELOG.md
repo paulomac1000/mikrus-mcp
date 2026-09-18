@@ -4,6 +4,8 @@ All notable changes to mikrus-mcp are recorded here.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-18
+
 ### Fixed
 
 - Legacy flat-layout durable jobs (pre-trie `<root>/<job-id>` directories)
