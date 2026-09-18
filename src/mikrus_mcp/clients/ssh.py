@@ -702,6 +702,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             # syscall ABIs and otherwise fail closed without an unbounded
             # scandir fallback.
             legacy_cursor_path = root / ".gc-legacy-cursor"
+            legacy_recovery_cursor_path = root / ".gc-legacy-cursor.recovery"
             legacy_lock_path = root / ".gc-legacy-cursor.lock"
             legacy_index_path = root / ".gc-legacy-index"
             legacy_raw_budget = max(64, 4 * budget)
@@ -710,9 +711,46 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             nofollow = getattr(os, "O_NOFOLLOW", 0)
             directory_flag = getattr(os, "O_DIRECTORY", 0)
 
-            def _read_legacy_cookie():
+            def _select_legacy_cursor_path():
+                # If a recovery cursor already exists, finish that bounded
+                # sweep before returning to the canonical slot. This keeps
+                # progress monotonic even if an operator later repairs a
+                # wrong-type canonical path mid-cycle.
                 try:
-                    cursor_fd = os.open(legacy_cursor_path, os.O_RDONLY | nofollow)
+                    recovery_stat = os.lstat(legacy_recovery_cursor_path)
+                except FileNotFoundError:
+                    recovery_stat = None
+                except OSError:
+                    recovery_stat = None
+                    summary["errors"] += 1
+                if recovery_stat is not None:
+                    if stat.S_ISDIR(recovery_stat.st_mode):
+                        summary["errors"] += 1
+                        return None
+                    return legacy_recovery_cursor_path
+
+                try:
+                    cursor_stat = os.lstat(legacy_cursor_path)
+                except FileNotFoundError:
+                    return legacy_cursor_path
+                except OSError:
+                    summary["errors"] += 1
+                    return None
+                if stat.S_ISDIR(cursor_stat.st_mode):
+                    # Never recurse into or remove an unexpected directory.
+                    # Use a separate internal recovery slot so a retained
+                    # prefix cannot force every pass to restart at offset 0.
+                    summary["errors"] += 1
+                    return legacy_recovery_cursor_path
+                return legacy_cursor_path
+
+            active_legacy_cursor_path = _select_legacy_cursor_path()
+
+            def _read_legacy_cookie(cursor_path):
+                if cursor_path is None:
+                    return None
+                try:
+                    cursor_fd = os.open(cursor_path, os.O_RDONLY | nofollow)
                     try:
                         raw = os.read(cursor_fd, 257)
                     finally:
@@ -735,7 +773,9 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     pass
                 return None
 
-            def _write_legacy_cookie(value):
+            def _write_legacy_cookie(cursor_path, value):
+                if cursor_path is None:
+                    raise OSError("no safe legacy cursor slot")
                 fd, temporary = tempfile.mkstemp(
                     prefix=".gc-legacy-cursor.", dir=root
                 )
@@ -745,14 +785,16 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                         json.dump(value, stream)
                         stream.flush()
                         os.fsync(stream.fileno())
-                    os.replace(temporary, legacy_cursor_path)
+                    os.replace(temporary, cursor_path)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
 
-            def _clear_legacy_cookie():
+            def _clear_legacy_cookie(cursor_path):
+                if cursor_path is None:
+                    return
                 try:
-                    cursor_stat = os.lstat(legacy_cursor_path)
+                    cursor_stat = os.lstat(cursor_path)
                 except FileNotFoundError:
                     return
                 except OSError:
@@ -762,7 +804,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     if stat.S_ISREG(cursor_stat.st_mode) or stat.S_ISLNK(
                         cursor_stat.st_mode
                     ):
-                        os.unlink(legacy_cursor_path)
+                        os.unlink(cursor_path)
                     else:
                         summary["errors"] += 1
                 except OSError:
@@ -770,12 +812,29 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
             legacy_lock_fd = None
             try:
-                legacy_lock_fd = os.open(
-                    legacy_lock_path,
-                    os.O_RDWR | os.O_CREAT | nofollow,
-                    0o600,
-                )
-                os.fchmod(legacy_lock_fd, 0o600)
+                try:
+                    legacy_lock_fd = os.open(
+                        legacy_lock_path,
+                        os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+                        0o600,
+                    )
+                except FileExistsError:
+                    legacy_lock_fd = os.open(
+                        legacy_lock_path,
+                        os.O_RDWR | nofollow,
+                    )
+                lock_stat = os.fstat(legacy_lock_fd)
+                if (
+                    not stat.S_ISREG(lock_stat.st_mode)
+                    or lock_stat.st_nlink != 1
+                    or stat.S_IMODE(lock_stat.st_mode) & 0o077
+                ):
+                    os.close(legacy_lock_fd)
+                    legacy_lock_fd = None
+                    raise OSError("unsafe legacy GC lock inode")
+                # The lock file is created owner-only and is never chmod'd
+                # after opening, so a same-account hard link cannot turn GC
+                # into a metadata mutation of an external inode.
                 fcntl.flock(legacy_lock_fd, fcntl.LOCK_EX)
 
                 # The PR #34 migration index is superseded by the cursor
@@ -796,7 +855,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                     except OSError:
                         summary["errors"] += 1
 
-                cookie = _read_legacy_cookie()
+                cookie = _read_legacy_cookie(active_legacy_cursor_path)
                 libc = None
                 getdents64 = None
                 try:
@@ -832,6 +891,22 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "arm": 217,
                             "armv6l": 217,
                             "armv7l": 217,
+                            "ppc": 202,
+                            "ppcle": 202,
+                            "ppc64": 202,
+                            "ppc64le": 202,
+                            "powerpc": 202,
+                            "powerpcle": 202,
+                            "powerpc64": 202,
+                            "powerpc64le": 202,
+                            "s390": 220,
+                            "s390x": 220,
+                            "sparc": 154,
+                            "sparc64": 154,
+                            "alpha": 377,
+                            "m68k": 220,
+                            "sh": 220,
+                            "sh4": 220,
                         }.get(machine)
                         if syscall_number is not None:
                             libc.syscall.restype = ctypes.c_long
@@ -953,10 +1028,11 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                                 summary["enumerated"] += 1
                                 process_managed_job(target)
                         if eof:
-                            _clear_legacy_cookie()
+                            _clear_legacy_cookie(active_legacy_cursor_path)
                         elif last_position:
                             _write_legacy_cookie(
-                                {"o": last_position, "n": last_name}
+                                active_legacy_cursor_path,
+                                {"o": last_position, "n": last_name},
                             )
                     finally:
                         os.close(directory_fd)

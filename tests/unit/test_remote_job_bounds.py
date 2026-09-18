@@ -1771,6 +1771,9 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     assert 'getattr(libc, "getdents64", None)' in helper
     assert "ctypes.c_long(217)" not in helper
     assert '"aarch64": 61' in helper
+    assert '"ppc64le": 202' in helper
+    assert '"s390x": 220' in helper
+    assert '"sparc64": 154' in helper
 
 
 def test_legacy_bootstrap_raw_entries_hard_capped(tmp_path: Path) -> None:
@@ -1963,3 +1966,47 @@ def test_legacy_cursor_corruption_modes_are_safe(tmp_path: Path) -> None:
     summary = _run_helper(dict(LEGACY_GC_PAYLOAD, max_entries=256), home)
     assert summary["legacyIterated"] <= 1024
     assert (_job_root(home) / ".gc-legacy-cursor").is_dir()
+
+
+def test_legacy_cursor_directory_uses_recovery_slot_and_keeps_progress(
+    tmp_path: Path,
+) -> None:
+    """A wrong-type canonical cursor cannot force repeated prefix scans."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    for index in range(600):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "f" * 32)
+    (root / ".gc-legacy-cursor").mkdir()
+
+    collected = False
+    for _ in range(20):
+        summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+        assert summary["legacyIterated"] <= 64
+        assert (root / ".gc-legacy-cursor").is_dir()
+        if not stale_dir.exists():
+            collected = True
+            break
+        recovery = root / ".gc-legacy-cursor.recovery"
+        assert recovery.is_file()
+        assert recovery.stat().st_mode & 0o077 == 0
+    assert collected, "wrong-type canonical cursor starved a deep stale job"
+
+
+def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:
+    """A hard-linked lock path must not mutate an external inode."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside-lock"
+    outside.write_text("operator-data", encoding="utf-8")
+    outside.chmod(0o750)
+    os.link(outside, root / ".gc-legacy-cursor.lock")
+
+    before_mode = stat.S_IMODE(outside.stat().st_mode)
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+
+    assert summary["errors"] >= 1
+    assert stat.S_IMODE(outside.stat().st_mode) == before_mode
+    assert outside.read_text(encoding="utf-8") == "operator-data"
+    assert outside.stat().st_nlink == 2

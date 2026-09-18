@@ -183,7 +183,9 @@ single invocation therefore never reads more than the trie sweep bound
 plus that legacy bound) while keeping one 4 KiB buffer of kernel state —
 no full-corpus list, sort, or on-disk index exists at any point. The helper
 prefers libc's architecture-neutral `getdents64` wrapper and uses only an
-explicit known-ABI syscall fallback when the wrapper is unavailable.
+explicit known-ABI syscall fallback when the wrapper is unavailable
+(including x86, ARM, PowerPC, s390, SPARC, Alpha, m68k and SH); an unknown
+old-libc ABI fails closed rather than guessing a syscall number.
 Syscall reads are sized from the remaining entry budget and every returned
 dirent is counted; a pass may intentionally leave a small unused remainder
 instead of allowing kernel read-ahead to exceed the hard entry cap.
@@ -199,4 +201,8 @@ harmless. Reaching EOF clears the cursor, which is also how a flat job
 created after the sweep finished (rolling upgrade) becomes visible on a
 later pass. The obsolete bounded migration index from earlier 2.2.x
 candidates is removed on first touch (regular file or symlink only,
-never a directory, never followed).
+never a directory, never followed). If the canonical cursor slot itself is
+a directory, it is left untouched and a bounded owner-only recovery cursor
+carries progress for that sweep. The legacy sweep lock must be a regular,
+single-link, owner-only inode; the helper does not chmod an already opened
+lock path, preventing hard-link metadata mutation outside the managed root.

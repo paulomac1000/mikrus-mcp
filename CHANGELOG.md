@@ -13,13 +13,16 @@ All notable changes to mikrus-mcp are recorded here.
   resumes across helper restarts through a 0600, `O_NOFOLLOW`,
   atomically-replaced `.gc-legacy-cursor` file holding the last consumed
   kernel `d_off`. The helper prefers libc's architecture-neutral wrapper,
-  uses a narrow known-ABI syscall fallback only when necessary, and sizes
+  uses a narrow known-ABI syscall fallback (x86, ARM, PowerPC, s390,
+  SPARC, Alpha, m68k and SH) only when necessary, and sizes
   each raw read from the remaining entry budget so every returned dirent is
   counted inside the hard cap. Stable corpora are eventually traversed over
   successive bounded passes; EOF clears the cursor so rolling-upgrade writes
   stay visible; the obsolete
   `.gc-legacy-index` internal file is removed on first touch without
-  following symlinks. #29
+  following symlinks. Wrong-type canonical cursor directories are left
+  untouched while an owner-only recovery cursor preserves progress, and
+  hard-linked lock files are rejected without chmod/mutation. #29
 
 ### Changed
 
