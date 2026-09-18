@@ -181,13 +181,17 @@ enumeration bound independent of the trie sweep: each GC invocation
 consumes at most `max(64, 4 × max_entries)` root `getdents64` entries (a
 single invocation therefore never reads more than the trie sweep bound
 plus that legacy bound) while keeping one 4 KiB buffer of kernel state —
-no full-corpus list, sort, or on-disk index exists at any point. Progress
-is kept in a 0600, `O_NOFOLLOW`, atomically replaced
+no full-corpus list, sort, or on-disk index exists at any point. The helper
+prefers libc's architecture-neutral `getdents64` wrapper and uses only an
+explicit known-ABI syscall fallback when the wrapper is unavailable.
+Syscall reads are sized from the remaining entry budget and every returned
+dirent is counted; a pass may intentionally leave a small unused remainder
+instead of allowing kernel read-ahead to exceed the hard entry cap.
+Progress is kept in a 0600, `O_NOFOLLOW`, atomically replaced
 `.gc-legacy-cursor` file recording the last consumed entry's kernel
 `d_off`; a fresh helper process `lseek()`s to that cursor and resumes
-without replaying the consumed prefix, so every legacy job — including a
-stale job behind a retained prefix wider than many invocation budgets —
-is reached within `⌈legacy_size / legacy_raw_budget⌉` passes. Because
+without replaying the consumed prefix, so a stable legacy corpus is
+eventually traversed across successive bounded passes. Because
 kernel `d_off` resume semantics differ between filesystems (hash-based on
 ext4, ordinal on tmpfs), the first entry after a restart may repeat or
 advance by one; processing is idempotent, so that bounded difference is

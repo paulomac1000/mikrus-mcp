@@ -696,8 +696,11 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             # live, no rename), which makes that bounded difference
             # harmless. Reaching EOF clears the cursor so later
             # rolling-upgrade writes and churn-created entries are
-            # discovered on a following pass. Linux x86_64 only: getdents64
-            # is syscall 217 on that platform.
+            # discovered on a following pass. Prefer libc's getdents64
+            # wrapper (architecture-neutral on glibc >= 2.30); when an older
+            # libc lacks that symbol, use only a small allowlist of known Linux
+            # syscall ABIs and otherwise fail closed without an unbounded
+            # scandir fallback.
             legacy_cursor_path = root / ".gc-legacy-cursor"
             legacy_lock_path = root / ".gc-legacy-cursor.lock"
             legacy_index_path = root / ".gc-legacy-index"
@@ -795,11 +798,53 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
 
                 cookie = _read_legacy_cookie()
                 libc = None
+                getdents64 = None
                 try:
                     libc = ctypes.CDLL(None, use_errno=True)
                 except (AttributeError, OSError):
                     libc = None
                     summary["errors"] += 1
+                if libc is not None:
+                    getdents64 = getattr(libc, "getdents64", None)
+                    if getdents64 is not None:
+                        getdents64.argtypes = (
+                            ctypes.c_int,
+                            ctypes.c_void_p,
+                            ctypes.c_size_t,
+                        )
+                        getdents64.restype = ctypes.c_ssize_t
+                    else:
+                        # Old libc fallback. Keep the mapping deliberately
+                        # narrow and explicit; unknown ABIs fail closed instead
+                        # of accidentally invoking an unrelated syscall.
+                        machine = os.uname().machine.lower()
+                        syscall_number = {
+                            "x86_64": 217,
+                            "amd64": 217,
+                            "aarch64": 61,
+                            "arm64": 61,
+                            "riscv64": 61,
+                            "loongarch64": 61,
+                            "i386": 220,
+                            "i486": 220,
+                            "i586": 220,
+                            "i686": 220,
+                            "arm": 217,
+                            "armv6l": 217,
+                            "armv7l": 217,
+                        }.get(machine)
+                        if syscall_number is not None:
+                            libc.syscall.restype = ctypes.c_long
+
+                            def getdents64(fd, buf, count):
+                                return libc.syscall(
+                                    ctypes.c_long(syscall_number),
+                                    ctypes.c_int(fd),
+                                    buf,
+                                    ctypes.c_size_t(count),
+                                )
+                        else:
+                            summary["errors"] += 1
                 directory_fd = None
                 try:
                     directory_fd = os.open(
@@ -809,7 +854,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                 except OSError:
                     directory_fd = None
                     summary["errors"] += 1
-                if directory_fd is not None and libc is not None:
+                if directory_fd is not None and getdents64 is not None:
                     try:
                         if cookie:
                             try:
@@ -821,16 +866,36 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                         exhausted = False
                         last_position = 0
                         last_name = ""
-                        while (
-                            summary["legacyIterated"] < legacy_raw_budget
-                            and not exhausted
-                        ):
+                        # linux_dirent64 is at least 24 bytes after kernel
+                        # alignment. Bound the syscall byte count by the
+                        # remaining entry budget and consume every dirent the
+                        # kernel returned; this keeps legacyIterated equal to
+                        # actual raw entries rather than silently discarding a
+                        # read-ahead suffix after the fd offset advanced.
+                        min_dirent_size = 24
+                        try:
+                            name_max = int(os.fpathconf(directory_fd, "PC_NAME_MAX"))
+                        except (OSError, ValueError):
+                            name_max = 255
+                        max_dirent_size = ((19 + max(1, name_max) + 1 + 7) // 8) * 8
+                        min_slots_for_one = max(
+                            1, (max_dirent_size + min_dirent_size - 1) // min_dirent_size
+                        )
+                        while summary["legacyIterated"] < legacy_raw_budget:
+                            remaining = legacy_raw_budget - summary["legacyIterated"]
+                            # Do not issue a read which could return more
+                            # complete dirents than the remaining hard budget.
+                            # Leaving a small tail of unused budget is cheaper
+                            # than weakening the raw-entry bound.
+                            if remaining < min_slots_for_one:
+                                exhausted = True
+                                break
+                            read_size = min(4096, remaining * min_dirent_size)
                             ctypes.set_errno(0)
-                            got = libc.syscall(
-                                ctypes.c_long(217),
+                            got = getdents64(
                                 ctypes.c_int(directory_fd),
-                                buffer,
-                                ctypes.c_int(4096),
+                                ctypes.byref(buffer),
+                                ctypes.c_size_t(read_size),
                             )
                             if got == 0:
                                 eof = True
@@ -841,12 +906,20 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             record_bytes = buffer.raw[:got]
                             cursor_bytes = 0
                             while cursor_bytes < got:
-                                if summary["legacyIterated"] >= legacy_raw_budget:
+                                if cursor_bytes + 19 > got:
+                                    summary["errors"] += 1
                                     exhausted = True
                                     break
                                 inode, entry_off, record_len = struct.unpack_from(
-                                    "QqH", record_bytes, cursor_bytes
+                                    "=QqH", record_bytes, cursor_bytes
                                 )
+                                if (
+                                    record_len < min_dirent_size
+                                    or cursor_bytes + record_len > got
+                                ):
+                                    summary["errors"] += 1
+                                    exhausted = True
+                                    break
                                 entry_name = record_bytes[
                                     cursor_bytes + 19 : cursor_bytes + record_len
                                 ].split(b"\\x00", 1)[0]

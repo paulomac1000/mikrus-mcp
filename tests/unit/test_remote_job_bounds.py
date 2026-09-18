@@ -1717,13 +1717,17 @@ def test_legacy_sweep_reaches_expired_job_behind_retained_prefix(
         "shard": 0,
     }
     collected = False
-    for _ in range(6):
+    # Directory iteration order is filesystem-defined rather than creation
+    # order. Give the bounded cursor enough passes to cover the whole stable
+    # corpus while asserting the hard per-pass raw-entry cap on every pass.
+    for _ in range(32):
         summary = _run_helper(payload, home)
         assert summary["errors"] == 0
+        assert summary["legacyIterated"] <= 64
         if all((_job_root(home) / n).exists() is False for n in expired):
             collected = True
             break
-    assert collected, "expired legacy job starved behind retained prefix"
+    assert collected, "expired legacy job starved across a complete bounded sweep"
     for name in retained:
         assert (_job_root(home) / name).exists()
 
@@ -1760,6 +1764,13 @@ LEGACY_GC_PAYLOAD = {
     "shards": 16,
     "shard": 0,
 }
+
+
+def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
+    helper = ssh_module._REMOTE_JOB_HELPER
+    assert 'getattr(libc, "getdents64", None)' in helper
+    assert "ctypes.c_long(217)" not in helper
+    assert '"aarch64": 61' in helper
 
 
 def test_legacy_bootstrap_raw_entries_hard_capped(tmp_path: Path) -> None:
@@ -1844,10 +1855,13 @@ def test_legacy_cursor_progress_survives_fresh_helper_processes(tmp_path: Path) 
         summary = _run_helper(payload, home)
         assert summary["legacyIterated"] <= 256
         cursor = _read_legacy_cursor(home)
+        # Refresh liveness evidence before handling EOF: the pass which
+        # clears the cursor may also be the pass which removes the final
+        # stale job.
+        pending = {d for d in pending if d.exists()}
         if cursor is None:
             break
         seen_positions.append(cursor["o"])
-        pending = {d for d in pending if d.exists()}
     assert not pending, "scattered stale jobs starved"
     assert len(set(seen_positions)) == len(seen_positions), "cursor did not advance"
     assert _read_legacy_cursor(home) is None, "cursor not cleared at EOF"

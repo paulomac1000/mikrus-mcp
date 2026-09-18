@@ -316,10 +316,13 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   O(1) memory (one 4 KiB buffer, no full-corpus list, sort, or on-disk
   index) — and resumes across helper restarts through a 0600,
   `O_NOFOLLOW`, atomically replaced `.gc-legacy-cursor` file holding the
-  last consumed kernel `d_off`; a stale legacy job behind a retained
-  prefix wider than many invocation budgets is therefore collected within
-  `⌈legacy_size / legacy_raw_budget⌉` passes, reaching EOF clears the
-  cursor so later rolling-upgrade writes stay visible, and the obsolete
+  last consumed kernel `d_off`. The helper prefers libc's architecture-
+  neutral `getdents64` wrapper and uses only an explicit known-ABI syscall
+  fallback when that wrapper is unavailable. Reads are sized from the
+  remaining entry budget and every returned dirent is counted, so kernel
+  read-ahead cannot exceed the documented raw-entry cap; a pass may leave a
+  small remainder unused rather than weaken that bound. Reaching EOF clears
+  the cursor so later rolling-upgrade writes stay visible, and the obsolete
   `.gc-legacy-index` internal file is removed on first touch without
   following symlinks.
 - **Tombstones.** After remote payload bytes are removed, `remote_job_status` and

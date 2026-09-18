@@ -12,10 +12,12 @@ All notable changes to mikrus-mcp are recorded here.
   memory — no full-corpus list, sort, or on-disk migration index — and
   resumes across helper restarts through a 0600, `O_NOFOLLOW`,
   atomically-replaced `.gc-legacy-cursor` file holding the last consumed
-  kernel `d_off`. A stale legacy job behind a retained prefix wider than
-  many invocation budgets is therefore collected in
-  `⌈legacy_size / legacy_raw_budget⌉` passes; EOF clears the cursor so
-  rolling-upgrade writes stay visible; the obsolete
+  kernel `d_off`. The helper prefers libc's architecture-neutral wrapper,
+  uses a narrow known-ABI syscall fallback only when necessary, and sizes
+  each raw read from the remaining entry budget so every returned dirent is
+  counted inside the hard cap. Stable corpora are eventually traversed over
+  successive bounded passes; EOF clears the cursor so rolling-upgrade writes
+  stay visible; the obsolete
   `.gc-legacy-index` internal file is removed on first touch without
   following symlinks. #29
 
