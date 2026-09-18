@@ -177,10 +177,14 @@ identity is alive. Expired jobs retain machine-readable tombstones in the
 owner-bound store after remote payload bytes are removed.
 
 The legacy flat-layout segment of the retention pass has a hard raw
-enumeration bound independent of the trie sweep: each GC invocation
-consumes at most `max(64, 4 × max_entries)` root `getdents64` entries (a
-single invocation therefore never reads more than the trie sweep bound
-plus that legacy bound) while keeping one 4 KiB buffer of kernel state —
+enumeration and processing-visit bound independent of the trie sweep: each GC
+invocation consumes at most `max(64, 4 × max_entries)` root `getdents64`
+entries and at most that many legacy processing visits. The trie has its own
+visit budget of the same size, so the aggregate processing-visit count is at
+most twice that value; this separation prevents a busy trie from starving
+rolling-upgrade legacy jobs. A single invocation therefore never reads more
+than the bounded trie sweep plus the legacy raw-entry bound, while legacy
+enumeration keeps one 4 KiB buffer of kernel state —
 no full-corpus list, sort, or on-disk index exists at any point. The helper
 prefers libc's architecture-neutral `getdents64` wrapper and uses only an
 explicit known-ABI syscall fallback when the wrapper is unavailable
@@ -207,8 +211,10 @@ later pass. The obsolete bounded migration index from earlier 2.2.x
 candidates is removed on first touch (regular file or symlink only,
 never a directory, never followed). If the canonical cursor slot itself is
 a directory or other special file, it is left untouched and a bounded
-owner-only recovery cursor carries progress for that sweep. Cursor opens are
-nonblocking and the opened inode must be regular before any read, so a FIFO or
+owner-only recovery cursor carries progress for that sweep. If no safe
+canonical or recovery cursor slot is available, legacy enumeration is skipped
+for that invocation with an observable GC error instead of replaying a prefix
+that cannot be checkpointed. Cursor opens are nonblocking and the opened inode must be regular before any read, so a FIFO or
 device cannot stall the exclusive GC section. The legacy sweep lock must be a regular,
 single-link, owner-only inode; the helper does not chmod an already opened
 lock path, preventing hard-link metadata mutation outside the managed root.

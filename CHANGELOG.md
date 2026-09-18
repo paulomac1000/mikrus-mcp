@@ -26,8 +26,13 @@ All notable changes to mikrus-mcp are recorded here.
   following symlinks. Wrong-type canonical cursor directories are left
   untouched while an owner-only recovery cursor preserves progress; cursor
   reads are nonblocking and require a regular opened inode so FIFOs/devices
-  cannot stall GC; hard-linked lock files are rejected without chmod/mutation.
-  #29
+  cannot stall GC; if neither canonical nor recovery cursor slot is safe the
+  legacy sweep fails closed before enumeration rather than replaying an
+  uncheckpointable prefix. Trie and legacy processing visits are exposed with
+  independent hard budgets so rolling-upgrade cleanup cannot be starved while
+  the aggregate visit bound remains explicit. Hard-linked lock files are
+  rejected without chmod/mutation. The old-libc ARM fallback also recognizes
+  the AArch32 `armv8l` compat-machine alias. #29
 
 ### Changed
 

@@ -293,10 +293,15 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   directories and stale identities that can no longer represent a live job after a
   grace period (`REMOTE_JOB_GRACE_SECONDS = 3600`), never removes a running job
   whose recorded process identity is alive, never follows symlinks, never leaves
-  the managed root, and enforces hard per-invocation bounds: removal attempts at
-  most `max_entries` (default 256) entries, processing visits at most
-  `max(64, 4 x max_entries)` entries, and each level scan or leaf walk at
-  most `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
+  the managed root, and enforces hard per-invocation bounds. Managed-job
+  removal attempts are at most `max_entries` (default 256); trie processing
+  visits are at most `max(64, 4 x max_entries)`, while the compatibility
+  legacy sweep has an independent visit/raw-entry budget of the same size so
+  a busy trie cannot starve rolling-upgrade jobs. The aggregate processing
+  visit count is therefore at most twice that visit budget. Internal
+  shard/bucket junk eviction has its own bounded maintenance budget, and each
+  trie level scan or leaf walk is capped at
+  `max(4096, 4 x max_entries)` raw readdir yields. Bucket level scans
   never follow symlinks, so planted links cannot redirect the sweep outside
   the managed root.
   Sweep position persists as a per-shard `(b1, b2, ordinal)` cursor over the
@@ -333,7 +338,10 @@ Remote durable-job storage is bounded throughout the job lifecycle:
   following symlinks. If the canonical cursor path is unexpectedly a
   directory or other special file, it is left untouched and progress
   continues through an owner-only `.gc-legacy-cursor.recovery` slot instead
-  of replaying the same retained prefix forever. Cursor reads use
+  of replaying the same retained prefix forever. If that recovery slot is
+  itself unsafe, the legacy segment fails closed before root enumeration and
+  reports a GC error until the operator repairs the state slot; it never
+  performs bounded-but-repeated prefix scans without durable progress. Cursor reads use
   `O_NONBLOCK` and verify the opened inode is a regular file, closing the
   lstat/open race against FIFOs and devices. The cursor lock is accepted only as a
   regular single-link owner-only inode and is never chmod'd after open.

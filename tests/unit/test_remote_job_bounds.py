@@ -1772,6 +1772,7 @@ def test_legacy_sweep_does_not_hardcode_x86_64_syscall() -> None:
     assert 'getattr(libc, "getdents64", None)' in helper
     assert "ctypes.c_long(217)" not in helper
     assert '"aarch64": 61' in helper
+    assert '"armv8l": 217' in helper
     assert '"riscv32": 61' in helper
     assert "syscall_number = 0x40000000 | 217" in helper
     assert '"ppc64le": 202' in helper
@@ -2006,6 +2007,64 @@ def test_legacy_cursor_directory_uses_recovery_slot_and_keeps_progress(
         assert recovery.is_file()
         assert recovery.stat().st_mode & 0o077 == 0
     assert collected, "wrong-type canonical cursor starved a deep stale job"
+
+
+def test_mixed_trie_and_legacy_visits_have_separate_hard_budgets(tmp_path: Path) -> None:
+    """Trie and legacy compatibility work are separately bounded and exposed.
+
+    Keeping the legacy budget independent prevents a busy trie from starving
+    rolling-upgrade flat jobs while the aggregate visit count remains bounded.
+    """
+    home = _home(tmp_path)
+    names: list[str] = []
+    index = 0
+    while len(names) < 80:
+        candidate = f"{index:032d}"
+        index += 1
+        if _shard_of(candidate) == 0:
+            names.append(candidate)
+    for name in names:
+        job_dir = _job_dir(home, name)
+        job_dir.mkdir(parents=True)
+        (job_dir / "record.json").write_text(
+            json.dumps({"jobId": name, "state": "succeeded", "finishedAt": time.time()})
+        )
+    for index in range(80):
+        _flat_job(home, f"f{index:031d}", stale=False)
+
+    summary = _run_helper(LEGACY_GC_PAYLOAD, home)
+
+    assert summary["trieVisitBudget"] == 64
+    assert summary["legacyVisitBudget"] == 64
+    assert summary["trieVisited"] <= summary["trieVisitBudget"]
+    assert summary["legacyVisited"] <= summary["legacyVisitBudget"]
+    assert summary["visited"] == summary["trieVisited"] + summary["legacyVisited"]
+    assert summary["visited"] <= 128
+    assert summary["legacyIterated"] <= 64
+
+
+def test_unsafe_recovery_cursor_fails_closed_before_legacy_enumeration(
+    tmp_path: Path,
+) -> None:
+    """An unusable recovery slot must not replay the same bounded prefix forever."""
+    home = _home(tmp_path)
+    root = _job_root(home)
+    for index in range(600):
+        _flat_job(home, f"{index:032d}", stale=False)
+    stale_dir = _flat_job(home, "f" * 32)
+    (root / ".gc-legacy-cursor").mkdir()
+    os.mkfifo(root / ".gc-legacy-cursor.recovery")
+
+    first = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+    second = _run_helper(LEGACY_GC_PAYLOAD, home, timeout=3)
+
+    for summary in (first, second):
+        assert summary["errors"] >= 1
+        assert summary["legacyIterated"] == 0
+        assert summary["legacyVisited"] == 0
+    assert stale_dir.exists()
+    assert (root / ".gc-legacy-cursor").is_dir()
+    assert (root / ".gc-legacy-cursor.recovery").is_fifo()
 
 
 def test_legacy_lock_hardlink_is_rejected_without_chmod(tmp_path: Path) -> None:

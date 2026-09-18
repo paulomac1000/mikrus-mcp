@@ -433,6 +433,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
         # strict job-id grammar cost one readdir yield each and are
         # otherwise ignored, never followed, and never leave the leaf.
         visit_budget = max(64, 4 * budget)
+        summary["trieVisitBudget"] = visit_budget
         iterated_budget = max(visit_budget, 4096)
         shard_root = root / ("s%x" % shard)
         cursor_path = root / (".gc-cursor-%x" % shard)
@@ -705,8 +706,11 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
             legacy_recovery_cursor_path = root / ".gc-legacy-cursor.recovery"
             legacy_lock_path = root / ".gc-legacy-cursor.lock"
             legacy_index_path = root / ".gc-legacy-index"
+            summary["trieVisited"] = summary["visited"]
             legacy_raw_budget = max(64, 4 * budget)
+            summary["legacyVisitBudget"] = legacy_raw_budget
             summary["legacyIterated"] = 0
+            summary["legacyVisited"] = 0
             summary["legacyCookieResets"] = 0
             nofollow = getattr(os, "O_NOFOLLOW", 0)
             directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -914,6 +918,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                             "arm": 217,
                             "armv6l": 217,
                             "armv7l": 217,
+                            "armv8l": 217,
                             "ppc": 202,
                             "ppcle": 202,
                             "ppc64": 202,
@@ -1036,14 +1041,15 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                         else:
                             summary["errors"] += 1
                 directory_fd = None
-                try:
-                    directory_fd = os.open(
-                        root,
-                        os.O_RDONLY | directory_flag | nofollow,
-                    )
-                except OSError:
-                    directory_fd = None
-                    summary["errors"] += 1
+                if active_legacy_cursor_path is not None:
+                    try:
+                        directory_fd = os.open(
+                            root,
+                            os.O_RDONLY | directory_flag | nofollow,
+                        )
+                    except OSError:
+                        directory_fd = None
+                        summary["errors"] += 1
                 if directory_fd is not None and getdents64 is not None:
                     try:
                         if cookie:
@@ -1139,6 +1145,7 @@ _REMOTE_JOB_HELPER = textwrap.dedent(
                                     if not stat.S_ISDIR(target_stat.st_mode):
                                         evict(root, last_name)
                                     continue
+                                summary["legacyVisited"] += 1
                                 summary["visited"] += 1
                                 summary["enumerated"] += 1
                                 process_managed_job(target)
