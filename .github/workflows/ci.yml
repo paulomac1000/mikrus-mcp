@@ -106,7 +106,7 @@ jobs:
         run: python scripts/check_lock_policy.py
       - name: Upload quality diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: quality-diagnostics-${{ github.run_id }}
           path: |
@@ -219,7 +219,7 @@ jobs:
           sha256sum dist/*.whl wheelhouse/*.whl > wheel-digests.txt
           printf '%s\n' "${{ github.event.pull_request.head.sha || github.sha }}" > commit-sha.txt
       - name: Upload exact wheel and wheelhouse
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: exact-wheel-${{ github.run_id }}
           path: |
@@ -240,14 +240,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: exact-wheel-${{ github.run_id }}
           path: .
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - name: Verify wheel bundle revision
         shell: bash
         run: |
@@ -286,7 +286,7 @@ jobs:
           cp commit-sha.txt release/commit-sha.txt
           sha256sum release/image.tar release/promote_digest.py dist/*.whl wheelhouse/*.whl > release/bundle-sha256.txt
       - name: Upload immutable release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-bundle-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
