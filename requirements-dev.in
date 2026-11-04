@@ -1,13 +1,13 @@
 -r requirements-runtime.in
-pytest==9.1.1
-pytest-asyncio==1.4.0
+pytest==9.2.0
+pytest-asyncio==1.4.1
 pytest-cov==7.1.0
-ruff==0.16.6
-mypy==2.3.1
+ruff==0.17.3
+mypy==2.4.1
 bandit==1.9.4
 pip-audit==2.10.1
-build==1.6.0
+build==1.6.1
 PyYAML==6.0.3
-types-PyYAML==6.0.12.20260906
-setuptools==84.0.0
+types-PyYAML==6.0.12.20261030
+setuptools==84.2.1
 wheel==0.48.0
