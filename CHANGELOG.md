@@ -4,6 +4,22 @@ All notable changes to mikrus-mcp are recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the pip dependency group (#52): the MCP Python SDK moves from
+  2.1.1 to 2.3.0, `asyncssh` 2.24.0 → 2.24.1, `uvicorn` 0.52.4 → 0.54.0, the
+  build toolchain pin moves to `setuptools` 84.2.1, and dev tooling moves to
+  `pytest` 9.2.0, `pytest-asyncio` 1.5.0, `ruff` 0.17.6, `mypy` 2.4.1,
+  `build` 1.6.1, `PyYAML` 6.0.4, and refreshed `types-PyYAML` stubs. The
+  platform-exact hash locks for Linux x64 / CPython 3.12, 3.13, and 3.14 are
+  regenerated for the full direct and transitive graph (including `pydantic`
+  2.14.4, `starlette` 1.10.0, `cryptography` 50.0.2, `certifi` 2026.11.20,
+  and `pyjwt` 2.15.1). `pip==26.2.1` is now pinned explicitly in
+  `requirements-dev.in` so the governed dependency-refresh lane renders locks
+  that match the canonical resolver toolchain enforced by
+  `scripts/check_lock_policy.py` instead of drifting to index-latest pip.
+  `pip-audit` reports no known vulnerabilities for the refreshed graph. #52
+
 ## [2.2.1] - 2026-09-18
 
 ### Fixed
