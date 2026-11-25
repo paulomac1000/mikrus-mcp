@@ -211,6 +211,251 @@ def test_promoter_content_digest_is_pinned_full_sha256() -> None:
     assert "TRUST TRANSITION" in publish
 
 
+def _parse(challenge: str) -> dict[str, str]:
+    from scripts.promote_digest import _parse_challenge
+
+    return _parse_challenge(challenge)
+
+
+class TestBearerChallengeParsing:
+    """Issue #38 regressions: the historical promotion failure was a
+    zero-scope token produced by silently mis-parsing a challenge whose
+    parameters were separated by whitespace before the comma."""
+
+    GHCR_CHALLENGE = (
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+        'scope="repository:owner/repo:pull,push"'
+    )
+
+    def test_exact_ghcr_no_space_challenge(self) -> None:
+        params = _parse(self.GHCR_CHALLENGE)
+        assert params["realm"] == "https://ghcr.io/token"
+        assert params["service"] == "ghcr.io"
+        assert params["scope"] == "repository:owner/repo:pull,push"
+
+    def test_comma_followed_by_space(self) -> None:
+        params = _parse(
+            'Bearer realm="https://ghcr.io/token", service="ghcr.io", '
+            'scope="repository:owner/repo:pull"'
+        )
+        assert params["service"] == "ghcr.io"
+        assert params["scope"] == "repository:owner/repo:pull"
+
+    def test_whitespace_before_comma_is_not_a_key_prefix(self) -> None:
+        params = _parse(
+            'Bearer realm="https://ghcr.io/token" ,service="ghcr.io" '
+            ',scope="repository:owner/repo:pull,push"'
+        )
+        assert params["realm"] == "https://ghcr.io/token"
+        assert params["service"] == "ghcr.io"
+        assert params["scope"] == "repository:owner/repo:pull,push"
+        assert all(not key.startswith(",") for key in params)
+
+    def test_whitespace_around_equals(self) -> None:
+        params = _parse('Bearer realm = "https://ghcr.io/token" ,\tservice\t=\t"ghcr.io"')
+        assert params["realm"] == "https://ghcr.io/token"
+        assert params["service"] == "ghcr.io"
+
+    def test_comma_inside_quoted_scope_is_one_value(self) -> None:
+        params = _parse('Bearer realm="https://t.io/token",scope="repository:a/b:pull,push,sync"')
+        assert params["scope"] == "repository:a/b:pull,push,sync"
+
+    def test_escaped_quote_inside_quoted_value(self) -> None:
+        params = _parse(r'Bearer realm="https://t.io/token",note="pull \"push\" done"')
+        assert params["note"] == 'pull "push" done'
+
+    def test_escaped_backslash_inside_quoted_value(self) -> None:
+        params = _parse(r'Bearer realm="https://t.io/token",note="a\\b"')
+        assert params["note"] == "a\\b"
+
+    def test_unquoted_token_values_are_accepted(self) -> None:
+        params = _parse("Bearer realm=token.example.com,service=registry-svc")
+        assert params["realm"] == "token.example.com"
+        assert params["service"] == "registry-svc"
+
+    def test_duplicate_parameters_fail_closed(self) -> None:
+        with pytest.raises(SystemExit, match="duplicate challenge parameter"):
+            _parse('Bearer realm="https://a/token",realm="https://b/token"')
+
+    def test_missing_realm_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="without realm"):
+            _parse('Bearer service="ghcr.io"')
+
+    def test_empty_realm_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="without realm"):
+            _parse('Bearer realm="",service="ghcr.io"')
+
+    def test_unterminated_quote_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="unterminated"):
+            _parse('Bearer realm="https://ghcr.io/token')
+
+    def test_dangling_escape_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="dangling escape"):
+            _parse('Bearer realm="abc\\')
+
+    def test_dangling_separator_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="dangling parameter separator"):
+            _parse('Bearer realm="https://t.io/token",')
+
+    def test_parameter_without_value_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="has no value"):
+            _parse('Bearer realm="https://t.io/token",service')
+
+    def test_empty_value_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="empty challenge parameter value"):
+            _parse('Bearer realm="https://t.io/token",service=')
+
+    def test_non_token_parameter_name_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="malformed challenge parameter name"):
+            _parse('Bearer re"alm="https://t.io/token"')
+
+    def test_quoted_parameter_name_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="malformed challenge parameter name"):
+            _parse('Bearer "realm"="https://t.io/token"')
+
+    def test_unquoted_value_with_non_token_characters_fails_closed(self) -> None:
+        # ':' and '/' are not token characters; a registry that omits the
+        # quotes around a URL realm is ambiguous and must not be guessed.
+        with pytest.raises(SystemExit, match="is not a token"):
+            _parse("Bearer realm=https://t.io/token")
+
+    def test_trailing_garbage_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="trailing challenge data"):
+            _parse('Bearer realm="https://t.io/token" junk')
+
+    def test_missing_scheme_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="malformed bearer challenge"):
+            _parse('realm="https://t.io/token"')
+
+    def test_empty_challenge_body_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="malformed bearer challenge"):
+            _parse("Bearer ")
+
+
+class TestAuthenticateUsesParsedChallenge:
+    """End-to-end: after the parser fix the token exchange must carry the
+    service and scope exactly as the registry announced them, even when the
+    challenge separates parameters with whitespace before the comma."""
+
+    def test_whitespace_mangled_challenge_requests_full_scope(self) -> None:
+        import threading
+        import urllib.parse
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+        token_requests: list[dict[str, list[str]]] = []
+        manifest_hits = 0
+
+        server_port = 0
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            server_port = probe.getsockname()[1]
+
+        challenge_template = (
+            f'Bearer realm="http://127.0.0.1:{server_port}/token" ,service="registry-svc" '
+            ',scope="repository:owner/repo:pull,push"'
+        )
+
+        class Registry(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                nonlocal manifest_hits
+                parsed = urllib.parse.urlsplit(self.path)
+                if parsed.path == "/token":
+                    token_requests.append(urllib.parse.parse_qs(parsed.query))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"token":"issued-token-value"}')
+                    return
+                if parsed.path.endswith("/manifests/check"):
+                    manifest_hits += 1
+                    if manifest_hits == 1:
+                        self.send_response(401)
+                        self.send_header("WWW-Authenticate", challenge_template)
+                        self.end_headers()
+                        self.wfile.write(b"{}")
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", _MANIFEST_MEDIA)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args: object) -> None:
+                return None
+
+        server = HTTPServer(("127.0.0.1", server_port), Registry)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = RegistryClient(
+                RegistryRef(f"127.0.0.1:{server_port}", "owner/repo"),
+                Credentials("user", "secret"),
+                True,
+            )
+            body, _ = client.get_manifest("check")
+            assert body == b"{}"
+        finally:
+            server.shutdown()
+        assert len(token_requests) == 1
+        query = token_requests[0]
+        assert query.get("service") == ["registry-svc"]
+        assert query.get("scope") == ["repository:owner/repo:pull,push"]
+
+    def test_malformed_challenge_fails_closed_without_token_request(self) -> None:
+        import threading
+        import urllib.parse
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from scripts.promote_digest import Credentials, RegistryClient, RegistryRef
+
+        token_hits = 0
+        server_port = 0
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            server_port = probe.getsockname()[1]
+
+        class Registry(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                nonlocal token_hits
+                parsed = urllib.parse.urlsplit(self.path)
+                if parsed.path == "/token":
+                    token_hits += 1
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'{"token":"should-never-be-issued"}')
+                    return
+                self.send_response(401)
+                self.send_header(
+                    "WWW-Authenticate",
+                    f'Bearer realm="http://127.0.0.1:{server_port}/token",realm="other"',
+                )
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args: object) -> None:
+                return None
+
+        server = HTTPServer(("127.0.0.1", server_port), Registry)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = RegistryClient(
+                RegistryRef(f"127.0.0.1:{server_port}", "owner/repo"),
+                Credentials("user", "secret"),
+                True,
+            )
+            with pytest.raises(SystemExit, match="duplicate challenge parameter"):
+                client.get_manifest("check")
+            assert token_hits == 0
+        finally:
+            server.shutdown()
+
+
 def test_credentials_never_follow_cross_origin_redirects(tmp_path: Path) -> None:
     """P1 regression: a hostile registry redirect must not leak Basic or
     Bearer credentials to another origin."""
