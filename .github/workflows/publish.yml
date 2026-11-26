@@ -148,7 +148,7 @@ jobs:
           python scripts/artifact_smoke.py \
             --wheel "$(find bundle/dist -maxdepth 1 -name 'mikrus_mcp-*.whl' -print -quit)" \
             --wheelhouse bundle/wheelhouse
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - name: Load and smoke candidate image outside protected publisher
         id: candidate
         shell: bash

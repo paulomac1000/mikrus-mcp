@@ -19,6 +19,17 @@ All notable changes to mikrus-mcp are recorded here.
   that match the canonical resolver toolchain enforced by
   `scripts/check_lock_policy.py` instead of drifting to index-latest pip.
   `pip-audit` reports no known vulnerabilities for the refreshed graph. #52
+- Updated the GitHub Actions dependency group (#48): `actions/setup-python`
+  7.0.0 → 7.1.0, `actions/upload-artifact` 7.0.1 → 7.0.2,
+  `actions/download-artifact` 8.0.1 → 8.0.2, and
+  `docker/setup-buildx-action` 4.3.0 → 4.4.1. All four upstream release tags
+  were independently resolved to the exact full commit SHAs used in the
+  workflows. The changes add mirror/error-message support in setup-python,
+  improve artifact-download handling of HTTP 429 and valid `Retry-After`
+  responses, and refine Buildx cloud-driver and explicit-endpoint behavior;
+  workflow permissions, checkout credential controls, release artifact
+  identity, protected environment boundaries, and dependency-refresh behavior
+  are unchanged. #48
 
 ## [2.2.1] - 2026-09-18
 
