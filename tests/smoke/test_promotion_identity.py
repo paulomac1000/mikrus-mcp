@@ -277,6 +277,15 @@ class TestBearerChallengeParsing:
         with pytest.raises(SystemExit, match="duplicate challenge parameter"):
             _parse('Bearer realm="https://a/token",realm="https://b/token"')
 
+    def test_mixed_case_duplicate_parameters_fail_closed(self) -> None:
+        with pytest.raises(SystemExit, match="duplicate challenge parameter"):
+            _parse('Bearer realm="https://a/token",Realm="https://b/token"')
+
+    def test_case_insensitive_parameter_names_are_normalized(self) -> None:
+        params = _parse('Bearer REALM="https://t.io/token",SCOPE="repository:a/b:pull"')
+        assert params["realm"] == "https://t.io/token"
+        assert params["scope"] == "repository:a/b:pull"
+
     def test_missing_realm_fails_closed(self) -> None:
         with pytest.raises(SystemExit, match="without realm"):
             _parse('Bearer service="ghcr.io"')
@@ -284,6 +293,18 @@ class TestBearerChallengeParsing:
     def test_empty_realm_fails_closed(self) -> None:
         with pytest.raises(SystemExit, match="without realm"):
             _parse('Bearer realm="",service="ghcr.io"')
+
+    def test_empty_quoted_scope_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="empty challenge parameter value"):
+            _parse('Bearer realm="https://t.io/token",scope=""')
+
+    def test_control_character_in_quoted_value_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="invalid character in quoted challenge parameter"):
+            _parse('Bearer realm="https://t.io/token",scope="a\x01b"')
+
+    def test_escaped_invalid_character_fails_closed(self) -> None:
+        with pytest.raises(SystemExit, match="invalid escaped character"):
+            _parse('Bearer realm="https://t.io/token",scope="a\\\x7fb"')
 
     def test_unterminated_quote_fails_closed(self) -> None:
         with pytest.raises(SystemExit, match="unterminated"):

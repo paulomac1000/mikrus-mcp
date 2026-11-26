@@ -131,6 +131,25 @@ TOKEN_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 OWS_CHARACTERS = " \t"
 
 
+def _is_qdtext(character: str) -> bool:
+    """RFC 7230 qdtext: HTAB / SP / %x21 / %x23-5B / %x5D-7E / obs-text."""
+    codepoint = ord(character)
+    return (
+        codepoint == 0x09
+        or codepoint == 0x20
+        or codepoint == 0x21
+        or 0x23 <= codepoint <= 0x5B
+        or 0x5D <= codepoint <= 0x7E
+        or codepoint >= 0x80
+    )
+
+
+def _is_quoted_pair_character(character: str) -> bool:
+    """RFC 7230 quoted-pair: "\\" HTAB / SP / VCHAR / obs-text."""
+    codepoint = ord(character)
+    return codepoint == 0x09 or codepoint == 0x20 or 0x21 <= codepoint <= 0x7E or codepoint >= 0x80
+
+
 def _skip_ows(body: str, index: int, length: int) -> int:
     while index < length and body[index] in OWS_CHARACTERS:
         index += 1
@@ -152,9 +171,11 @@ def _parse_challenge(challenge: str) -> dict[str, str]:
     Ambiguity never silently truncates the token request: duplicate
     parameters, empty keys or values, unterminated quotes, dangling
     escapes or separators, non-token keys or unquoted non-token values,
-    and trailing garbage all fail closed. A zero-scope token obtained
-    from a mis-parsed challenge is what produced the historical GHCR
-    HTTP 421 promotion failure, so this parser refuses to guess.
+    invalid quoted-string characters, and trailing garbage all fail
+    closed. Synthetic reproduction of the whitespace variant produces a
+    zero-scope token request; the repository holds no captured live GHCR
+    challenge, so the historical HTTP 421 publication failure is not
+    established by captured evidence. This parser refuses to guess.
     """
     scheme, separator, body = challenge.partition(" ")
     if separator == "" or scheme.lower() != "bearer" or not body.strip():
@@ -169,6 +190,8 @@ def _parse_challenge(challenge: str) -> dict[str, str]:
         key = body[start:index]
         if not TOKEN_PATTERN.fullmatch(key):
             raise PromotionError(f"malformed challenge parameter name: {key[:40]!r}")
+        # RFC 7235 authentication parameter names are case-insensitive.
+        key = key.lower()
         index = _skip_ows(body, index, length)
         if index >= length or body[index] != "=":
             raise PromotionError(
@@ -185,15 +208,30 @@ def _parse_challenge(challenge: str) -> dict[str, str]:
                 if character == "\\":
                     if index + 1 >= length:
                         raise PromotionError("dangling escape in quoted challenge parameter")
-                    characters.append(body[index + 1])
+                    escaped = body[index + 1]
+                    if not _is_quoted_pair_character(escaped):
+                        raise PromotionError(
+                            f"invalid escaped character in quoted challenge parameter: {escaped!r}"
+                        )
+                    characters.append(escaped)
                     index += 2
                 elif character == '"':
                     index += 1
                     break
                 else:
+                    if not _is_qdtext(character):
+                        raise PromotionError(
+                            f"invalid character in quoted challenge parameter: {character!r}"
+                        )
                     characters.append(character)
                     index += 1
             value = "".join(characters)
+            if not value and key != "realm":
+                # An empty realm is retained so the mandatory-realm check below
+                # keeps its stable "without realm" failure; every other quoted
+                # parameter must carry a value rather than silently disabling a
+                # token-request field such as scope.
+                raise PromotionError(f"empty challenge parameter value for {key!r}")
         else:
             start = index
             while index < length and body[index] not in ", \t":
