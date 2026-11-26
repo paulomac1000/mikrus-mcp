@@ -31,6 +31,31 @@ All notable changes to mikrus-mcp are recorded here.
   identity, protected environment boundaries, and dependency-refresh behavior
   are unchanged. #48
 
+### Fixed
+
+- The protected publication promoter (`scripts/promote_digest.py`) no longer
+  mis-parses OCI bearer authentication challenges whose parameters are
+  separated by whitespace before the comma. The previous lenient scanner
+  produced mangled parameter keys (`",service"`, `",scope"`) for such
+  challenges in a synthetic reproduction, so the token exchange omitted
+  `service` and `scope`. The repository holds no captured live GHCR
+  challenge, so the HTTP 421 blob-transfer failure of the v2.2.1
+  publication is not established by captured evidence. The challenge
+  parser is now a strict, fail-closed
+  RFC 7235 reader: quoted values support backslash escapes and embedded
+  commas (scopes such as `repository:owner/repo:pull,push` stay intact),
+  optional whitespace is accepted anywhere between tokens, parameter
+  names are matched case-insensitively, quoted-string characters and
+  quoted-pair escapes are validated, and duplicate parameters, empty
+  keys or values, unterminated quotes, dangling escapes or separators,
+  non-token names, unquoted non-token values, and trailing garbage are
+  rejected before any token request instead of silently producing a
+  zero-scope credential. Regression coverage pins the exact GHCR
+  challenge shape, whitespace variants, and end-to-end token-request scope
+  through a loopback registry. This is a governed promoter trust transition:
+  `PROMOTER_CONTENT_SHA256` in `publish.yml` is updated to the reviewed
+  promoter bytes in the same independently reviewed master commit. #38
+
 ## [2.2.1] - 2026-09-18
 
 ### Fixed

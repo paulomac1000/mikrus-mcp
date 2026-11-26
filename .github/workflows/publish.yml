@@ -45,7 +45,7 @@ env:
   # inside a candidate PR. A candidate that alters the script without such a
   # reviewed transition fails closed here, before any registry credential
   # exists.
-  PROMOTER_CONTENT_SHA256: 57df0a51bba755abc5d70611c90aa2ed160d921cd9600a3e07264b16f67605d0
+  PROMOTER_CONTENT_SHA256: e0ae0e207101637f2a434ec43ff75c4dad33f80801f8e20461ae90e37d991d4c
 
 jobs:
   validate-release:

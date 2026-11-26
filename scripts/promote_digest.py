@@ -127,35 +127,137 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return request
 
 
+TOKEN_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+OWS_CHARACTERS = " \t"
+
+
+def _is_qdtext(character: str) -> bool:
+    """RFC 7230 qdtext: HTAB / SP / %x21 / %x23-5B / %x5D-7E / obs-text."""
+    codepoint = ord(character)
+    return (
+        codepoint == 0x09
+        or codepoint == 0x20
+        or codepoint == 0x21
+        or 0x23 <= codepoint <= 0x5B
+        or 0x5D <= codepoint <= 0x7E
+        or codepoint >= 0x80
+    )
+
+
+def _is_quoted_pair_character(character: str) -> bool:
+    """RFC 7230 quoted-pair: "\\" HTAB / SP / VCHAR / obs-text."""
+    codepoint = ord(character)
+    return codepoint == 0x09 or codepoint == 0x20 or 0x21 <= codepoint <= 0x7E or codepoint >= 0x80
+
+
+def _skip_ows(body: str, index: int, length: int) -> int:
+    while index < length and body[index] in OWS_CHARACTERS:
+        index += 1
+    return index
+
+
 def _parse_challenge(challenge: str) -> dict[str, str]:
-    body = challenge[len("bearer ") :]
+    """Parse an RFC 7235 Bearer authentication challenge, failing closed.
+
+    Grammar::
+
+        challenge = "Bearer" 1*SP param *( OWS "," OWS param )
+        param     = token BWS "=" BWS ( token | quoted-string )
+
+    Quoted values may contain backslash escapes (``\"``, ``\\\\``, or any
+    other escaped character) and may contain commas, so a scope such as
+    ``repository:owner/repo:pull,push`` survives as one value.
+
+    Ambiguity never silently truncates the token request: duplicate
+    parameters, empty keys or values, unterminated quotes, dangling
+    escapes or separators, non-token keys or unquoted non-token values,
+    invalid quoted-string characters, and trailing garbage all fail
+    closed. Synthetic reproduction of the whitespace variant produces a
+    zero-scope token request; the repository holds no captured live GHCR
+    challenge, so the historical HTTP 421 publication failure is not
+    established by captured evidence. This parser refuses to guess.
+    """
+    scheme, separator, body = challenge.partition(" ")
+    if separator == "" or scheme.lower() != "bearer" or not body.strip():
+        raise PromotionError(f"malformed bearer challenge: {challenge[:80]!r}")
     params: dict[str, str] = {}
-    index = 0
+    index = _skip_ows(body, 0, len(body))
     length = len(body)
-    while index < length:
-        equals = body.find("=", index)
-        if equals == -1:
-            break
-        key = body[index:equals].strip()
-        index = equals + 1
-        if index < length and body[index] == '"':
-            closing = body.find('"', index + 1)
-            if closing == -1:
-                break
-            value = body[index + 1 : closing]
-            index = closing + 1
-        else:
-            comma = body.find(",", index)
-            if comma == -1:
-                value = body[index:].strip()
-                index = length
-            else:
-                value = body[index:comma].strip()
-                index = comma
-        if key:
-            params[key] = value
-        while index < length and body[index] == ",":
+    while True:
+        start = index
+        while index < length and body[index] not in "=, \t":
             index += 1
+        key = body[start:index]
+        if not TOKEN_PATTERN.fullmatch(key):
+            raise PromotionError(f"malformed challenge parameter name: {key[:40]!r}")
+        # RFC 7235 authentication parameter names are case-insensitive.
+        key = key.lower()
+        index = _skip_ows(body, index, length)
+        if index >= length or body[index] != "=":
+            raise PromotionError(
+                f"challenge parameter {key!r} has no value near {body[index : index + 20]!r}"
+            )
+        index = _skip_ows(body, index + 1, length)
+        if index < length and body[index] == '"':
+            characters: list[str] = []
+            index += 1
+            while True:
+                if index >= length:
+                    raise PromotionError("unterminated quoted challenge parameter value")
+                character = body[index]
+                if character == "\\":
+                    if index + 1 >= length:
+                        raise PromotionError("dangling escape in quoted challenge parameter")
+                    escaped = body[index + 1]
+                    if not _is_quoted_pair_character(escaped):
+                        raise PromotionError(
+                            f"invalid escaped character in quoted challenge parameter: {escaped!r}"
+                        )
+                    characters.append(escaped)
+                    index += 2
+                elif character == '"':
+                    index += 1
+                    break
+                else:
+                    if not _is_qdtext(character):
+                        raise PromotionError(
+                            f"invalid character in quoted challenge parameter: {character!r}"
+                        )
+                    characters.append(character)
+                    index += 1
+            value = "".join(characters)
+            if not value and key != "realm":
+                # An empty realm is retained so the mandatory-realm check below
+                # keeps its stable "without realm" failure; every other quoted
+                # parameter must carry a value rather than silently disabling a
+                # token-request field such as scope.
+                raise PromotionError(f"empty challenge parameter value for {key!r}")
+        else:
+            start = index
+            while index < length and body[index] not in ", \t":
+                index += 1
+            value = body[start:index]
+            if not value:
+                raise PromotionError(f"empty challenge parameter value for {key!r}")
+            if not TOKEN_PATTERN.fullmatch(value):
+                raise PromotionError(
+                    f"unquoted challenge parameter value for {key!r} is not a token: {value[:60]!r}"
+                )
+        if key in params:
+            raise PromotionError(f"duplicate challenge parameter: {key!r}")
+        params[key] = value
+        index = _skip_ows(body, index, length)
+        if index >= length:
+            break
+        if body[index] != ",":
+            raise PromotionError(
+                f"unexpected trailing challenge data near {body[index : index + 20]!r}"
+            )
+        index = _skip_ows(body, index + 1, length)
+        if index >= length:
+            raise PromotionError("challenge ends with a dangling parameter separator")
+    if not params.get("realm"):
+        raise PromotionError("bearer challenge without realm")
     return params
 
 
@@ -204,12 +306,10 @@ class RegistryClient:
                 f"{self.ref.registry}: unsupported authentication challenge: {challenge[:80]!r}"
             )
         params = _parse_challenge(challenge)
-        realm = params.get("realm", "").strip('"')
-        if not realm:
-            raise PromotionError(f"{self.ref.registry}: bearer challenge without realm")
+        realm = params["realm"]
         query: dict[str, str] = {}
-        service = params.get("service", "").strip('"')
-        scope = params.get("scope", "").strip('"')
+        service = params.get("service", "")
+        scope = params.get("scope", "")
         if service:
             query["service"] = service
         if scope:
