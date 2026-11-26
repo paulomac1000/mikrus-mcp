@@ -170,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install "pip==$PIP_VERSION" "build==1.5.0" \
-            "setuptools==84.0.0" "wheel==0.48.0"
+            "setuptools==84.2.1" "wheel==0.48.0"
           candidate="${{ github.event.pull_request.head.sha || github.sha }}"
           python scripts/stamp_build_provenance.py \
             --source-revision "$candidate" \
