@@ -4,6 +4,8 @@ All notable changes to mikrus-mcp are recorded here.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-26
+
 ### Changed
 
 - Refreshed the pip dependency group (#52): the MCP Python SDK moves from
